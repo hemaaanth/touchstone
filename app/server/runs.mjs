@@ -50,6 +50,7 @@ import { agentFindingsOf, candidateEvents, candidatesOf, createSessionArtifactsA
 import { createRoamControlApi, roamSelection } from "./roam-control.mjs"
 import { DEMO, DEMO_ENDPOINT, DEMO_MODEL, DEMO_TARGETS } from "./demo-config.mjs"
 import { armDemoDeadline, closeDemoRun, demoFence, demoProve, stopDemoWorker } from "./demo-lifecycle.mjs"
+import { checkDemoResourceRuntime, createDemoResources, demoResourcesComplete, registerDemoDirectory, reopenDemoResources, settleDemoResources, spawnDemoWorker, withDemoResources } from "../../spike/lib/demo-resources.mjs"
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(HERE, "../..")
@@ -333,7 +334,7 @@ function savePhase(run, phase) {
   run.phase = phase
   if (!run.stateFile) return
   const next = `${run.stateFile}.tmp`
-  writeFileSync(next, JSON.stringify({ ownerHash: run.ownerHash, deadlineAt: run.deadlineAt, requestId: run.requestId, requestHash: run.requestHash, ws: run.ws, target: run.target, ...(run.packs ? { packs: run.packs } : {}), grantIds: run.grantIds, phase, mode: modeOf(run) ?? run.mode, ...roamSelectionOf(run), modules: run.modules, budget: run.budget, provider: run.provider, model: run.model, leads: run.leads ?? {}, prepass: run.prepass ?? null, settled: run.settled ?? null }), { mode: 0o600 })
+  writeFileSync(next, JSON.stringify({ demoResources: run.demoResources, ownerHash: run.ownerHash, deadlineAt: run.deadlineAt, requestId: run.requestId, requestHash: run.requestHash, ws: run.ws, target: run.target, ...(run.packs ? { packs: run.packs } : {}), grantIds: run.grantIds, phase, mode: modeOf(run) ?? run.mode, ...roamSelectionOf(run), modules: run.modules, budget: run.budget, provider: run.provider, model: run.model, leads: run.leads ?? {}, prepass: run.prepass ?? null, settled: run.settled ?? null }), { mode: 0o600 })
   renameSync(next, run.stateFile)
 }
 
@@ -354,6 +355,10 @@ function monotonicId(alias) {
 }
 
 function broadcast(run, event) {
+  if (event.ev === "closed" && run.ownerHash) {
+    try { if (!demoResourcesComplete(run.demoResources)) run.demoCleanupFailed = true }
+    catch { run.demoCleanupFailed = true }
+  }
   if (event.ev === "closed" && run.demoCleanupFailed) { failDemoCleanup(run); return }
   run.events.push(event)
   if (run.streamFile) {
@@ -482,10 +487,11 @@ export function runOwnedBy(id, ownerHash) {
 }
 
 export function demoBusy() {
-  return [...runs.values()].some((run) => !run.demoClosed && (process.env.TOUCHSTONE_DEMO === "1" || run.ownerHash || !idle(run)))
+  return Boolean(registry.demoResourceOrphans) || [...runs.values()].some((run) => !run.demoClosed && (process.env.TOUCHSTONE_DEMO === "1" || run.ownerHash || !idle(run)))
 }
 
 export function demoCatalog() {
+  checkDemoResourceRuntime()
   const provider = allProviders().near
   const model = provider?.models?.[DEMO_MODEL]
   if (provider?.baseUrl !== DEMO_ENDPOINT || model?.id !== "deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated" || !Number.isFinite(model.input) || !Number.isFinite(model.output) || model.input < 0 || model.output < 0 || providerSetupError(provider, DEMO_MODEL)) throw new Error("Demo provider configuration is unavailable.")
@@ -663,6 +669,7 @@ function registerRun({ alias, targetId, modules, budgetUsd, pack, packs, mode = 
     requestHash,
     ownerHash,
     deadlineAt,
+    demoResources: ownerHash ? createDemoResources(path.join(RESULTS_DIR, `run-${id}.demo-resources.sqlite`)) : undefined,
     reach: null,
     id,
     alias,
@@ -734,14 +741,15 @@ async function prepareNewRun(run) {
   const picked = run.packs
   const multi = picked?.length > 1
   try {
-    if (demoFence(run)) { endStopped(run); return view(run) }
+    if (demoFence(run)) { await endWorkspace(run); endStopped(run); return view(run) }
     run.reach = await openReach(target, { mode: target.kind === "live" ? "confine" : "proxy", grantIds: run.grantIds })
-    if (demoFence(run)) { await run.reach?.stop?.(); endStopped(run); return view(run) }
-    run.ws = multi ? await prepareMultiWorkspace(target, { packs: picked, modules: plan }) : await prepareRunWorkspace(target, { modules: plan })
+    if (demoFence(run)) { await endWorkspace(run); endStopped(run); return view(run) }
+    run.ws = await runExecution(run, () => multi ? prepareMultiWorkspace(target, { packs: picked, modules: plan }) : prepareRunWorkspace(target, { modules: plan }))
+    if (run.ownerHash) run.ws = registerDemoDirectory(run.demoResources, run.ws)
     savePhase(run, "prepass")
   } catch (err) {
     run.error = String(err?.message ?? err)
-    if (run.ws) await endWorkspace(run).catch(() => {})
+    if (run.ws || run.ownerHash) await endWorkspace(run).catch(() => {})
     else await run.reach?.stop?.().catch(() => {})
     setRunStatus(run, "error")
     finalize(run)
@@ -759,8 +767,9 @@ async function prepareNewRun(run) {
   // scanners run before any inference — exactly what the CLI does. We do NOT await
   // it: the run is already in the registry, so the HTTP response returns now and
   // the UI watches the scan events, then the agent events, stream in live.
-  startEngine(run).catch((err) => {
+  startEngine(run).catch(async (err) => {
     run.error = String(err?.message ?? err)
+    if (run.ownerHash) await endWorkspace(run)
     setRunStatus(run, "error")
     finalize(run)
     broadcast(run, { ev: "closed" })
@@ -826,11 +835,11 @@ async function startEngine(run) {
   let leads = {}
   try {
     const money = budgetEnv(run)
-    const prep = await packFor(readTouchstone(run.ws)).prepass?.(run.ws, {
+    const prep = await runExecution(run, () => packFor(readTouchstone(run.ws)).prepass?.(run.ws, {
       emit: (ev) => broadcast(run, ev),
       reach: run.reach,
       budget: { limitUsd: Number(money.RUN_BUDGET_USD), spentUsd: Number(money.RUN_SPENT_USD) },
-    })
+    }))
     chargePrepass(run, prep?.spentUsd)
     run.prepass = prep?.record ?? null
     run.static = prep?.record?.static
@@ -1132,14 +1141,20 @@ function spawnAgent(run, leads) {
   // write one JSON line per message to the worker, which injects it into the
   // agent's current turn. Swallow EPIPE if we race a worker that just exited.
   const since = Date.now()
-  const child = spawn(process.execPath, [ENGINE, "child", "run", run.db, run.ws], {
-    cwd: SPIKE,
-    env,
-    stdio: ["pipe", "pipe", "pipe"],
-  })
+  const childOptions = { cwd: SPIKE, env, stdio: ["pipe", "pipe", "pipe"] }
+  const child = run.ownerHash
+    ? spawnDemoWorker(run.demoResources, ENGINE, ["child", "run", run.db, run.ws], childOptions)
+    : spawn(process.execPath, [ENGINE, "child", "run", run.db, run.ws], childOptions)
   child.stdin.on("error", () => {})
   run.child = child
   roamControl.begin(run, child, epoch)
+  if (run.ownerHash) child.once("error", async () => {
+    run.error = "The demo worker could not start."
+    await endWorkspace(run)
+    setRunStatus(run, "error")
+    finalize(run)
+    broadcast(run, { ev: "closed" })
+  })
 
   pipeEvents(child, engineEvents(run, child, epoch), (line) => {
     run.stderr += line + "\n"
@@ -1153,6 +1168,12 @@ function spawnAgent(run, leads) {
     if (run.child !== child || run.roamEpoch !== epoch) return
     if (run.status !== "running" && run.status !== "starting") return
     demoFence(run)
+    if (run.ownerHash) {
+      try {
+        await (run.demoCancellation ?? settleDemoResources(run.demoResources, { cancel: Boolean(run.stopping) }))
+        if (!demoFence(run)) reopenDemoResources(run.demoResources)
+      } catch { run.demoCleanupFailed = true; failDemoCleanup(run); return }
+    }
     if (!run.stopping) recoverSettled(run, since)
     const s = run.settled
     if (run.stopping) {
@@ -1219,9 +1240,9 @@ async function recordRun(run, found, exit = {}) {
   run.status = "deciding"
   broadcast(run, { ev: "status", status: run.status, pending: run.pending })
   try {
-    const prove = (findings) => packFor(readTouchstone(run.ws)).prove?.(run.ws, findings, run.events, (m) => {
+    const prove = (findings) => runExecution(run, () => packFor(readTouchstone(run.ws)).prove?.(run.ws, findings, run.events, (m) => {
       run.stderr += `[proof-delta] ${m}\n`
-    })
+    }))
     const proven = withProven(run.ownerHash ? await demoProve(run, found, prove) : await prove(found))
     if (run.ownerHash && demoFence(run)) return
     const findings = recordMeasured(run, proven, (e) => broadcast(run, e))
@@ -1679,8 +1700,16 @@ function pruneWorkspaces() {
 // End a run's use of its workspace. First let the pack stop what its pre-pass
 // left running there (the web lab's container), or that would outlive the run.
 // The files stay when the run can take a follow-up; otherwise they are deleted.
+function runExecution(run, fn) { return run.ownerHash ? withDemoResources(run.demoResources, fn) : fn() }
+
 async function endWorkspace(run) {
-  try { return await cleanWorkspace(run) }
+  try {
+    if (run?.ownerHash) {
+      if (run.demoCancellation) await run.demoCancellation
+      await settleDemoResources(run.demoResources)
+    }
+    return await runExecution(run, () => cleanWorkspace(run))
+  }
   catch (error) {
     if (!run?.ownerHash) throw error
     run.demoCleanupFailed = true
@@ -1696,7 +1725,12 @@ function failDemoCleanup(run) {
 }
 
 async function cleanWorkspace(run) {
-  if (run?.ownerHash && !run.ws) { await run.reach?.stop?.(); return }
+  if (run?.ownerHash) {
+    await roamControl.invalidate(run).catch(() => {})
+    await run.reach?.stop?.()
+    if (run.ws) await cleanupWorkspace(run.ws)
+    return
+  }
   await roamControl.invalidate(run).catch(() => {})
   const ws = run?.ws ?? run
   try {
@@ -1712,7 +1746,7 @@ async function cleanWorkspace(run) {
   } catch {
     // already closed
   }
-  if (!run?.ownerHash && keepWorkspace(run, ws)) {
+  if (keepWorkspace(run, ws)) {
     // The files stay. The run's Daytona machines do not: they open again on demand.
     await closeRun(ws).catch(() => {})
     return
@@ -1770,7 +1804,7 @@ export function stopRun(id) {
   if (run.ownerHash) {
     run.stopping = true
     broadcast(run, { t: Date.now(), ev: "stop-requested" })
-    stopDemoWorker(run)
+    void stopDemoWorker(run).catch(() => { run.demoCleanupFailed = true; failDemoCleanup(run) })
     return { ok: true }
   }
   const child = run.child
@@ -2385,7 +2419,7 @@ function persistRun(run, findings) {
   else if (findings.length) run.demoReplay = (async () => {
     for (const finding of findings) {
       if (demoFence(run)) break
-      await checkRecordedReplays([finding], { storeDir: path.join(RESULTS_DIR, "replay") })
+      await runExecution(run, () => checkRecordedReplays([finding], { storeDir: path.join(RESULTS_DIR, "replay") }))
     }
   })().catch(() => {})
 }
@@ -2698,6 +2732,7 @@ function savedRun(id, events, mtime) {
     requestHash: request.requestHash,
     ownerHash: /^[a-f0-9]{64}$/.test(saved?.ownerHash ?? "") ? saved.ownerHash : null,
     deadlineAt: saved?.deadlineAt,
+    demoResources: saved?.demoResources,
     demoClosed: !interrupted && events.some((event) => event.ev === "closed"),
     alias,
     target: null,
@@ -2854,6 +2889,7 @@ function loadSavedRuns() {
   if (!existsSync(RESULTS_DIR)) return
   const ids = new Set()
   for (const f of readdirSync(RESULTS_DIR)) {
+    if (process.env.TOUCHSTONE_DEMO === "1" && f.endsWith(".demo-resources.sqlite") && !existsSync(path.join(RESULTS_DIR, f.replace(/\.demo-resources\.sqlite$/, ".state.json")))) registry.demoResourceOrphans = true
     const m = APP_RUN.exec(f)
     if (m && !runs.has(m[1])) ids.add(m[1])
   }
@@ -2923,6 +2959,20 @@ function loadSavedRun(id) {
     const run = savedRun(id, events, mtime)
     // What savedRun appended (cut-offs, a restart ending) belongs to both.
     if (stored) run.stored = { events: [...stored.rebuilt, ...events.slice(stored.view)], from: events.length }
+    if (process.env.TOUCHSTONE_DEMO === "1" || run.ownerHash) {
+      runs.set(id, run)
+      run.demoClosed = false
+      try {
+        if (!run.ownerHash || run.demoResources?.file !== path.join(RESULTS_DIR, `run-${id}.demo-resources.sqlite`)) throw new Error("Missing demo execution ownership.")
+        if (demoResourcesComplete(run.demoResources) && run.events.some((event) => event.ev === "closed")) { run.demoClosed = true; return }
+        if (!own(run)) throw new Error("Demo cleanup is owned elsewhere.")
+        ensureFiles(run)
+        run.ws = run.saved?.ws ?? null
+        saveCut(run)
+        void endWorkspace(run).then(() => broadcast(run, { ev: "closed" }))
+      } catch { run.demoCleanupFailed = true; failDemoCleanup(run) }
+      return
+    }
     // Never hide an interrupted-error run: list it so a later boot can finish
     // it. Acquire its lock here (as the non-error paths below already rely on)
     // so the TERMINAL branch does not try to own it a second time. A run a live

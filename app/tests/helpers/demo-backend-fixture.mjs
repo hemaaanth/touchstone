@@ -12,6 +12,7 @@ const { demoConfig, demoEnvironment } = await import("../../server/demo-config.m
 const config = demoConfig({ TOUCHSTONE_DEMO: "1", TOUCHSTONE_DEMO_STATE_DIR: directory, TOUCHSTONE_DEMO_ORIGIN: "https://touchstone.hem.so", SPEND_CAP_USD: "20" });
 Object.assign(process.env, demoEnvironment(config), { TOUCHSTONE_DEMO: "1", SPEND_CAP_USD: "20" });
 fs.mkdirSync(config.stores.TOUCHSTONE_RESULTS_DIR, { recursive: true });
+const realResources = phase.startsWith("resources") ? await import("../../../spike/lib/demo-resources.mjs") : null;
 globalThis.fetch = () => { throw Error("Network forbidden"); };
 globalThis.__touchstoneRuns = { runs: new Map(), retry: null, swept: true };
 const nativeFs = { ...fs }, nativeFsp = { ...fsp };
@@ -58,7 +59,25 @@ const allowed = {
   createRoamControlApi: () => ({ invalidate: async () => {}, assertIdle() {}, begin() {}, consume() { return false; } }),
   roamSelection: (freeRoam, options) => ({ freeRoam, options }),
   checkRecordedReplays: async () => {}, pruneReplayStore: () => {},
+  checkDemoResourceRuntime: () => {},
+  createDemoResources: (file) => { fs.writeFileSync(file, JSON.stringify({ complete: false })); return { file, namespace: "a".repeat(64) }; },
+  demoResourcesComplete: (ctx) => Boolean(ctx?.file && JSON.parse(fs.readFileSync(ctx.file, "utf8")).complete),
+  registerDemoDirectory: (_ctx, dir) => dir,
+  withDemoResources: (_ctx, fn) => fn(),
+  reopenDemoResources: (ctx) => fs.writeFileSync(ctx.file, JSON.stringify({ complete: false })),
+  spawnDemoWorker: (ctx) => { const child = spawnFake(); child.context = ctx; return child; },
+  settleDemoResources: async (ctx) => {
+    if (!ctx) throw Error("Missing execution ownership");
+    for (const child of children) if (child.context?.file === ctx.file && child.exitCode == null && child.signalCode == null) child.kill("SIGTERM");
+    fs.writeFileSync(ctx.file, JSON.stringify({ complete: true }));
+  },
 };
+if (realResources) Object.assign(allowed, realResources, {
+  spawnDemoWorker: (ctx, _engine, args, options) => {
+    workerCalls++;
+    return realResources.spawnDemoWorker(ctx, new URL("./demo-forge-worker.mjs", import.meta.url).pathname, ["forge", args[3], join(directory, "producer-result.json")], options);
+  },
+});
 // Mock unrelated imports before loading runs. Keep real persistence, routing,
 // finding readers, reports, and demo policy. Every unexpected call fails.
 const imports = [...fs.readFileSync(base, "utf8").matchAll(/import\s*\{([^}]+)\}\s*from\s*"([^\"]+)"/g)];
@@ -101,7 +120,30 @@ const tick = () => new Promise((r) => setTimeout(r, 10));
 const rid = "11111111-2222-4333-8444-555555555555";
 const stateFile = join(directory, "test-state.json");
 const sourceFile = (id) => join(config.stores.TOUCHSTONE_RESULTS_DIR, `run-${id}.json`);
-if (phase === "write") {
+if (phase === "resources" || phase === "resources-recover") {
+  const waitFor = async (fn) => { for (let i = 0; i < 500; i++) { if (fn()) return; await tick(); } assert.fail("Resource/API transition did not finish"); };
+  const savedFile = join(directory, "resource-api-state.json");
+  if (phase === "resources") {
+    const cookie = (await request("/api/runs")).headers["set-cookie"].split(";")[0];
+    const accepted = await request("/api/runs", cookie, "POST", { targetId: "vault-reentrancy", requestId: rid });
+    assert.equal(accepted.statusCode, 201); const id = accepted.json.id;
+    await waitFor(() => { try { return JSON.parse(fs.readFileSync(join(process.env.DEMO_TEST_DOCKER, "containers.json"), "utf8")).some((c) => c.State.Running); } catch { return false; } });
+    const checkpoint = JSON.parse(fs.readFileSync(join(config.stores.TOUCHSTONE_RESULTS_DIR, `run-${id}.state.json`), "utf8"));
+    assert(checkpoint.demoResources.namespace); assert(!JSON.stringify(runs.getRun(id)).includes(checkpoint.demoResources.namespace));
+    assert.equal((await request(`/api/runs/${id}/stop`, cookie, "POST", {})).statusCode, 200);
+    await waitFor(() => runs.getRun(id).errorInfo?.kind === "cleanup");
+    assert.equal(runs.demoBusy(), true); assert.equal(runs.getRun(id).events.some((e) => e.ev === "closed"), false);
+    const busy = await request("/api/runs", cookie, "POST", { targetId: "vault-reentrancy", requestId: "21111111-2222-4333-8444-555555555555" });
+    assert.equal(busy.statusCode, 429); assert.equal(busy.json.code, "demo_busy");
+    fs.writeFileSync(savedFile, JSON.stringify({ cookie, id }));
+  } else {
+    const { cookie, id } = JSON.parse(fs.readFileSync(savedFile, "utf8"));
+    await waitFor(() => !runs.demoBusy());
+    assert.equal(workerCalls, 0);
+    assert.equal((await request(`/api/runs/${id}`, cookie)).statusCode, 200);
+    assert(runs.getRun(id).events.some((e) => e.ev === "closed"));
+  }
+} else if (phase === "write") {
   const cookie = async () => (await request("/api/runs")).headers["set-cookie"].split(";")[0];
   const a = await cookie(), b = await cookie();
   let releaseReach; reachWait = new Promise((r) => { releaseReach = r; });
@@ -146,7 +188,7 @@ if (phase === "write") {
     const id = `interrupted-${stage}-2611141200-99001`;
     const prefix = join(config.stores.TOUCHSTONE_RESULTS_DIR, `run-${id}`);
     fs.writeFileSync(`${prefix}.stream.jsonl`, [{ t: Date.now(), ev: "scope", scope: target("vault-reentrancy") }, { ev: "mode", mode: "solo" }, { ev: "status", status: stage === "proof" ? "deciding" : "starting" }].map((e) => JSON.stringify(e) + "\n").join(""));
-    fs.writeFileSync(`${prefix}.state.json`, JSON.stringify({ phase: stage, ownerHash: checkpoint.ownerHash, deadlineAt: Date.now() - 1, ws: stage === "setup" ? null : join(directory, `interrupted-${stage}`), target: target("vault-reentrancy"), mode: "solo" }));
+    fs.writeFileSync(`${prefix}.state.json`, JSON.stringify({ phase: stage, ownerHash: checkpoint.ownerHash, deadlineAt: Date.now() - 1, demoResources: allowed.createDemoResources(`${prefix}.demo-resources.sqlite`), ws: stage === "setup" ? null : join(directory, `interrupted-${stage}`), target: target("vault-reentrancy"), mode: "solo" }));
   }
 } else if (phase === "missing") {
   const { b, idB } = JSON.parse(fs.readFileSync(stateFile, "utf8"));

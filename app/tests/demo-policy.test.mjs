@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { DEMO, demoConfig, demoEnvironment } from "../server/demo-config.mjs";
 import { createDemoHandler, demoRoute, demoSessions, demoStarts, sessionSecret } from "../server/demo-http.mjs";
 import { createDemoServerHandler, demoAssets, startDemoServer } from "../server/demo-server.mjs";
-import { armDemoDeadline, closeDemoRun, demoFence, demoProve, stopDemoWorker } from "../server/demo-lifecycle.mjs";
+import { armDemoDeadline, closeDemoRun, demoFence, demoProve } from "../server/demo-lifecycle.mjs";
 import { startServer } from "../server/start.mjs";
 
 const env = (stateDir) => ({ TOUCHSTONE_DEMO: "1", TOUCHSTONE_DEMO_ORIGIN: "https://touchstone.hem.so", TOUCHSTONE_DEMO_STATE_DIR: stateDir, SPEND_CAP_USD: "20", FLEET_MAX: "3" });
@@ -160,15 +160,12 @@ test("production serves only inventoried built files, injects demo metadata with
   writeFileSync(join(dist, "index.html"), '<html><head></head><script src="/src/main.tsx"></script></html>'); assert.throws(() => demoAssets(dist));
 });
 
-test("work deadline fences setup/proof, discards late proof and escalates only the captured worker", async () => {
+test("work deadline fences setup/proof, discards late proof and requests cancellation", async () => {
   let now = 1000; const run = { ownerHash: "a".repeat(64), deadlineAt: 1100 };
   assert.equal(demoFence(run, () => now), false);
   let calls = 0;
   assert.deepEqual(await demoProve(run, [1, 2], async (found) => { calls++; now = 1200; return found; }, () => now), []);
   assert.equal(calls, 1); assert.equal(run.stopping, true);
-  const child = new EventEmitter(), kills = []; Object.assign(child, { exitCode: null, signalCode: null, kill: (signal) => kills.push(signal) });
-  run.child = child; stopDemoWorker(run, 5); await new Promise((r) => setTimeout(r, 15)); assert.deepEqual(kills, ["SIGTERM", "SIGKILL"]);
-  kills.length = 0; stopDemoWorker(run, 5); run.child = {}; await new Promise((r) => setTimeout(r, 15)); assert.deepEqual(kills, ["SIGTERM"]);
   const timerRun = { id: "expired", ownerHash: "a".repeat(64), deadlineAt: Date.now() + 5 }; let stopped;
   armDemoDeadline(timerRun, (id) => { stopped = id; }); await new Promise((r) => setTimeout(r, 15)); assert.equal(stopped, "expired"); closeDemoRun(timerRun); assert.equal(timerRun.demoClosed, true);
 });

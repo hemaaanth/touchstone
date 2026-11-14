@@ -12,6 +12,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
 import { SOLC_VERSION, closeRun, daytonaOn, remoteDocker } from "./daytona.mjs";
+import { currentDemoResources, registerDemoDirectory, removeDemoDirectory, runDemoForge, settleDemoResources } from "./demo-resources.mjs";
 
 const IMG = "ghcr.io/foundry-rs/foundry:latest@sha256:3a392c18f9b16e665e932de159fb6fa9ed972c4b4352f2f76a1a8c7ca9b57d39";
 const SOLC = "0.8.38";
@@ -118,6 +119,12 @@ export function makeBriefWorkspace() {
 }
 
 export async function cleanupWorkspace(ws) {
+  const demo = currentDemoResources();
+  if (demo) {
+    await settleDemoResources(demo);
+    removeDemoDirectory(demo, ws);
+    return;
+  }
   rmSync(ws, { recursive: true, force: true });
   // A Daytona run leaves `<ws>.daytona.json` with its machine ids. Delete those
   // machines, and wait for it: a process that exits now would lose the ids.
@@ -148,7 +155,9 @@ export async function warmSolc(version) {
   // machine installs it before its next forge run (see warmFor). Warm the
   // local cache too: a call that falls back to local Docker needs solc there.
   if (daytonaOn()) remoteWarm.add(v);
-  const dir = mkdtempSync(join(tmpdir(), "solc-warm-"));
+  const demo = currentDemoResources();
+  let dir = mkdtempSync(join(tmpdir(), "solc-warm-"));
+  if (demo) dir = registerDemoDirectory(demo, dir);
   try {
     mkdirSync(join(dir, "src"), { recursive: true });
     writeFileSync(join(dir, "foundry.toml"), `[profile.default]\nsrc = "src"\nout = "out"\n`);
@@ -165,7 +174,8 @@ export async function warmSolc(version) {
     // offline proof compiles, which forge reports to the agent directly.
     return { version: v, ok: !r.timedOut };
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    if (demo) removeDemoDirectory(demo, dir);
+    else rmSync(dir, { recursive: true, force: true });
   }
 }
 
@@ -245,14 +255,17 @@ async function forgeRun(ws, args, timeoutMs) {
   return run(args, timeoutMs);
 }
 
-const run = (args, timeoutMs) =>
-  new Promise((resolve) => {
+const run = (args, timeoutMs) => {
+  const demo = currentDemoResources();
+  if (demo) return runDemoForge(demo, args, timeoutMs, FORGE_OUTPUT_CAP);
+  return new Promise((resolve) => {
     execFile("docker", args, { timeout: timeoutMs, maxBuffer: FORGE_OUTPUT_CAP }, (err, stdout, stderr) => {
       // Above maxBuffer, node kills the child and keeps only the first bytes.
       const overflow = err?.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER";
       resolve({ stdout: String(stdout), stderr: String(stderr), timedOut: err?.killed === true, code: err?.code ?? 0, overflow });
     });
   });
+};
 
 // The pinned Foundry image and solc cache volume, so a bundle README can print
 // the exact offline command and the replay verifier can run it.

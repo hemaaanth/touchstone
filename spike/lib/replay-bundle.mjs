@@ -24,6 +24,7 @@ import { fileURLToPath } from "node:url";
 import { redactSecrets } from "../../app/server/redact.mjs";
 import { Mnemonic, wordlists } from "ethers";
 import { pinnedSolc, forgeTest, forgeReplayCommand, forgePrepareCommand, FOUNDRY_IMAGE } from "./sandbox.mjs";
+import { currentDemoResources, registerDemoDirectory, removeDemoDirectory } from "./demo-resources.mjs";
 
 const MAX_FILE = 1_500_000;   // per file, checked by stat before any read
 const MAX_TOTAL = 8_000_000;  // bytes across the bundle
@@ -1451,10 +1452,12 @@ export async function verifyForgeReplay({ replay, proof, finding, recorded } = {
   if (!tree.haveProject) return { ...base, pass: false, reason: "the bundle has no foundry.toml and proof test" };
   const sf = shippedFiles(tree);
   const tree_ = treeHash(sf);
-  // A store's own check passes its private work folder; a direct call (a test)
-  // uses the system temp folder. Either way the folder goes in `finally`.
-  const dir = workDir ? join(workDir, `check-${randomBytes(6).toString("hex")}`) : mkdtempSync(join(tmpdir(), "replay-verify-"));
+  // A store check uses its private work folder; a direct call uses system temp.
+  // Demo keeps the directory when its registered resource cleanup is unresolved.
+  const demo = currentDemoResources();
+  let dir = workDir ? join(workDir, `check-${randomBytes(6).toString("hex")}`) : mkdtempSync(join(tmpdir(), "replay-verify-"));
   if (workDir) mkdirSync(dir, { mode: 0o700 });
+  if (demo) dir = registerDemoDirectory(demo, dir);
   try {
     for (const f of sf) {
       const abs = join(dir, f.path);
@@ -1478,7 +1481,8 @@ export async function verifyForgeReplay({ replay, proof, finding, recorded } = {
       : "the proof test did not pass from the bundle folder";
     return { ...base, pass, ms, tree: tree_, ...(reason ? { reason } : {}) };
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    if (demo) removeDemoDirectory(demo, dir);
+    else rmSync(dir, { recursive: true, force: true });
   }
 }
 
