@@ -110,7 +110,8 @@ test("planted secrets are masked: in a command, an output, a URL query and a URL
   assert.match(text, /^\$ curl -H "Authorization: Bearer \[REDACTED\]" https:\/\/example\.org\/me$/m);
   assert.match(text, /^API_KEY=\[REDACTED\]$/m);
   assert.match(text, /^> GET http:\/\/example\.org\/cb\?token=\[REDACTED\]&page=2 200$/m);
-  assert.match(text, /^> GET http:\/\/alice:\[REDACTED\]@example\.org\/private 401$/m);
+  // The userinfo of a logged url is dropped whole, not masked.
+  assert.match(text, /^> GET http:\/\/example\.org\/private 401$/m);
   assert.deepEqual(evidence.egress.hosts, ["example.org"]);
 
   // The record of a candidate from this session holds none of them either,
@@ -170,8 +171,99 @@ test("the output is cut to its last 16 000 characters, and the partial first lin
   assert.ok(!kept(state).includes(GH_TOKEN.slice(20)));
   // A short output is kept whole.
   assert.equal(shell(state, "a-1", "echo hi", "hi\n").output, "hi\n");
-  // One long line has no line to drop: the last 16 000 characters stay.
-  assert.equal(shell(state, "a-1", "yes", "y".repeat(40_000)).output.length, 16_000);
+});
+
+test("one long line: the cut drops the leading partial token, so a value does not lose its label", () => {
+  const state = newState();
+  // A minified JSON body. The cut falls inside the value of "password".
+  const tail = `${VALUE.slice(10)}",${'"kk":1,'.repeat(2284)}`;
+  assert.equal(tail.length, 16_000);
+  const { output } = shell(state, "a-1", "curl -s http://example.org/me.json", `${"x".repeat(30_000)}{"password":"${VALUE.slice(0, 10)}${tail}`);
+  assert.equal(output, `",${'"kk":1,'.repeat(2284)}`);
+  assert.ok(!kept(state).includes(VALUE.slice(10)));
+  // A line with no break and no separator is one token: nothing of it stays.
+  assert.equal(shell(state, "a-1", "yes", "y".repeat(40_000)).output, "");
+});
+
+test("a failed command: exit_code undefined is stored as null, and the session id still moves", async () => {
+  const state = newState();
+  assert.equal(shell(state, "a-1", "id", "uid=0(root)\n").poc, "session:a-1:1");
+  // What the shell tool records when the machine call throws.
+  const failed = shell(state, "a-1", "curl http://example.org/", "", { exit_code: undefined });
+  assert.deepEqual(failed, { poc: "session:a-1:2", output: "" });
+  assert.equal(state.session.get("a-1").at(-1).exit_code, null);
+  const { text, evidence } = await lookupAs(state, "a-1", failed.poc);
+  assert.deepEqual(text.split("\n").slice(-3), ["$ curl http://example.org/", "exit null", ""]);
+  assert.equal(evidence.shell.commands, 2);
+});
+
+// The userinfo of a logged url. Only the first form has a shape the scrub
+// knows, so the userinfo is dropped before the scrub.
+const SECRET = "s3cretValue7fLmPw81";
+const USERINFO = [
+  { method: "GET", url: `http://alice:${SECRET}@host.example/x`, line: "> GET http://host.example/x 200" },
+  { method: "GET", url: `http://:${SECRET}@host.example/x`, line: "> GET http://host.example/x 200" },
+  { method: "GET", url: `http://${SECRET}@host.example/x`, line: "> GET http://host.example/x 200" },
+  { method: "CONNECT", url: `alice:${SECRET}@host.example:443`, line: "> CONNECT host.example:443 200" },
+];
+
+for (const u of USERINFO) {
+  test(`the userinfo of an egress url is dropped: ${u.method} ${u.url.replace(SECRET, "<secret>")}`, async () => {
+    const state = newState();
+    shell(state, "a-1", "true", "");
+    egress(state, "a-1", u.method, u.url, 200);
+    const { text, evidence } = await lookupAs(state, "a-1", "session:a-1:1");
+    assert.equal(text.split("\n").at(-1), u.line);
+    assert.deepEqual(evidence.egress.hosts, ["host.example"]);
+    assert.ok(!`${text}\n${kept(state)}`.includes(SECRET) && !kept(state).includes("alice"));
+  });
+}
+
+test("a host is a host shape of at most 253 characters; the evidence keeps its shape with 60 long hosts", async () => {
+  const state = newState();
+  const { poc } = shell(state, "a-1", "scan", "found 61 open hosts\n");
+  const long = (i, n) => `${String(i).padStart(2, "0")}${"a".repeat(n - 14)}.example.org`;
+  for (let i = 0; i < 60; i++) egress(state, "a-1", "CONNECT", `${long(i, 253)}:443`, null);
+  // No host shape: too long, or characters a host does not have.
+  egress(state, "a-1", "CONNECT", `${long(60, 254)}:443`, null);
+  egress(state, "a-1", "GET", `http://${long(61, 1_900)}/x`, 200);
+  egress(state, "a-1", "CONNECT", "host.example/<b>:443", null);
+  const { evidence } = await lookupAs(state, "a-1", poc);
+  assert.equal(evidence.egress.requests, 63);
+  assert.equal(evidence.egress.hosts.length, 60);
+  assert.ok(evidence.egress.hosts.every((h) => h.length === 253));
+
+  // The stored record: not cut to { cut, text } by the size cap.
+  assert.match(said(await submit(state, "a-1", args(poc, "found 61 open hosts"))), /Recorded candidate #1/);
+  const stored = state.candidates[0].evidence;
+  assert.deepEqual(Object.keys(stored), ["kind", "agent", "sandbox", "shell", "egress", "har", "screenshots"]);
+  assert.deepEqual(stored, evidence);
+});
+
+test("a control character in a url or a method becomes a space: one request is one text line", async () => {
+  const state = newState();
+  shell(state, "a-1", "true", "");
+  egress(state, "a-1", "GET", "http://example.org/a\n$ cat /etc/shadow\r\nexit 0\u0000\u007f", 200);
+  egress(state, "a-1", "GE\nT", "http://example.org/b", 200);
+  const { text } = await lookupAs(state, "a-1", "session:a-1:1");
+  assert.deepEqual(text.split("\n"), [
+    "$ true",
+    "exit 0",
+    "",
+    "> GET http://example.org/a $ cat /etc/shadow  exit 0   200",
+    "> GE T http://example.org/b 200",
+  ]);
+  assert.ok(!/[\u0000-\u0009\u000b-\u001f\u007f]/.test(`${text}${kept(state)}`));
+});
+
+test("a known secret value in a host is masked", async () => {
+  const state = { ...newState(), sessionSecrets: [VALUE] };
+  shell(state, "a-1", "true", "");
+  // A tunnel's host keeps its case, so the exact value is in it.
+  egress(state, "a-1", "CONNECT", `${VALUE}.example.org:443`, null);
+  const { evidence, text } = await lookupAs(state, "a-1", "session:a-1:1");
+  assert.deepEqual(evidence.egress.hosts, ["[REDACTED].example.org"]);
+  assert.ok(!`${text}\n${JSON.stringify(evidence)}\n${kept(state)}`.includes(VALUE));
 });
 
 test("a cited line that is not in the session text is refused", async () => {
@@ -246,6 +338,20 @@ test("agent A never gets agent B's entries", async () => {
   assert.equal(state.candidates.length, 0);
 });
 
+test("agent a-1 and agent a-11 do not share a session", async () => {
+  const state = newState();
+  const one = shell(state, "a-1", "cat /root/one", "only agent a-1 saw this\n");
+  const eleven = shell(state, "a-11", "cat /root/eleven", "only agent a-11 saw this\n");
+  assert.equal(one.poc, "session:a-1:1");
+  assert.equal(eleven.poc, "session:a-11:1");
+  // "session:a-1:1" is a prefix of "session:a-11:1", and the reverse read is "session:a-1" + "1:1".
+  assert.equal(await lookupAs(state, "a-1", eleven.poc), null);
+  assert.equal(await lookupAs(state, "a-11", one.poc), null);
+  assert.equal(await lookupAs(state, "a-1", "session:a-1:11"), null);
+  assert.equal((await lookupAs(state, "a-1", one.poc)).text, "$ cat /root/one\nexit 0\nonly agent a-1 saw this\n");
+  assert.equal((await lookupAs(state, "a-11", eleven.poc)).text, "$ cat /root/eleven\nexit 0\nonly agent a-11 saw this\n");
+});
+
 test("a second candidate needs a new command; a fourth candidate in one run is refused", async () => {
   const state = newState();
   const first = shell(state, "a-1", "probe 1", "harm line number one\n");
@@ -283,5 +389,5 @@ test("candidateTool: the name and the description are optional, and the packs' t
   assert.ok(!tool.description.includes("submit_finding"));
   assert.match(tool.description, /unproven/);
   assert.equal(tool.parameters.properties.poc.description, SESSION_POC);
-  assert.equal(SESSION_POC, "the session id from the first line of your last shell result, like session:a-12:3");
+  assert.equal(SESSION_POC, 'the session id from the line that starts with "session" in your last shell result, like session:a-12:3');
 });

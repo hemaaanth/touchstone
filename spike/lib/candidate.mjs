@@ -661,7 +661,7 @@ export const EVIDENCE_POC = "the id of a lead whose evidence replay ran in this 
 // path, and makeCandidate sets `proven: false`.
 
 // The description text of the `poc` argument. `shell` prints the id.
-export const SESSION_POC = "the session id from the first line of your last shell result, like session:a-12:3";
+export const SESSION_POC = "the session id from the line that starts with \"session\" in your last shell result, like session:a-12:3";
 
 // The description of submit_session_candidate. A free-roam child has no
 // submit_finding, so the text does not name it.
@@ -676,22 +676,29 @@ const sessionId = (agent, list) => `session:${agent}:${shellsOf(list).length}`;
 
 // The last 16 000 characters. A cut can split a secret, and half a secret has
 // no shape a rule knows. So the first line after the cut, a partial one, is
-// dropped too.
-// shortcut: an output that is one line of more than 16 000 characters keeps
-// its cut head; upgrade when a real run shows such output with secrets in it.
+// dropped too. With no line break in the cut (one long line, like a minified
+// JSON body), the leading partial token is dropped.
 function lastOutput(output) {
   const all = String(output ?? "");
   if (all.length <= SESSION_OUTPUT) return all;
   const cut = all.slice(-SESSION_OUTPUT);
   const lineEnd = cut.indexOf("\n");
-  return lineEnd < 0 ? cut : cut.slice(lineEnd + 1);
+  return lineEnd < 0 ? cut.replace(/^[^\s"'&;,<>\\{}]+/, "") : cut.slice(lineEnd + 1);
 }
 
-// The host of one logged request. A tunnel's url is "<host>:<port>".
+// The host of one logged request. A tunnel's url is "<host>:<port>". A host is
+// a host shape of at most 253 characters, or it is "": the hosts go into the
+// stored evidence, and a long list would push it over capEvidence's size.
+const hostShape = (h) => (/^[A-Za-z0-9.\-_\[\]:]{1,253}$/.test(h) ? h : "");
 function hostOf(method, url) {
-  if (method === "CONNECT") return url.replace(/:\d+$/, "");
-  try { return new URL(url).hostname; } catch { return ""; }
+  if (method === "CONNECT") return hostShape(url.replace(/:\d+$/, ""));
+  try { return hostShape(new URL(url).hostname); } catch { return ""; }
 }
+
+// One logged value on one line: a control character becomes a space, so a
+// url cannot add a line to the session text. (The proxy log drops such lines
+// too; this is the second guard.)
+const oneLine = (v) => String(v ?? "").replace(/[\u0000-\u001f\u007f]/g, " ");
 
 // Store one entry of a free-roam child's session, scrubbed. Returns the
 // session id after this entry and, for a shell entry, the scrubbed output.
@@ -712,7 +719,10 @@ function hostOf(method, url) {
 // a value in a header with no secret name, a token in a URL path, a reset
 // link, `sshpass -p <value>`, a bare value on an output line, a base64 form.
 //
-// The steps, after the output is cut to its last 16 000 characters:
+// Before the steps: the output is cut to its last 16 000 characters. An
+// egress url loses its userinfo ("user:password@", also in a tunnel's
+// "<host>:<port>"), because a user-only or password-only form has no shape a
+// rule knows. The steps:
 //   1. Known secret values (state.sessionSecrets; empty until I5 fills it).
 //      shortcut: exact copies only. capture.mjs's holdsSecret (parts and
 //      encoded forms) is not used: capture.mjs loads the grant store. Upgrade
@@ -731,8 +741,8 @@ export function recordSession(state, entry) {
     const code = Number(entry.exit_code);
     e = { kind: "shell", t, sandbox: clean(entry.sandbox), command: clean(entry.command), exit_code: Number.isFinite(code) ? code : null, output: clean(lastOutput(entry.output)) };
   } else if (entry.kind === "egress") {
-    const method = String(entry.method ?? "").toUpperCase();
-    const url = String(entry.url ?? "");
+    const method = oneLine(entry.method).toUpperCase();
+    const url = oneLine(entry.url).replace(/^((?:[a-z][a-z0-9+.-]*:)?\/\/)?[^\/?#@]*@/i, "$1");
     e = { kind: "egress", t, method: clean(method), url: clean(url), host: clean(hostOf(method, url)), status: Number.isInteger(entry.status) ? entry.status : null };
   } else {
     throw new Error(`unknown session entry kind: ${String(entry.kind).slice(0, 40)}`);
