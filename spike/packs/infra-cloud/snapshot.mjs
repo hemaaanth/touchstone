@@ -1,4 +1,5 @@
-import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyWritable } from "../../lib/writable-copy.mjs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { isUtf8 } from "node:buffer";
@@ -57,6 +58,6 @@ export function prepareSnapshot(ws) {
 
 export function makeLabWorkspace() {
   const ws = mkdtempSync(join(tmpdir(), "touchstone-infra-"));
-  cpSync(new URL("./lab/", import.meta.url), ws, { recursive: true });
+  copyWritable(new URL("./lab/", import.meta.url), ws, { recursive: true });
   return ws;
 }

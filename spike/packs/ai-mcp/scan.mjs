@@ -1,3 +1,4 @@
+import { copyWritable } from "../../lib/writable-copy.mjs";
 // The AI and MCP prepass. It wraps two open-source tools and reads the result
 // as LEADS. A lead is a hint. Only a replayed request script that an oracle
 // accepts is a finding.
@@ -22,7 +23,7 @@
 //
 // All run through runTool() on the lab's private Docker network, or on the
 // scan network of a live run.
-import { chmodSync, cpSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runTool } from "../../lib/wrap.mjs";
@@ -174,7 +175,7 @@ const imagePresent = (image) => requireImage(image, LOCAL_BUILD[image]).then(() 
 export async function scanMcp({ net, baseUrl, token, garak, only, run = runTool, hasImage = imagePresent, timeoutMs = 120_000 } = {}) {
   const scratch = mkdtempSync(join(tmpdir(), "mcp-scan-"));
   chmodSync(scratch, 0o777);
-  cpSync(TEMPLATES, join(scratch, "templates"), { recursive: true });
+  copyWritable(TEMPLATES, join(scratch, "templates"), { recursive: true });
   const want = (e) => !only || only.includes(e);
   const jobs = {
     "mcp-inspector": () => run({

@@ -1,3 +1,4 @@
+import { copyWritable } from "./writable-copy.mjs";
 // The `fork` proof (F1 spike): prove a Keys/Safe finding against the REAL deployed
 // lab target, not against a target the attacker's PoC deploys itself.
 //
@@ -27,7 +28,7 @@
 // target you would point --fork-url at an archive RPC for the real chain, pinned to
 // a block, read-only; the same anchoring logic applies to the real contract address.
 import { execFile } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, cpSync, copyFileSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, copyFileSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
@@ -90,9 +91,9 @@ export async function startForkLab({ image = KEYS_IMAGE, mode = "keys", readyTim
     // Seed the lab's Foundry sources so observe.mjs's `forge build` can compile the
     // KeysLab/OpenModule artifacts it deploys (same inputs the real keys prepass uses:
     // src + lib + foundry.toml; out/cache/oracle are excluded and rebuilt in-container).
-    cpSync(join(KEYS_LAB, "src"), join(labWs, "src"), { recursive: true });
-    cpSync(join(KEYS_LAB, "lib"), join(labWs, "lib"), { recursive: true });
-    cpSync(join(KEYS_LAB, "foundry.toml"), join(labWs, "foundry.toml"));
+    copyWritable(join(KEYS_LAB, "src"), join(labWs, "src"), { recursive: true });
+    copyWritable(join(KEYS_LAB, "lib"), join(labWs, "lib"), { recursive: true });
+    copyWritable(join(KEYS_LAB, "foundry.toml"), join(labWs, "foundry.toml"));
     // Container runs as the host uid so it can write the observation into the mount.
     const netRun = await createLabNetwork(net, ["--internal"], { docker });
     if (netRun.code !== 0) throw new Error(`startForkLab: network create failed: ${netRun.stderr.trim().slice(0, 300)}`);
@@ -165,7 +166,7 @@ function seedPoc(ws, source) {
   mkdirSync(join(ws, "lib"), { recursive: true });
   mkdirSync(join(ws, "test"), { recursive: true });
   mkdirSync(join(ws, "src"), { recursive: true });
-  cpSync(FORGE_STD, join(ws, "lib", "forge-std"), { recursive: true });
+  copyWritable(FORGE_STD, join(ws, "lib", "forge-std"), { recursive: true });
   // copyFileSync (not cpSync) so a symlinked host CA path (e.g. ca-certificates.crt
   // -> /etc/ca-certificates/extracted/...) is dereferenced to its real bytes. A
   // copied symlink would dangle inside the container, where the target does not

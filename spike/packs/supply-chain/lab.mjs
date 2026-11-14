@@ -1,4 +1,5 @@
-import { cpSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { copyWritable } from "../../lib/writable-copy.mjs";
+import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -7,7 +8,7 @@ import { makeCosignLab } from "./cosign-lab.mjs";
 
 export async function makeLabWorkspace() {
   const ws = mkdtempSync(join(tmpdir(), "touchstone-supply-"));
-  cpSync(new URL("./lab/", import.meta.url), ws, { recursive: true });
+  copyWritable(new URL("./lab/", import.meta.url), ws, { recursive: true });
   // Touchstone's own .gitignore ignores node_modules/, so the plant is stored in lab/plant.
   // The lab workspace is a separate Git repo with no .gitignore. node_modules is committed there, so the scan reads it.
   mkdirSync(join(ws, "node_modules"));

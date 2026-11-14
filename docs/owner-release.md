@@ -140,6 +140,16 @@ bun --no-env-file test spike/test/reach-confine-release.test.mjs
 
 This test copies only proxy source modules into an owner-only temporary directory. It starts disposable containers on internal Docker networks, reaches a fake allowed website, and checks that an unlisted host is blocked. It never pulls images, reads real stores or credentials, or calls external services. It skips when Docker or the pinned image is unavailable, or when the source owner is root. Passing this test proves the sealed-source proxy boundary, not a complete owner run.
 
+Before a cutover, check workspace preparation against the actual prepared release:
+
+```sh
+TOUCHSTONE_TEST_RELEASE=/absolute/private/releases/FULL_SHA node --experimental-test-module-mocks --test spike/test/packaged-workspaces.test.mjs
+```
+
+This prepares and removes every built-in demo workspace in private scratch. It
+runs no scanners or inference. Disposable copies must be owner-writable even
+when release files are sealed; source permissions and symlink targets stay unchanged.
+
 Sealed source templates also retain read-only directory modes when copied.
 The web scanner makes only its disposable template copy writable so cleanup
 cannot discard completed scan results. Source permissions stay unchanged.

@@ -1,3 +1,4 @@
+import { copyWritable } from "./writable-copy.mjs";
 // Per-run Foundry sandbox. Each run gets its own copy of the target repo, so the
 // agent's writes never touch the real lab and runs are isolated (decision 2:
 // one Docker sandbox per run). Runs are offline: --network none plus a warmed
@@ -5,7 +6,7 @@
 //   docker volume create foundry-svm
 //   docker run --rm -u 0 --entrypoint sh -v foundry-svm:/svm IMG -c 'chown 1000:1000 /svm'
 //   (cd lab/vault-reentrancy && docker run --rm -v foundry-svm:/home/foundry/.svm -v "$PWD":/work -w /work IMG 'forge build')
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -79,18 +80,18 @@ export function makeWorkspace(targetDir) {
     // Skip by top-level name only: a nested `out` or `cache` may be real source.
     // Compare resolved paths, so "lab/x/" or a relative path still skips oracle/.
     const root = resolve(targetDir);
-    cpSync(root, ws, {
+    copyWritable(root, ws, {
       recursive: true,
       filter: (src) => !(resolve(dirname(src)) === root && SKIP_DIRS.has(basename(src))),
     });
     return ws;
   }
-  cpSync(join(targetDir, "src"), join(ws, "src"), { recursive: true });
-  cpSync(join(targetDir, "lib"), join(ws, "lib"), { recursive: true });
-  cpSync(join(targetDir, "foundry.toml"), join(ws, "foundry.toml"));
-  if (existsSync(cfgFile)) cpSync(cfgFile, join(ws, ".touchstone.json"));
+  copyWritable(join(targetDir, "src"), join(ws, "src"), { recursive: true });
+  copyWritable(join(targetDir, "lib"), join(ws, "lib"), { recursive: true });
+  copyWritable(join(targetDir, "foundry.toml"), join(ws, "foundry.toml"));
+  if (existsSync(cfgFile)) copyWritable(cfgFile, join(ws, ".touchstone.json"));
   // A target's own test/ holds its property suites (Halmos check_ functions).
-  if (existsSync(join(targetDir, "test"))) cpSync(join(targetDir, "test"), join(ws, "test"), { recursive: true });
+  if (existsSync(join(targetDir, "test"))) copyWritable(join(targetDir, "test"), join(ws, "test"), { recursive: true });
   mkdirSync(join(ws, "test"), { recursive: true });
   return ws;
 }
@@ -108,7 +109,7 @@ export function makeBriefWorkspace() {
   mkdirSync(join(ws, "src"), { recursive: true });
   mkdirSync(join(ws, "test"), { recursive: true });
   mkdirSync(join(ws, "vendor"), { recursive: true });
-  cpSync(FORGE_STD_SRC, join(ws, "lib", "forge-std"), { recursive: true });
+  copyWritable(FORGE_STD_SRC, join(ws, "lib", "forge-std"), { recursive: true });
   writeFileSync(
     join(ws, "foundry.toml"),
     `[profile.default]\nsrc = "src"\ntest = "test"\nout = "out"\nlibs = ["lib", "vendor"]\n`,

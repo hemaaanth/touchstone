@@ -1,3 +1,4 @@
+import { copyWritable } from "./writable-copy.mjs";
 // The `txreplay` proof (F1, sound model): prove a Keys/Safe finding against the REAL
 // harness-deployed target using ONLY signed transactions the chain actually executes.
 //
@@ -46,7 +47,7 @@
 // sandbox whose only RPC is this same read-only proxy and emits the same signed-tx list;
 // the submit + measure path below is unchanged.
 import { execFile } from "node:child_process";
-import { mkdtempSync, rmSync, cpSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomBytes, createHash } from "node:crypto";
@@ -194,9 +195,9 @@ export async function startTxLab({ image = KEYS_IMAGE, mode = "keys", readyTimeo
   let observeHash;
   try {
     // Seed the Foundry sources observe.mjs compiles + deploys (src + lib + foundry.toml).
-    cpSync(join(KEYS_LAB, "src"), join(labWs, "src"), { recursive: true });
-    cpSync(join(KEYS_LAB, "lib"), join(labWs, "lib"), { recursive: true });
-    cpSync(join(KEYS_LAB, "foundry.toml"), join(labWs, "foundry.toml"));
+    copyWritable(join(KEYS_LAB, "src"), join(labWs, "src"), { recursive: true });
+    copyWritable(join(KEYS_LAB, "lib"), join(labWs, "lib"), { recursive: true });
+    copyWritable(join(KEYS_LAB, "foundry.toml"), join(labWs, "foundry.toml"));
     observeHash = createHash("sha256").update(readFileSync(OBSERVE_SRC)).digest("hex");
   } catch (e) {
     rmSync(labWs, { recursive: true, force: true });

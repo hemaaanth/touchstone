@@ -1,3 +1,4 @@
+import { copyWritable } from "../../lib/writable-copy.mjs";
 // The Web pack's prepass scan: three open-source tools run in Docker through
 // runTool(), and their output becomes LEADS. A lead is never a finding. Only a
 // replayed request script that the oracle accepts is a finding.
@@ -10,7 +11,7 @@
 // URL `baseUrl`. For the lab these come from startLab(). For a granted live
 // target the platform scope proxy supplies the same two values. This file never
 // opens a connection of its own.
-import { chmodSync, cpSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runTool } from "../../lib/wrap.mjs";
@@ -160,9 +161,7 @@ export async function scanWeb({ net, baseUrl, urls = [], only, run = runTool, ti
   const scratch = mkdtempSync(join(tmpdir(), "web-scan-"));
   // ZAP runs as its own image user (uid 1000), so the scratch dir must be writable by it.
   chmodSync(scratch, 0o777);
-  cpSync(TEMPLATES, join(scratch, "templates"), { recursive: true });
-  // Sealed source directories are 0500; only the disposable copy needs write access for cleanup.
-  chmodSync(join(scratch, "templates"), 0o700);
+  copyWritable(TEMPLATES, join(scratch, "templates"), { recursive: true });
   const want = (e) => !only || only.includes(e);
 
   const jobs = {

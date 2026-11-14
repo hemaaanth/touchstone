@@ -1,3 +1,4 @@
+import { copyWritable } from "../../lib/writable-copy.mjs";
 // Start and stop the offline lab: CoreDNS plus the web server on a Docker --internal network.
 // The network has no route to the internet. Only the lab containers and tool containers join it.
 //
@@ -11,7 +12,7 @@
 // the network and every container on it; lib/temp-dirs.mjs removes the copy.
 import { execFile, execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { cpSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -72,7 +73,7 @@ export function makeLabCopy(lab, ips, canon = CANON, prefix = 'touchstone-domain
   const copy = trackTempDir(mkdtempSync(join(tmpdir(), prefix)));
   // The caller gets no path to remove if this throws, so remove it here.
   try {
-    cpSync(lab, copy, { recursive: true });
+    copyWritable(lab, copy, { recursive: true });
     rewriteLabDir(copy, ips, canon);
   } catch (e) {
     removeTempDir(copy);
