@@ -135,6 +135,23 @@ test("safe Ask receipts come only from the frozen submitted candidate after exac
   } finally { await f.end() }
 })
 
+test("Ask receipts omit Markdown and quoted relative capabilities without editing the model reply", async () => {
+  for (const reply of ['Open [viewer](/preview/private-capability)', 'Open "/preview/private-capability"', 'Open [viewer](../preview/private-capability)', "Open './preview/private-capability'", 'Open //viewer.example/private-capability']) {
+    const f = fixture({ timeoutMs: 100 })
+    try {
+      f.api.consume(f.run, f.child, "epoch-1", ask())
+      const pending = f.api.answer("r1", { ask: "ask-1", reply })
+      await tick()
+      f.api.consume(f.run, f.child, "epoch-1", { ev: "ask-answered", id: "ask-1", agent: "a-1", answer: "reply" })
+      const accepted = await pending
+      expect(accepted.receipt.text).toContain("[URL omitted]")
+      expect(accepted.receipt.text).not.toContain("private-capability")
+      expect(JSON.stringify(f.events)).not.toContain("private-capability")
+      expect(f.lines[0].reply).toBe(reply)
+    } finally { await f.end() }
+  }
+})
+
 test("late category-only acknowledgement cannot certify different retry text", async () => {
   const f = fixture()
   try {

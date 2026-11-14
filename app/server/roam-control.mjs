@@ -44,7 +44,7 @@ function askReceipt(ask, candidate) {
   // This is intended chat content, not a secret-entry log. The existing scrubber
   // cannot detect arbitrary secrets; omit URL values, including relative paths.
   const text = candidate.answer === "reply"
-    ? redactSecrets(candidate.reply.replace(/\b[a-z][a-z0-9+.-]*:[^\s<>"']+|\bwww\.[^\s<>"']+|(?<!\S)\/[^\s<>"']+/gi, "[URL omitted]")).slice(0, 4000)
+    ? redactSecrets(candidate.reply.replace(/\b[a-z][a-z0-9+.-]*:[^\s<>"']+|\bwww\.[^\s<>"']+|(?<![\w])(?:\.{1,2}\/|\/)[^\s<>"']+/gi, "[URL omitted]")).slice(0, 4000)
     : undefined
   return { id: ask.id, agent: ask.agent, answer: candidate.answer, ...(text !== undefined ? { text } : {}) }
 }
