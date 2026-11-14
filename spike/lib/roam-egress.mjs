@@ -36,6 +36,8 @@ const shq = (s) => `'${s.replace(/'/g, `'\\''`)}'`;
 const PORT_ANSWERS = `node -e ${shq(`require("net").connect(${PORT},"127.0.0.1").on("connect",()=>process.exit(0)).on("error",()=>process.exit(1))`)}`;
 // Without the redirect, the call can wait for the proxy process to end.
 // The pull needs base64: without it every pull would be empty, with no error.
+// Safe to run again on a machine where the proxy already runs: the second copy
+// cannot take the port and ends, the first keeps serving, the file is only appended to.
 const START = `sh -c ${shq(`(nohup node ${SCRIPT} ${PORT} ${LOG} >/dev/null 2>&1 &); command -v base64 >/dev/null || exit 1; for i in $(seq 1 20); do ${PORT_ANSWERS} && exit 0; sleep 1; done; exit 1`)}`;
 // base64 keeps the bytes exact, so the read offset stays a byte offset
 // whatever the file holds. `tail -c +N` counts from 1.

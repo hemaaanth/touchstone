@@ -10,7 +10,7 @@
 //   node --test spike/test/roam-egress.test.mjs
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import http from "node:http";
 import net from "node:net";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -176,6 +176,36 @@ test("the real proxy on 127.0.0.1: start, one HTTP request and one CONNECT, both
     // and the old lines do not come back.
     await startEgressLog(m);
     assert.deepEqual(await pullEgressLog(m), []);
+  } finally {
+    await new Promise((r) => target.close(r));
+  }
+});
+
+test("startEgressLog twice on one machine: the first proxy keeps serving and the log file is not cut", async () => {
+  const target = http.createServer((req, res) => res.end("ok"));
+  await new Promise((r) => target.listen(0, "127.0.0.1", r));
+  const base = `http://127.0.0.1:${target.address().port}`;
+  const port = await freePort();
+  const m = localMachine("m-again", port);
+  // The processes that run this machine's proxy script on this port.
+  const copies = () => spawnSync("ps", ["-eo", "args"], { encoding: "utf8" }).stdout.split("\n")
+    .filter((l) => l.includes(`${join(dir, "m-again", "egress-log.mjs")} ${port} `)).length;
+  try {
+    await startEgressLog(m);
+    assert.equal((await viaProxy(port, "GET", `${base}/before`)).status, 200);
+    const old = readFileSync(m.log, "utf8");
+    assert.equal(old.trim().split("\n").length, 1);
+    assert.equal(copies(), 1);
+
+    await startEgressLog(m); // the port answers, so the call returns
+    assert.deepEqual(m.uploads, ["/tmp/touchstone-egress-log.mjs", "/tmp/touchstone-egress-log.mjs"]);
+    await until(() => copies() === 1, "the second copy ended");
+    assert.equal((await viaProxy(port, "GET", `${base}/after`)).status, 200);
+
+    const file = readFileSync(m.log, "utf8");
+    assert.ok(file.startsWith(old), "the old line is still there, unchanged");
+    assert.deepEqual(file.trim().split("\n").map((l) => JSON.parse(l).url), [`${base}/before`, `${base}/after`]);
+    assert.deepEqual((await pullEgressLog(m)).map((r) => r.url), [`${base}/before`, `${base}/after`]);
   } finally {
     await new Promise((r) => target.close(r));
   }
