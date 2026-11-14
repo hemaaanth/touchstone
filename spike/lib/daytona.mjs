@@ -1046,7 +1046,13 @@ async function controlCall(c, method, url, body, limit = CONTROL_LIMIT, raw = fa
 function desktopInput(bytes) {
   if (!(bytes instanceof Uint8Array) || bytes.byteLength === 0 || bytes.byteLength > DESKTOP_LIMIT) controlFail();
   const input = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
-  if (["configure", "status", "close"].includes(input?.action) && exactKeys(input, ["action"])) return input;
+  if (["configure", "status", "close", "clear-review"].includes(input?.action) && exactKeys(input, ["action"])) return input;
+  if (input?.action === "review-image") {
+    if (!exactKeys(input, ["action", "path", "sha256"]) || typeof input.path !== "string" || input.path !== input.path.trim() ||
+        !/^\/var\/lib\/touchstone\/session\/shot-(?:[1-9]|1[0-2])\.png$/.test(input.path) ||
+        typeof input.sha256 !== "string" || input.sha256.length !== 64 || !/^[a-f0-9]{64}$/.test(input.sha256)) controlFail();
+    return input;
+  }
   if (input?.action !== "open" || !exactKeys(input, ["action", "previewOrigin", "appOrigins", "token", "viewOnly"]) ||
       !controlOrigin(input.previewOrigin) || !Array.isArray(input.appOrigins) || input.appOrigins.length !== 1 ||
       !controlOrigin(input.appOrigins[0]) || typeof input.token !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(input.token) || typeof input.viewOnly !== "boolean") controlFail();
@@ -1054,6 +1060,15 @@ function desktopInput(bytes) {
 }
 
 function desktopOutput(output, input) {
+  if (input.action === "review-image") {
+    if (!exactKeys(output, ["kind", "sha256", "bytes"]) || output.kind !== "review-image" ||
+        output.sha256 !== input.sha256 || !Number.isInteger(output.bytes) || output.bytes < 1 || output.bytes > 5 * 1024 * 1024) controlFail();
+    return output;
+  }
+  if (input.action === "clear-review") {
+    if (!exactKeys(output, ["kind"]) || output.kind !== "review-cleared") controlFail();
+    return output;
+  }
   const keys = output?.kind === "closed" ? ["kind"] : output?.kind === "configured" ? ["kind", "port", "expires"] : ["kind", "port", "expires", "viewOnly"];
   if (!exactKeys(output, keys) || !["closed", "configured", "open"].includes(output.kind)) controlFail();
   if (output.kind !== "closed" && (!controlPort(output.port) || !Number.isSafeInteger(output.expires) || output.expires <= Date.now() || output.expires > Date.now() + 900_000)) controlFail();
