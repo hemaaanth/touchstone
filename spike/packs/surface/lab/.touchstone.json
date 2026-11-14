@@ -1,5 +1,6 @@
 {
   "pack": "surface",
+  "title": "Service Gateway",
   "kind": "lab",
   "evidenceSnapshot": {
     "file": "snapshot.json",

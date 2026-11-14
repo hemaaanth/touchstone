@@ -1,4 +1,4 @@
-{"t":1794387600000,"ev":"scope","scope":{"id":"vault-multi","title":"FeeVault · full audit","kind":"lab","pack":"contracts","blurb":"A fee-charging ETH vault with an owner.","entry":"src/FeeVault.sol"}}
+{"t":1794387600000,"ev":"scope","scope":{"id":"vault-multi","title":"FeeVault","kind":"lab","pack":"contracts","blurb":"A fee-charging ETH vault with an owner.","entry":"src/FeeVault.sol"}}
 {"t":1794387600000,"ev":"budget","usd":5}
 {"t":1794387600000,"ev":"status","status":"running","pending":null,"decision":null}
 {"t":1794387600000,"ev":"opened","mode":"run"}

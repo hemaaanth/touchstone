@@ -97,7 +97,7 @@ const SANDBOX_FOUNDRY = {
 export const TARGETS = [
   {
     id: "vault-reentrancy",
-    title: "Vault · reentrancy",
+    title: "Vault",
     kind: "lab",
     blurb: "A simple ETH vault with a classic reentrancy in withdraw(): it sends ETH before zeroing the balance, so an attacker contract can re-enter and drain it.",
     entry: "src/Vault.sol",
@@ -107,7 +107,7 @@ export const TARGETS = [
   },
   {
     id: "vault-accounting",
-    title: "YieldVault · insolvency",
+    title: "YieldVault",
     kind: "lab",
     blurb: "A yield vault whose withdrawal bonus is mis-scaled (1% instead of 0.01%) and uncapped, so ordinary deposit/withdraw cycles drain the buffer and eat other users' principal.",
     entry: "src/YieldVault.sol",
@@ -117,7 +117,7 @@ export const TARGETS = [
   },
   {
     id: "vault-multi",
-    title: "FeeVault · full audit",
+    title: "FeeVault",
     kind: "lab",
     blurb: "A fee-charging ETH vault with an owner. It holds several bugs of different severity; a complete audit should prove every one, worst first.",
     entry: "src/FeeVault.sol",
@@ -127,7 +127,7 @@ export const TARGETS = [
   },
   {
     id: "vault-shares",
-    title: "ShareVault · share math",
+    title: "ShareVault",
     kind: "lab",
     blurb: "A share vault that ships its own property suite. withdraw rounds the shares it burns down, so small withdrawals are free; redeem books shares as assets, so the vault turns insolvent after yield.",
     entry: "src/ShareVault.sol",
@@ -137,7 +137,7 @@ export const TARGETS = [
   },
   {
     id: "vault-bytecode",
-    title: "Vault · bytecode only",
+    title: "BytecodeVault",
     kind: "lab",
     blurb: "A vault that ships only as deployed bytecode (src/<Name>.runtime.hex) with a stub that installs it; no vault source. The source tools see nothing, but Mythril reads the bytecode and flags an unprotected sweep(address) that drains the vault.",
     entry: "src/BytecodeVault.sol",

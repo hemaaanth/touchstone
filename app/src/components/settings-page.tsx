@@ -835,30 +835,29 @@ function DaytonaInfo() {
   )
 }
 
-// The in-use backend says so; the other one has a Use button.
+// Both backends keep the same control geometry; pressed means selected.
 function UseControl({ on, name, disabled, onUse }: { on: boolean; name: string; disabled: boolean; onUse: () => Promise<unknown> | void }) {
   const [busy, setBusy] = useState(false)
-  if (on) {
-    return (
-      <span className="flex items-center gap-1.5 text-xs whitespace-nowrap text-muted-foreground">
-        <Check className="size-3.5" /> In use
-      </span>
-    )
-  }
   return (
     <Button
-      variant="outline"
+      variant={on ? "secondary" : "outline"}
       size="sm"
+      className="w-20"
+      aria-pressed={on}
       disabled={disabled || busy}
       aria-label={`Use ${name}`}
       onClick={async (e) => {
         e.stopPropagation()
+        if (on) return
         setBusy(true)
-        await onUse()
-        setBusy(false)
+        try {
+          await onUse()
+        } finally {
+          setBusy(false)
+        }
       }}
     >
-      {busy ? <Loader2 className="animate-spin" /> : null} Use
+      {busy ? <Loader2 className="animate-spin" /> : null} {on ? "Selected" : "Use"}
     </Button>
   )
 }
@@ -883,7 +882,7 @@ function ExecutionSection({
           icon={<Container />}
           title="Local Docker"
           meta={["Tools run on this machine"]}
-          trailing={<UseControl on={ex.backend === "local"} name="Local Docker" disabled={fixed} onUse={() => onUse("local")} />}
+          trailing={<div className="grid grid-cols-[5rem_3rem] items-center gap-2"><UseControl on={ex.backend === "local"} name="Local Docker" disabled={fixed} onUse={() => onUse("local")} /></div>}
         />
         <ListRow
           icon={<Cloud />}
@@ -896,13 +895,16 @@ function ExecutionSection({
           }
           meta={["Tools run on remote machines, one per run"]}
           trailing={
-            <UseControl
-              on={ex.backend === "daytona"}
-              name="Daytona"
-              disabled={fixed}
-              // With no key, Use opens the form first.
-              onUse={() => (ex.key.set ? onUse("daytona") : onOpenDaytona(true))}
-            />
+            <div className="grid grid-cols-[5rem_3rem] items-center gap-2">
+              <UseControl
+                on={ex.backend === "daytona"}
+                name="Daytona"
+                disabled={fixed}
+                // With no key, Use opens the form first.
+                onUse={() => (ex.key.set ? onUse("daytona") : onOpenDaytona(true))}
+              />
+              <Button variant="ghost" size="sm" aria-label="Edit Daytona settings" onClick={(e) => { e.stopPropagation(); onOpenDaytona(false) }}>Edit</Button>
+            </div>
           }
           onOpen={() => onOpenDaytona(false)}
         />

@@ -1,5 +1,5 @@
 {
   "pack": "web",
-  "title": "Web and sign-in lab",
+  "title": "Wallet Portal",
   "blurb": "A practice dApp backend with SIWE sign-in and a small REST API on a private network. It plants a replayable sign-in, a wallet ownership gap, an exposed debug route and a reflected XSS."
 }

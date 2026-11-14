@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils"
 import { Dialog, DialogClose, DialogContent, DialogTitle } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 
 const RANDOM = "random"
 const DEFAULT_BUDGET = "5.00"
@@ -18,9 +19,8 @@ const MODES: { value: RunMode; label: string; hint: string }[] = [
 const MODE_KEY = "ts.runMode"
 
 // The New Run window picks the scope, its modules, Fleet or Solo, and budget.
-// A scope allows one or more modules. Nothing is assumed: the operator ticks the
-// modules to run, and each ticked module is its own run. The model is the
-// server's default (the first in the list), so there is no model picker.
+// A scope allows one or more modules; the selected modules share one run.
+// The model is the server's default, so there is no model picker.
 // "Random" omits targetId, so the server picks and repeat runs do not re-break
 // one bug. Scopes are added on the Scopes page.
 export function NewRunDialog({
@@ -49,6 +49,7 @@ export function NewRunDialog({
   const runnable = targets.filter((t) => t.runnable && allowed(t).length > 0)
   const [scopeId, setScopeId] = useState(RANDOM)
   const [ticked, setTicked] = useState<string[]>([])
+  const [modulesMissing, setModulesMissing] = useState(false)
   const [budget, setBudget] = useState(DEFAULT_BUDGET)
   // The last choice sticks, so an operator who runs fleets keeps getting one.
   const [mode, setModeState] = useState<RunMode>(() => (localStorage.getItem(MODE_KEY) === "solo" ? "solo" : "fleet"))
@@ -59,15 +60,19 @@ export function NewRunDialog({
   }
 
   const scope = runnable.find((t) => t.id === scopeId) ?? null
-  const eligible = scope ? allowed(scope) : []
+  const eligible = scope ? allowed(scope) : packs.filter((p) => p.id === DEFAULT_PACK)
   // A scope with one module needs no tick. A random scope runs the default module.
   const modules = !scope ? [DEFAULT_PACK] : eligible.length === 1 ? [eligible[0].id] : eligible.filter((p) => ticked.includes(p.id)).map((p) => p.id)
   const budgetN = Number(budget.replace(/^\$/, "").trim())
   const budgetOk = Number.isFinite(budgetN) && budgetN >= 0.01 && budgetN <= 1000
-  const canStart = alias !== "" && runnable.length > 0 && !busy && budgetOk && modules.length > 0
+  const canStart = alias !== "" && runnable.length > 0 && !busy && budgetOk
 
   const submit = () => {
     if (!canStart) return
+    if (modules.length === 0) {
+      setModulesMissing(true)
+      return
+    }
     onStart(alias, scope?.id, budgetN, modules, mode, { freeRoam: mode === "fleet" && freeRoam, options: [] })
   }
 
@@ -80,16 +85,14 @@ export function NewRunDialog({
       : runnable.length === 0
         ? "No runnable scopes are available right now."
         : error
-  // Not an error: the Start button waits for a tick.
-  const hint = !notice && scope && modules.length === 0 ? "Tick the modules to run." : null
 
   const label = "text-[11px] leading-[15px] font-semibold tracking-[0.06em] text-muted-foreground"
   const field = "h-9 w-full rounded-lg border-input bg-background px-3 text-[13px]"
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="gap-0 overflow-hidden p-0 sm:max-w-[440px]" showCloseButton={false}>
-        <div className="flex h-12 items-center border-b px-5">
+      <DialogContent className="flex max-h-[calc(100svh-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-[440px]" showCloseButton={false}>
+        <div className="flex h-12 shrink-0 items-center border-b px-5">
           <DialogTitle className="text-sm font-semibold">New run</DialogTitle>
           <DialogClose
             render={<Button variant="ghost" size="icon-sm" className="-mr-2 ml-auto text-muted-foreground" />}
@@ -100,7 +103,7 @@ export function NewRunDialog({
         </div>
 
         <form
-          className="flex flex-col gap-4 px-5 pt-4 pb-5"
+          className="flex min-h-0 flex-col gap-4 overflow-y-auto px-5 pt-4 pb-5"
           onSubmit={(e) => {
             e.preventDefault()
             submit()
@@ -115,6 +118,7 @@ export function NewRunDialog({
                 if (!v) return
                 setScopeId(String(v))
                 setTicked([])
+                setModulesMissing(false)
               }}
             >
               <SelectTrigger className={field} aria-labelledby="new-run-scope">
@@ -130,28 +134,26 @@ export function NewRunDialog({
             </Select>
           </div>
 
-          {scope ? (
             <div className="flex flex-col gap-1.5" role="group" aria-labelledby="new-run-modules">
               <span className={label} id="new-run-modules">MODULES</span>
-              <div className="flex flex-col rounded-lg border border-input bg-background py-1">
+              <div className="flex h-28 shrink-0 flex-col overflow-y-auto rounded-lg border border-input bg-background py-1">
                 {eligible.map((p) => (
-                  <label key={p.id} className={cn("flex h-8 items-center gap-2.5 px-3 text-[13px]", eligible.length > 1 && "cursor-pointer")}>
+                  <label key={p.id} className={cn("flex h-8 shrink-0 items-center gap-2.5 px-3 text-[13px]", eligible.length > 1 && "cursor-pointer")}>
                     <input
                       type="checkbox"
                       checked={modules.includes(p.id)}
                       disabled={busy || eligible.length === 1}
-                      onChange={(e) => setTicked((list) => (e.target.checked ? [...list, p.id] : list.filter((id) => id !== p.id)))}
+                      onChange={(e) => {
+                        setModulesMissing(false)
+                        setTicked((list) => (e.target.checked ? [...list, p.id] : list.filter((id) => id !== p.id)))
+                      }}
                       className="size-3.5 shrink-0 accent-foreground"
                     />
                     {p.title}
                   </label>
                 ))}
               </div>
-              {modules.length > 1 ? (
-                <span className="text-xs text-muted-foreground">One run covers {plural(modules.length, "module")}.</span>
-              ) : null}
             </div>
-          ) : null}
 
           <div className="flex flex-col gap-1.5">
             <span className={label} id="new-run-mode">AGENTS</span>
@@ -178,13 +180,17 @@ export function NewRunDialog({
                 </button>
               ))}
             </div>
-            <span className="text-xs text-muted-foreground">{MODES.find((m) => m.value === mode)?.hint}</span>
+            <div className="grid text-xs text-muted-foreground">
+              {MODES.map((m) => (
+                <span key={m.value} aria-hidden={mode !== m.value} className={cn("col-start-1 row-start-1", mode !== m.value && "invisible")}>{m.hint}</span>
+              ))}
+            </div>
           </div>
 
-          {mode === "fleet" ? <fieldset className="flex flex-col gap-2 text-xs">
-            <label className="flex items-center gap-2"><input type="checkbox" checked={freeRoam} disabled={busy} onChange={(e) => setFreeRoam(e.target.checked)} />Allow free-roam agents</label>
+          <fieldset disabled={busy || mode !== "fleet"} aria-hidden={mode !== "fleet"} className={cn("flex flex-col gap-2 text-xs", mode !== "fleet" && "invisible")}>
+            <label className="flex items-center gap-2"><input type="checkbox" checked={freeRoam} onChange={(e) => setFreeRoam(e.target.checked)} />Allow free-roam agents</label>
             <p className="text-muted-foreground">Free-roam agents use a remote sandbox. Their session candidates remain unproven.</p>
-          </fieldset> : null}
+          </fieldset>
 
           <label className="flex flex-col gap-1.5">
             <span className={label}>BUDGET</span>
@@ -202,20 +208,24 @@ export function NewRunDialog({
                 onChange={(e) => setBudget(e.target.value)}
                 aria-label="Budget for this run in USD"
               />
-              <span className="shrink-0 text-muted-foreground/60">{modules.length > 1 ? "One budget, shared" : "Run stops at this limit"}</span>
+              <span className="shrink-0 text-muted-foreground/60">Run stops at this limit</span>
             </span>
           </label>
 
           {notice ? <p className="text-xs text-bad">{notice}</p> : null}
-          {hint ? <p className="text-xs text-muted-foreground">{hint}</p> : null}
         </form>
 
-        <div className="flex items-center justify-end gap-2 border-t px-5 py-3.5">
+        <div className="flex shrink-0 items-center justify-end gap-2 border-t px-5 py-3.5">
           <DialogClose render={<Button variant="outline" />}>Cancel</DialogClose>
-          <Button onClick={submit} disabled={!canStart}>
-            {busy ? <Loader2 className="animate-spin" /> : null}
-            {modules.length > 1 ? "Start one run" : "Start run"}
-          </Button>
+          <Popover open={open && modulesMissing && modules.length === 0} onOpenChange={(next) => { if (!next) setModulesMissing(false) }}>
+            <PopoverTrigger onClick={submit} render={<Button disabled={!canStart} />}>
+              {busy ? <Loader2 className="animate-spin" /> : null}
+              Start run
+            </PopoverTrigger>
+            <PopoverContent side="top" align="end" initialFocus={false} aria-label="Modules required" className="w-auto max-w-64 text-xs">
+              <p role="alert">Select at least one module.</p>
+            </PopoverContent>
+          </Popover>
         </div>
       </DialogContent>
     </Dialog>

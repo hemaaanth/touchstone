@@ -18,7 +18,7 @@ const ev = (s, name, data = {}) => out.push({ t: at(s), ev: name, ...data })
 
 const scope = {
   id: "vault-multi",
-  title: "FeeVault · full audit",
+  title: "FeeVault",
   kind: "lab",
   pack: "contracts",
   blurb: "A fee-charging ETH vault with an owner.",
