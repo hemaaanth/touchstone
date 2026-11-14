@@ -1000,7 +1000,7 @@ test("forge: contracts submit_finding refuses a passing tautology with reason no
   workspaces.push(ws);
   const state = { poc: 0, passed: new Map([["TautologyTest", TAUTOLOGY]]), found: [] };
   const submit = contracts.tools(ws, state).find((t) => t.name === "submit_finding");
-  const r = await submit.execute({ title: "t", severity: "critical", poc_contract: "TautologyTest", explanation: "x" });
+  const r = await submit.execute({ title: "t", class: "logic", severity: "critical", poc_contract: "TautologyTest", explanation: "x" });
   assert.equal(r.isError, true);
   assert.match(r.output[0].text, /shows no harm/);
   assert.equal(state.found.length, 0);

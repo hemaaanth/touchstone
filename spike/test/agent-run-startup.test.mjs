@@ -11,7 +11,7 @@ import { createRoamControl } from "../lib/roam-control.mjs";
 import { captureSessionArtifacts } from "../lib/session-artifacts.mjs";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
-import { fauxProvider } from "@earendil-works/pi-ai/providers/faux";
+import { fauxAssistantMessage as answer, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { createRegistry, defineExtension, Harness, MemoryStorage } from "@earendil-works/pi-durable";
 import { createFleet } from "../lib/fleet.mjs";
 import { askHumanTool } from "../lib/ask.mjs";
@@ -24,16 +24,22 @@ import { EGRESS_ENV } from "../lib/roam-egress.mjs";
 const source = readFileSync(new URL("../agent-run.mjs", import.meta.url), "utf8");
 const body = source.slice(source.indexOf("function createRuntimeRoam("), source.indexOf("// The record keeps"));
 
-function startup(t, raw, failure, overrides = {}) {
+function startup(t, raw, failure, overrides = {}, modelTurn = false) {
   const env = { FLEET: "1", FREE_ROAM: "1", ROAM_OPTIONS: raw, TOUCHSTONE_EXEC: "daytona", DAYTONA_API_KEY: "made-up-startup-test-key", DAYTONA_API_URL: undefined, TOUCHSTONE_DEMO: undefined, ...overrides };
   const previous = Object.fromEntries(Object.keys(env).map((key) => [key, process.env[key]]));
   const set = (values) => { for (const [key, value] of Object.entries(values)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } };
   set(env);
   t.after(() => set(previous));
-  const order = [], sharedNames = [];
+  const order = [], sharedNames = [], modelTools = new Set();
   const models = createModels();
   const faux = fauxProvider();
-  faux.setResponses([() => assert.fail("startup must not generate a model turn")]);
+  faux.setResponses([modelTurn ? (request) => {
+    for (const message of request.messages.filter((m) => m.role === "system")) {
+      for (const tool of message.toolsRemoved ?? []) modelTools.delete(tool.name);
+      for (const tool of message.toolsAdded ?? []) modelTools.add(tool.name);
+    }
+    return answer("Done.");
+  } : () => assert.fail("startup must not generate a model turn")]);
   models.setProvider(faux.provider);
   const pack = { id: "startup-test", system: () => "Audit the lab only.", tools: () => [] };
   const noRemote = () => assert.fail("startup must not open a remote machine");
@@ -50,6 +56,7 @@ function startup(t, raw, failure, overrides = {}) {
       order.push("fleet");
       sharedNames.push(...args.sharedTools.map((tool) => tool.name));
       fleet = createFleet(args);
+      if (!fleet) return fleet;
       const attach = fleet.attach.bind(fleet), close = fleet.close.bind(fleet);
       fleet.attach = async (...args) => { order.push("attach"); if (failure === "attach") throw new Error("attach test failure"); return attach(...args); };
       fleet.close = async () => { order.push("fleet-close"); return close(); };
@@ -78,7 +85,7 @@ function startup(t, raw, failure, overrides = {}) {
     PROVIDER_ID: "faux", MODELS: { fake: { id: "faux-1" } }, ALIAS: "fake",
     disposeAsks: () => order.push("dispose"),
   });
-  return { order, sharedNames, open: () => open("memory-only", "fake-workspace", { passed: new Map(), found: [] }) };
+  return { order, sharedNames, modelTools, open: () => open("memory-only", "fake-workspace", { passed: new Map(), found: [] }) };
 }
 
 for (const demo of [false, true]) test(`startup offers answerable shared tools: ${demo ? "public demo" : "owner"}`, async (t) => {
@@ -86,6 +93,19 @@ for (const demo of [false, true]) test(`startup offers answerable shared tools: 
   const opened = await fixture.open();
   assert.equal(fixture.sharedNames.includes(askHumanTool.name), !demo);
   assert.ok(fixture.sharedNames.includes(ideaTool({ passed: new Map(), found: [] }).name));
+  await opened.control.dispose();
+});
+
+for (const demo of [false, true]) for (const fleet of [false, true]) test(`the actual model receives answerable tools: ${demo ? "demo" : "owner"}, ${fleet ? "fleet" : "solo"}`, async (t) => {
+  const fixture = startup(t, "[]", undefined, {
+    FLEET: fleet ? undefined : "0", FREE_ROAM: "0", TOUCHSTONE_EXEC: "local",
+    TOUCHSTONE_DEMO: demo ? "1" : undefined,
+  }, true);
+  const opened = await fixture.open();
+  assert.equal((await (await opened.root.submit({ type: "input", content: "Finish without running tools." }, ctx)).wait(ctx)).status, "done");
+  assert.equal(fixture.modelTools.has(askHumanTool.name), !demo);
+  assert.ok(fixture.modelTools.has(ideaTool({ passed: new Map(), found: [] }).name));
+  assert.equal(fixture.modelTools.has("shell"), false);
   await opened.control.dispose();
 });
 

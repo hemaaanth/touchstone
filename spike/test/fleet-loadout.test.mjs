@@ -258,14 +258,7 @@ test("with FLEET=0 and FREE_ROAM=0 the tool list has no shell", { timeout: 15000
   assert.deepEqual(r.lists.coordinator, PACK);
   assert.ok((await r.results(undefined, "shell")).every((m) => m.isError));
   assert.deepEqual(r.ran, []);
-  // agent-run.mjs runs on import, so its wiring is pinned by its source: only
-  // the shared solo tool is installed separately from the pack.
-  const src = readFileSync(new URL("../agent-run.mjs", import.meta.url), "utf8");
-  assert.deepEqual(src.match(/registry\.install\([^\n]*/g), [
-    "registry.install(defineExtension({ name: pack.id, tools: fleet ? fleet.wrapTools(tools) : tools }));",
-    "registry.install(fleet.extension);",
-    'registry.install(defineExtension({ name: "shared", tools: [askHumanTool, ideaTool(state)] }));',
-  ]);
+  // The actual runner's owner/demo tool lists are exercised in agent-run-startup.
 });
 
 test("a free-roam child cannot run a pack tool that a later worker adds", { timeout: 20000 }, async (t) => {
@@ -370,7 +363,7 @@ test("agent-run always offers the slice tools and uses the session contracts", (
   assert.ok(src.includes('const tools = [...roamTools(ws, { record, egress, machine }), ...roamBrowserTools(ws, { record, egress, machine }), session].map((tool) => ({'));
   assert.ok(src.includes('execute: (args, api, context) => gate.run(currentAgent(), async () => {'));
   assert.ok(src.includes('const { tools: offered, control } = createRuntimeRoam(db, ws, state, { pack: pack.id, isAgent: (id) => fleet?.isRoamAgent(id) === true });'));
-  assert.match(src, /fleet = createFleet\(\{ system, [^\n]+roamTools: offered, sharedTools: \[askHumanTool, ideaTool\(state\)\] \}\);/);
+  // Shared-tool availability is checked through a real startup/model roundtrip.
   assert.match(src, /agent: \{ model:[^\n]+tools: \{ remove: offered \} \}/);
   assert.ok(!src.includes("process.env.FREE_ROAM"), "only createFleet gates the tools, never their construction");
 });

@@ -125,13 +125,17 @@ listed software boundaries; they do not establish model-driven discovery quality
 ```sh
 node --test app/tests/demo-policy.test.mjs app/tests/demo-backend.test.mjs
 
-node --import ./spike/test/helpers/isolated-env.mjs --test --test-concurrency=1 \
+node --experimental-test-module-mocks --import ./spike/test/helpers/isolated-env.mjs --test --test-concurrency=1 \
   spike/test/fleet-loadout.test.mjs spike/test/fleet-concurrency.test.mjs \
   spike/test/harm-gate.test.mjs spike/test/candidate-harm.test.mjs
 
 bun --no-env-file test app/tests/demo.test.ts app/tests/demo-client.test.ts \
   app/tests/demo-ui.test.tsx app/tests/console-guard.test.ts
 ```
+
+The harm-gate suite includes real offline Foundry cases when Docker and its
+pinned image are available; otherwise those cases are skipped. The remaining
+fixtures use controlled execution results.
 
 | Claim to inspect | Implementation | Focused evidence |
 | --- | --- | --- |
