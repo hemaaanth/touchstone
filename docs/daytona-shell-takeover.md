@@ -3,8 +3,9 @@
 The clean starting point is `f8aa7b6`. The primary checkout's `main` and
 `origin/main` matched exactly before this work. The primary checkout was clean.
 At that starting point, port 5188 was stopped and unshared. The immutable
-5190 release used that commit and its existing private state. The verified
-runtime release is now `abca2b4`, as recorded below.
+5190 release used that commit and its existing private state. The running
+release is `ad4f65e`. Later source changes have not been deployed because the
+owner has active runs. The `abca2b4` milestone below is historical.
 
 The previous coordinator's historical handoff is at
 `b2d391e:docs/HANDOFF-2026-11-14.md`. Its Frozen and owner-repair status is
@@ -52,19 +53,48 @@ The current Daytona account rejected custom snapshot creation with HTTP 403;
 that optional path has synthetic lifecycle proof, not a successful live build.
 The available built-in snapshot is the verified working path.
 
-## Current owner priority
+## Current owner priority and delivery status
 
-The latest owner direction is Ask Human first, then PR #9, then remaining UI.
-Fleet capacity and demo-scope/New run improvements are shipped at `ad4f65e`.
-Browser, Watch and takeover are deferred and must not delay these priorities.
-The owner is actively changing local and remote main. Fetch and rebase task
-branches onto the latest main before review and landing; preserve their commits
-and uncommitted work. Confirm the current running release before any cutover.
-PR #9 remains unmerged; concrete blockers are in [pr9-review-blockers.md](pr9-review-blockers.md).
+- **Ask Human:** landed in main at `9876226`. Questions appear in the originating
+  chat; acknowledged answers stay in history; uncertain retries keep the original
+  reply. Independent review and synthetic browser acceptance passed. Deployment
+  remains held.
+- **PR #9:** merged at `179ee66172cc98d78d40dd2561106372f145e992`.
+  It adds attack-class guidance/classification, crypto source leads, and scanner
+  gaps. Final checks: 92 focused Node tests, 7 app tests, and an app build passed.
+  Independent review cleared the final repairs. The existing offline proof and
+  network boundary remain unchanged.
+- **Demo scopes/New run and fleet:** shipped at `ad4f65e` on port 5190. This
+  includes demo grouping, module validation and the 50-child lifetime ceiling.
 
-## Next few hours — execution plan
+**Release hold:** the owner has actual runs. Do not pause, stop or restart 5190.
+The running immutable release remains `ad4f65e`; Ask Human and PR #9 source will
+appear after a later authorized cutover. No production acceptance is claimed for
+these newer changes.
 
-This extends the existing delivery slices below. Time ranges are working budgets,
+### What remains
+
+- **Chain-fork execution:** keep RPC credentials outside submitted Forge tests,
+  restrict RPC transport, enforce the chain/block pin, and carry that pin through
+  workers, final replay and published instructions. The prototype remains in Git;
+  this landing does not enable its host-network execution or RPC Settings UI.
+- **Additional proven harm:** generic withdrawal refusal and Transfer logs cannot
+  establish unauthorized harm. More coverage needs protocol-specific entitlement
+  and the accounting/tamper checks in [pr9-review-blockers.md](pr9-review-blockers.md).
+- **PR #8:** not safe unchanged. Its global Docker pruning can delete active runs;
+  its installer changes Docker socket permissions and host firewall policy; signal
+  cleanup also regresses main. Any salvage must retain current ownership-scoped
+  cleanup and avoid shared-host installer/pruner execution.
+- **Browser, Watch, takeover and saved images:** deferred by the owner. They must
+  not restart work automatically from the historical plan below.
+
+The owner also changes local and remote main. Fetch and reconcile both before
+review/landing. Preserve their commits and uncommitted work.
+
+## Historical execution plan — superseded
+
+The current status and release hold above override this historical plan.
+It originally extended the delivery slices below. Time ranges were working budgets,
 not a promise to merge code before its checks pass. Finish one accepted slice at
 a time, commit task-owned files, and keep local main and `origin/main` in sync.
 
@@ -170,14 +200,14 @@ and Ask slices as their checks permit. Browser/evidence work continues afterward
 or while a truly external dependency blocks an earlier slice. Report build,
 review, merge, deployment and live-proof states separately.
 
-## Remaining delivery slices
+## Delivery slices and preserved future work
 
 This reuses the historical handoff at `b2d391e:docs/HANDOFF-2026-11-14.md`,
 the existing Ask UX and capacity maps, and the preserved candidate branches.
 Prepared code is not treated as a shipped feature. Review each reconciled
 candidate against current main before publication.
 
-### 1. Run setup and navigation
+### 1. Run setup and navigation — deployed
 
 - **Recognize a demo.** Group Your scopes and Demo scopes, with an explicit Demo
   badge. Preserve saved scope names and selection behavior.
@@ -186,10 +216,9 @@ candidate against current main before publication.
 - **Edit the active execution backend.** Show consistent Local Docker/Daytona
   controls and keep the Daytona editor available when Daytona is already selected.
 
-Existing candidate: `725be18`. It has author tests and browser evidence. It still
-needs reconciliation with the new readiness controls and independent review.
+Reconciled, independently reviewed and deployed at `ad4f65e`.
 
-### 2. Fleet capacity
+### 2. Fleet capacity — deployed
 
 - **Cover a larger scope.** Allow up to 50 lifetime child identities across both
   loadouts. This is a ceiling, not a target or an increased run budget.
@@ -198,10 +227,10 @@ needs reconciliation with the new readiness controls and independent review.
 - **Continue an existing child at the cap.** Reuse its identity without consuming
   another slot; keep its history and shared Bulletin behavior.
 
-Existing candidate: `95ee58f`. Focused cap/concurrency validation and independent
-review remain. This does not establish a 50-machine quota or burst guarantee.
+Reconciled at `ceae9a9`, independently reviewed and included in `ad4f65e`.
+This does not establish a live 50-machine quota or burst guarantee.
 
-### 3. Ask Human inside the conversation
+### 3. Ask Human inside the conversation — landed, deployment held
 
 - **See the question where it belongs.** Put an Ask in its originating agent's
   chat, in event order, using the existing assistant-ui components.
@@ -212,11 +241,11 @@ review remain. This does not establish a 50-machine quota or burst guarantee.
 - **Recover an uncertain answer safely.** Preserve the first possibly-sent
   answer; a late acknowledgement must never accept a different edited reply.
 
-Existing candidate: `d5aef0f`, built on the earlier APP repair. Reconcile it with
-`42a267a` first. Its stopped initial test run had dependency import failures and
-no passing tests; combined acceptance and independent review remain.
+Reconciled with the worker/session repair and landed at `9876226`. Focused
+checks, independent review and synthetic browser acceptance passed. The running
+owner app remains on its older release while actual runs are active.
 
-### 4. Browser and human takeover
+### 4. Browser and human takeover — deferred
 
 - **Use the built-in browser.** Finish the headed runtime/image integration and
   prove it on the actual free-roam machine.
@@ -233,7 +262,7 @@ but not integrated. Desktop image work is preserved at `b62300a`. The assembled
 runtime and browser flow still need proof. These are later deliveries; the
 current release explicitly keeps desktop routes disabled.
 
-### 5. Reviewable session evidence
+### 5. Reviewable session evidence — deferred
 
 - **Keep the session evidence.** Collect transcript, HAR and screenshots before
   the machine is deleted. Mark failed transfers as partial.
@@ -247,7 +276,7 @@ historical full-scope plan. Resolve the saved-image review/machine-deletion
 lifecycle before implementation. These paths are not independently accepted as
 an assembled feature. Session evidence must not bypass the proven-finding gate.
 
-### 6. Final real-run acceptance
+### 6. Final real-run acceptance — deferred during active owner runs
 
 - **Exercise the whole free-roam run.** Follow an authorized run through child
   creation, useful work, follow-up, stop and cleanup. Live shell proof alone does
