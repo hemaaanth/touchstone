@@ -1,0 +1,32 @@
+# Substitute the reviewed release, assets, private state, runtime and account paths.
+[Unit]
+Description=Touchstone sponsored demo
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+ConditionPathExists=@RELEASE@/release-manifest.json
+ConditionPathExists=@ASSETS@/index.html
+
+[Service]
+Type=simple
+User=@USER@
+SupplementaryGroups=docker
+WorkingDirectory=@RELEASE@/app
+EnvironmentFile=@STATE@/env/demo.env
+ExecStart=@NODE@ @RELEASE@/app/server/start.mjs
+Restart=on-failure
+RestartSec=5
+KillMode=control-group
+TimeoutStopSec=90
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadOnlyPaths=@RELEASE@ @ASSETS@
+ReadWritePaths=@STATE@
+PrivateTmp=true
+StandardOutput=append:@STATE@/logs/server.log
+StandardError=append:@STATE@/logs/server-error.log
+
+[Install]
+WantedBy=multi-user.target
