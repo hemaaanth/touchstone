@@ -613,6 +613,22 @@ for (const fragmented of [false, true]) {
   });
 }
 
+test("roam reader resets the write position for an oversized final chunk", async () => {
+  await withFake(async ({ ws, fake }) => {
+    const MAX = 4 * 1024 * 1024;
+    const m = await roamMachine(ws, "a-1");
+    const output = "0123456789abcdefghijklmnopqrstuvwxyz".repeat(120_000) + "END";
+    const bytes = Buffer.from(JSON.stringify({ exitCode: 7, result: output }));
+    assert.ok(bytes.length - 19 > MAX);
+    fake.onExec = () => ({ ok: true, body: (async function* () {
+      yield bytes.subarray(0, 19);
+      yield bytes.subarray(19);
+    })() });
+    // The ASCII tail contains output followed by the two closing JSON bytes.
+    assert.deepEqual(await m.exec("large-output", 5), { exitCode: 7, result: output.slice(-(MAX - 2)) });
+  });
+});
+
 test("shell treats a capped answer with no recoverable exit code as a failed command", async () => {
   await withFake(async ({ ws, fake }) => {
     const { f, shell } = realShell(ws);
