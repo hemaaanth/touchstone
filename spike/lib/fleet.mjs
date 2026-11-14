@@ -223,10 +223,11 @@ export function createFleet({ system, costOf, max = process.env.FLEET_MAX ?? 8, 
     if (free && !freeRoam) throw new Error("Free-roam is off for this run.");
     const created = await commit(async (tx) => {
       const board = await tx.doc(Fleet, ROOT_CONVERSATION_ID);
-      if (board.jobs[spawnId]) return { agent: board.agents.find((a) => a.spawn === spawnId), fresh: false };
+      // Document overlays cannot be read after this transaction settles.
+      if (board.jobs[spawnId]) return { agent: JSON.parse(JSON.stringify(board.agents.find((a) => a.spawn === spawnId))), fresh: false };
       if (automatic) {
         const existing = board.agents.find((a) => a.loadout === "free-roam");
-        if (existing) return { agent: existing, fresh: false };
+        if (existing) return { agent: JSON.parse(JSON.stringify(existing)), fresh: false };
         while (board.agents.some((a) => a.name === name)) name += "_";
       }
       if (board.agents.some((a) => a.name === name)) throw new Error(`${name} already exists. Use message_agent to retry or reassign.`);

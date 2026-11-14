@@ -55,7 +55,7 @@ async function runtime(t, route, { env = ON, required = false, survey, hooks = {
   // Each fake records who ran it. `hooks[name]` lets one case hold a call open.
   const fake = (name) => defineTool({
     name, description: `Fake ${name}.`, parameters: obj({}), replay: "safe",
-    execute: async () => { ran.push(`${currentAgent() ?? "coordinator"}:${name}`); await hooks[name]?.(); return { output: [{ type: "text", text: `${name} ran.` }] }; },
+    execute: async (args, api, c) => { ran.push(`${currentAgent() ?? "coordinator"}:${name}`); await hooks[name]?.(args, api, c); return { output: [{ type: "text", text: `${name} ran.` }] }; },
   });
   const packTools = pack.map(fake), roamTools = offered ?? ROAM.map(fake);
   const faux = fauxProvider({ tokensPerSecond: 100000 });
@@ -332,10 +332,10 @@ test("real slice tools construct without a key and stay uninstalled with free-ro
   assert.equal(state.session, undefined);
 });
 
-test("slice shell, egress and session candidate work together through the fleet", { timeout: 15000 }, async (t) => {
+for (const automatic of [false, true]) test(`${automatic ? "default" : "explicit"} child runs shell, Ask and unproven session submission through the fleet`, { timeout: 15000 }, async (t) => {
   const state = { passed: new Map(), found: [] }, calls = [];
   const machine = {
-    id: "fleet-loadout-slice", fresh: false, replaced: true,
+    id: `fleet-loadout-slice-${automatic ? "default" : "explicit"}`, fresh: false, replaced: true,
     upload: async (path, bytes) => { calls.push("upload"); assert.ok(bytes.length > 0); },
     exec: async (command) => {
       if (command.includes("nohup")) { calls.push("start"); return { exitCode: 0, result: "" }; }
@@ -350,9 +350,13 @@ test("slice shell, egress and session candidate work together through the fleet"
     },
   };
   const offered = sliceTools(state, async () => { calls.push(`machine:${currentAgent()}`); return machine; });
-  const r = await runtime(t, (s) => {
-    if (s.who === "coordinator") return coordinator(s, [spawnCall("Beta", "free-roam")]);
-    if (s.last.role === "user") return result([call("shell", { command: "probe export" })]);
+  const route = (s) => {
+    if (s.who === "coordinator") return automatic ? answer("Done.") : coordinator(s, [spawnCall("Beta", "free-roam")]);
+    if (s.last.role === "user") return result([askCall()]);
+    if (s.last.toolName === "ask_human") {
+      assert.ok(!s.last.isError);
+      return result([call("shell", { command: "probe export" })]);
+    }
     if (s.last.toolName === "shell") {
       const output = text(s.last);
       assert.match(output, /^The machine was replaced\.[^]*\nsession session:a-\d+:1\nexit 0/);
@@ -361,9 +365,12 @@ test("slice shell, egress and session candidate work together through the fleet"
       return result([call("submit_session_candidate", { title: "Export is open", severity: "high", poc, evidence_lines: ["Private export is readable"], explanation: "Anyone can read the export.\nFix: require a login." })]);
     }
     return answer("Done.");
-  }, { offered });
+  };
+  const r = await runtime(t, route, { offered, defaultRoute: route, sharedTools: [askHumanTool], hooks: answerEvents });
   await r.run("start");
-  const beta = r.spawned("Beta");
+  const beta = r.spawned(automatic ? "FreeRoam" : "Beta");
+  assert.equal(r.events.find((e) => e.ev === "ask-human").agent, beta.id);
+  assert.equal(r.events.filter((e) => e.ev === "ask-answered").length, 1);
   assert.deepEqual(calls, [`machine:${beta.id}`, "upload", "start", "shell", "pull"]);
   assert.deepEqual((await r.results(beta.conv, "submit_session_candidate")).map((m) => !!m.isError), [false]);
   assert.equal(state.candidates.length, 1);
@@ -567,6 +574,32 @@ test("saved free-roam allow lists gain shared Ask but no new pack tool", async (
   await w.run("go on");
   assert.deepEqual(w.lists.Beta.toSorted(), ["ask_human", "bulletin_post", "bulletin_read", "message_agent", "shell", "submit_session_candidate"]);
   assert.equal(w.events.find((e) => e.ev === "ask-human").agent, beta.id);
+});
+
+test("spawn replay through the real tool API returns the same child without a settled overlay", async (t) => {
+  const replies = [];
+  let taskId;
+  const r = await runtime(t, (s) => s.who === "coordinator" && text(s.last) === "start"
+    ? result([call("read_source", {})]) : answer("Done."), { max: 1, hooks: {
+    read_source: async (_args, api, c) => {
+      taskId = api.taskId;
+      const spawn = r.fleet.extension.tools.find((tool) => tool.name === "spawn_agent");
+      const args = { name: "Beta", task: "Audit the lab", area: "lab", loadout: "free-roam" };
+      replies.push(await spawn.execute(args, api, c));
+      replies.push(await spawn.execute(args, api, c));
+      replies.push(...await Promise.all(Array.from({ length: 5 }, () => spawn.execute(args, api, c))));
+    },
+  } });
+  assert.equal((await r.run("start")).status, "done");
+  assert.equal(replies.length, 7, "every replay succeeds through the same actual task API");
+  for (const replay of replies) assert.deepEqual(replay, replies[0]);
+  assert.deepEqual((await r.results(undefined, "read_source")).map((m) => !!m.isError), [false]);
+  const board = await r.harness.snapshot(Roster, ROOT_CONVERSATION_ID, ctx);
+  assert.equal(board.agents.length, 1);
+  assert.equal(board.agents[0].spawn, taskId);
+  assert.deepEqual(Object.keys(board.jobs), [String(taskId)]);
+  assert.equal(board.agents[0].status, "done");
+  assert.equal(r.events.filter((e) => e.ev === "subagent-spawned").length, 1);
 });
 
 test("the gate sees trusted membership before a first action and immediately after a board commit", async (t) => {
