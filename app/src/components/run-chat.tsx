@@ -13,6 +13,7 @@ import { steerRun, stopRun, fetchFinding, fetchNowCandidate } from "@/lib/api"
 import { applyCandidateFocus, CANDIDATE_FOCUS } from "@/lib/candidate"
 import { awaitingReply, messageId, settleSent, type Sent } from "@/lib/sent"
 import { runTitle } from "@/lib/format"
+import { runModuleList } from "@/lib/catalog"
 import { cn } from "cn"
 import { panelLayerClass } from "@/lib/run-layout"
 import { Button } from "@/components/ui/button"
@@ -167,7 +168,7 @@ export function RunChat({
   // Until the run store has loaded this run, trust the sidebar's status.
   const status = state ? state.status : run.status
   const scope = state?.scope ?? null
-  const title = runTitle({ ...run, scopeTitle: run.scopeTitle ?? scope?.title })
+  const title = runTitle({ ...run, scopeTitle: run.scopeTitle ?? scope?.title }, runModuleList(run, packs ?? []))
   // Live: a worker is running, so a message steers it. Idle: a message starts a
   // follow-up on the saved session. Only an archived run takes no messages.
   const live = !!state && !state.closed

@@ -179,6 +179,7 @@ function runThread<S extends "regular" | "archived">(r: RunSummary, status: S, p
   const done = isTerminal(r.status)
   // A restart's cut-off reads Interrupted with a neutral mark, not as a failure.
   const row = runRowStatus(r)
+  const modules = runModuleList(r, packs)
   const custom: RunThreadCustom = {
     mark: runMarkKind(r),
     label: `${row.word} · ${ago(r.startedAt)}`,
@@ -186,7 +187,7 @@ function runThread<S extends "regular" | "archived">(r: RunSummary, status: S, p
     running: !done,
     canArchive: done,
     scope: r.scopeTitle || r.target || "—",
-    modules: runModuleList(r, packs),
+    modules,
   }
-  return { status, id: r.id, title: runTitle(r), custom }
+  return { status, id: r.id, title: runTitle(r, modules), custom }
 }

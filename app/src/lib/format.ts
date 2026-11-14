@@ -101,12 +101,26 @@ export const DOT: Record<Tone, string> = {
 }
 
 // The one title a run shows, in the rail and in its top bar: the operator's
-// name, else the finding title, else the scope title. The model is runtime
-// metadata (the run panel's Info), never the run's name.
-export function runTitle(r: {
-  name?: string | null
-  title?: string | null
-  scopeTitle?: string | null
-}): string {
-  return (r.name || r.title || r.scopeTitle || "Untitled run").replaceAll("`", "")
+// name, else the finding title, else the scope with the modules it probes,
+// else the bare scope title. The model is runtime metadata (the run panel's
+// Info), never the run's name.
+//
+// A fresh run has no operator name and no finding yet, so its title would be
+// just the scope — the exact words shown on the line beneath it in the rail.
+// Passing the run's modules lets the title name what the run is doing
+// ("Support Desk · Surface"), so the two lines stop reading as a stutter.
+export function runTitle(
+  r: {
+    name?: string | null
+    title?: string | null
+    scopeTitle?: string | null
+  },
+  modules?: { title: string }[],
+): string {
+  const scope = r.scopeTitle || null
+  // Drop a module whose title already equals the scope, so a lab named for its
+  // own module never reads "Surface · Surface".
+  const mods = (modules ?? []).map((m) => m.title).filter((t) => t && t !== scope)
+  const composed = scope && mods.length ? `${scope} · ${mods.join(" · ")}` : scope
+  return (r.name || r.title || composed || "Untitled run").replaceAll("`", "")
 }
