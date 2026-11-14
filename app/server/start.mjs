@@ -3,6 +3,12 @@
 import { isAbsolute, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+const noWatch = {
+  name: "touchstone-release-no-watch",
+  // Vite drops null during config merging. Set it after merging, before watcher creation.
+  configResolved(config) { config.server.watch = null; },
+};
+
 export function releaseConfig(env = process.env) {
   const host = env.HOST ?? "127.0.0.1";
   if (host !== "127.0.0.1" && host !== "::1") throw new Error("The release server must bind to loopback.");
@@ -16,9 +22,12 @@ export function releaseConfig(env = process.env) {
   return {
     root: fileURLToPath(new URL("../", import.meta.url)),
     configFile: fileURLToPath(new URL("../vite.config.ts", import.meta.url)),
+    // The bundle loader writes .vite-temp inside the sealed release, outside cacheDir.
+    configLoader: "runner",
     cacheDir,
     clearScreen: false,
-    server: { host, port, strictPort: true, hmr: false, watch: null, open: false },
+    plugins: [noWatch],
+    server: { host, port, strictPort: true, hmr: false, open: false },
   };
 }
 
