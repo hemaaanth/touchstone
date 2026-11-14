@@ -24,13 +24,13 @@ import { EGRESS_ENV } from "../lib/roam-egress.mjs";
 const source = readFileSync(new URL("../agent-run.mjs", import.meta.url), "utf8");
 const body = source.slice(source.indexOf("function createRuntimeRoam("), source.indexOf("// The record keeps"));
 
-function startup(t, raw, failure) {
-  const env = { FLEET: "1", FREE_ROAM: "1", ROAM_OPTIONS: raw, TOUCHSTONE_EXEC: "daytona", DAYTONA_API_KEY: "made-up-startup-test-key", DAYTONA_API_URL: undefined };
+function startup(t, raw, failure, overrides = {}) {
+  const env = { FLEET: "1", FREE_ROAM: "1", ROAM_OPTIONS: raw, TOUCHSTONE_EXEC: "daytona", DAYTONA_API_KEY: "made-up-startup-test-key", DAYTONA_API_URL: undefined, TOUCHSTONE_DEMO: undefined, ...overrides };
   const previous = Object.fromEntries(Object.keys(env).map((key) => [key, process.env[key]]));
   const set = (values) => { for (const [key, value] of Object.entries(values)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } };
   set(env);
   t.after(() => set(previous));
-  const order = [];
+  const order = [], sharedNames = [];
   const models = createModels();
   const faux = fauxProvider();
   faux.setResponses([() => assert.fail("startup must not generate a model turn")]);
@@ -48,6 +48,7 @@ function startup(t, raw, failure) {
     createRegistry, defineExtension,
     createFleet: (args) => {
       order.push("fleet");
+      sharedNames.push(...args.sharedTools.map((tool) => tool.name));
       fleet = createFleet(args);
       const attach = fleet.attach.bind(fleet), close = fleet.close.bind(fleet);
       fleet.attach = async (...args) => { order.push("attach"); if (failure === "attach") throw new Error("attach test failure"); return attach(...args); };
@@ -77,8 +78,16 @@ function startup(t, raw, failure) {
     PROVIDER_ID: "faux", MODELS: { fake: { id: "faux-1" } }, ALIAS: "fake",
     disposeAsks: () => order.push("dispose"),
   });
-  return { order, open: () => open("memory-only", "fake-workspace", { passed: new Map(), found: [] }) };
+  return { order, sharedNames, open: () => open("memory-only", "fake-workspace", { passed: new Map(), found: [] }) };
 }
+
+for (const demo of [false, true]) test(`startup offers answerable shared tools: ${demo ? "public demo" : "owner"}`, async (t) => {
+  const fixture = startup(t, "[]", undefined, demo ? { TOUCHSTONE_DEMO: "1", FREE_ROAM: "0", TOUCHSTONE_EXEC: "local", FLEET_MAX: "3" } : {});
+  const opened = await fixture.open();
+  assert.equal(fixture.sharedNames.includes(askHumanTool.name), !demo);
+  assert.ok(fixture.sharedNames.includes(ideaTool({ passed: new Map(), found: [] }).name));
+  await opened.control.dispose();
+});
 
 for (const raw of [undefined, "[]", "  [ ]  "]) test(`runner startup accepts empty options: ${String(raw)}`, async (t) => {
   const fixture = startup(t, raw);

@@ -150,8 +150,4 @@ test("normal completion awaits remote cleanup before fleet and harness close", a
   assert.deepEqual(w.order, ["gate-dispose", "dispose", "fleet-close", "harness-close", "exit:0"]);
 });
 
-test("runner supplies shared Ask separately from pack and roam tools", () => {
-  assert.match(source, /import \{ askHumanTool, answerAsk, disposeAsks \} from "\.\/lib\/ask\.mjs"/);
-  assert.match(source, /createFleet\(\{[^\n]*sharedTools: \[askHumanTool\]/);
-  assert.match(source, /else registry\.install\(defineExtension\(\{ name: "shared", tools: \[askHumanTool\] \}\)\)/);
-});
+// Actual owner/demo shared-tool registration is exercised by agent-run-startup.

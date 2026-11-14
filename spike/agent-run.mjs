@@ -194,16 +194,18 @@ async function openHarness(db, ws, state) {
   const { tools: offered, control } = createRuntimeRoam(db, ws, state, { pack: pack.id, isAgent: (id) => fleet?.isRoamAgent(id) === true });
   // A child that a follow-up reopens holds the brief of its spawn. The fleet
   // gives it the current one with its next message (fleet.mjs createFleet).
-  fleet = createFleet({ system, costOf, brief: process.env.SCOPE_BRIEF ?? "", briefChange, changed: process.env.BRIEF_CHANGE ?? "", roamTools: offered, sharedTools: [askHumanTool, ideaTool(state)] });
+  // Public demos have no Reply endpoint, so do not offer an unanswerable Ask.
+  const sharedTools = [...(process.env.TOUCHSTONE_DEMO === "1" ? [] : [askHumanTool]), ideaTool(state)];
+  fleet = createFleet({ system, costOf, brief: process.env.SCOPE_BRIEF ?? "", briefChange, changed: process.env.BRIEF_CHANGE ?? "", roamTools: offered, sharedTools });
   const tools = [...pack.tools(ws, state), ...(navy ? sourceNavTools(ws) : [])];
   // A tool registered with no parameters crashes prompt planning deep in the
   // framework with a bare `"undefined" is not valid JSON`. Name it here instead.
-  for (const t of [...tools, ...offered, askHumanTool, ideaTool(state)]) {
+  for (const t of [...tools, ...offered, ...sharedTools]) {
     if (t?.parameters === undefined) throw new Error(`tool ${String(t?.name)} was offered with no parameters schema`);
   }
   registry.install(defineExtension({ name: pack.id, tools: fleet ? fleet.wrapTools(tools) : tools }));
   if (fleet) registry.install(fleet.extension);
-  else registry.install(defineExtension({ name: "shared", tools: [askHumanTool, ideaTool(state)] }));
+  else registry.install(defineExtension({ name: "shared", tools: sharedTools }));
   const reports = [];
   const harness = await Harness.open(await openNodeSqliteStorage(db), {
     models: inferenceModels({ agentForSession: fleet?.agentForSession }),
