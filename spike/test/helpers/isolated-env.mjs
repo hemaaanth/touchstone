@@ -22,6 +22,7 @@ process.env.TOUCHSTONE_GRANT_TOKEN_FILE = join(dir, "console-token");
 process.env.TOUCHSTONE_GRANTS_FILE = join(dir, "grants.json");
 process.env.TOUCHSTONE_SCOPES_FILE = join(dir, "scopes.json");
 process.env.TOUCHSTONE_PROVIDERS_FILE = join(dir, "providers.json");
+process.env.DAYTONA_PENDING = join(dir, "daytona-pending.json");
 process.on("exit", () => rmSync(dir, { recursive: true, force: true }));
 
 export const TEST_STORE_DIR = dir;
