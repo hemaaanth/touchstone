@@ -52,6 +52,16 @@ The current Daytona account rejected custom snapshot creation with HTTP 403;
 that optional path has synthetic lifecycle proof, not a successful live build.
 The available built-in snapshot is the verified working path.
 
+## Current owner priority
+
+The latest owner direction is Ask Human first, then PR #9, then remaining UI.
+Fleet capacity and demo-scope/New run improvements are shipped at `ad4f65e`.
+Browser, Watch and takeover are deferred and must not delay these priorities.
+The owner is actively changing local and remote main. Fetch and rebase task
+branches onto the latest main before review and landing; preserve their commits
+and uncommitted work. Confirm the current running release before any cutover.
+PR #9 remains unmerged; concrete blockers are in [pr9-review-blockers.md](pr9-review-blockers.md).
+
 ## Next few hours — execution plan
 
 This extends the existing delivery slices below. Time ranges are working budgets,

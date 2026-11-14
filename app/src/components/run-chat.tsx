@@ -21,7 +21,6 @@ import { SidebarTrigger } from "@/components/ui/sidebar"
 import { ResizeHandle, useStoredWidth } from "@/components/resize-handle"
 import { ArtifactPane } from "@/components/assistant-ui/elements/artifact-pane"
 import { Thread } from "@/components/run-thread"
-import { HumanQueue } from "@/components/human-queue"
 import { AskHumanProvider, PendingAskLinks } from "@/components/ask-human"
 import { agentLook, buildMessages, composerNotice, findingTarget, FindingNote, focusActions, MarkedStep, OpenArtifact, headMarkKind, runHeadStatus, runInterruption, runStartView, sendCopy, waitingMessage, withCopies, type FocusDone } from "@/components/thread-model"
 import { RunStatusMark } from "@/components/assistant-ui/elements/indicators"
@@ -626,7 +625,6 @@ export function RunChat({
           {narrow ? panelLayer : null}
           <div inert={drawerOpen} className="shrink-0">
             <PendingAskLinks onOpen={openPeek} />
-            {state ? <HumanQueue runId={run.id} state={state} live={live} /> : null}
           </div>
 
           <div data-run-chat-area className="relative flex min-h-0 flex-1 flex-col">

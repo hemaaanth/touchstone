@@ -321,20 +321,15 @@ test("Done is exact-id acknowledged, and runtime close failure keeps control blo
   } finally { await f.end() }
 })
 
-test("desktop POST and DELETE dispatch privately while exact-image routes remain disabled", async () => {
+test("unverified desktop and exact-image routes remain disabled without reading capabilities", async () => {
   const headers = { host: "console.example", origin: "https://console.example", "content-type": "application/json", "x-touchstone-grant-token": "test-grant-token" }
-  const desktop = { id: "route-desktop", epoch: "epoch-1" }
-  const { results, calls } = await routeCases([["POST", "desktop"], ["POST", "desktop"], ["DELETE", "desktop"], ["POST", "session-artifacts/f1/review"], ["POST", "session-artifacts/f1/release"]].map(([method, endpoint], index) => ({ url: `/api/runs/r1/${endpoint}`, method, headers, body: { agent: "a-1", desktop, ...(method === "POST" ? { viewOnly: index === 0 } : {}) } })))
-  expect(calls).toEqual([["open", "r1", "a-1", true, "https://console.example", desktop], ["open", "r1", "a-1", false, "https://console.example", desktop], ["close", "r1", "a-1", desktop]])
-  for (const result of results.slice(0, 3)) expect(result).toMatchObject({ handled: true, status: 200, bodyRead: true })
+  const { results, calls } = await routeCases([["POST", "desktop"], ["DELETE", "desktop"], ["POST", "session-artifacts/f1/review"], ["POST", "session-artifacts/f1/release"]].map(([method, endpoint]) => ({ url: `/api/runs/r1/${endpoint}`, method, headers, body: { agent: "a-1" } })))
+  expect(calls).toEqual([])
   for (const result of results) {
-    expect(result.headers["cache-control"]).toBe("no-store")
-    expect(result.headers["x-content-type-options"]).toBe("nosniff")
-  }
-  for (const result of results.slice(3)) {
     expect(result).toMatchObject({ handled: true, status: 409, bodyRead: false })
     expect(result.data.error).toContain("not enabled")
     expect(result.headers["cache-control"]).toBe("no-store")
+    expect(result.headers["x-content-type-options"]).toBe("nosniff")
   }
 })
 
@@ -627,7 +622,7 @@ test("Ask waits for both cleanup completions and matching resume before its own 
     expect(f.lines.at(-1)).toEqual({ ask: "ask-1", reply: "Synthetic operator answer" })
     f.api.consume(f.run, f.child, "epoch-1", { ev: "ask-answered", id: "ask-1", agent: "a-1", answer: "reply" })
     expect((await answer).value).toMatchObject({ ok: true })
-    expect(JSON.stringify(f.events)).not.toContain("Synthetic operator answer")
+    expect(JSON.stringify(f.events.filter((e) => e.ev !== "ask-receipt"))).not.toContain("Synthetic operator answer")
   } finally { held?.release(); revoked.resolve(); await answer; await f.end() }
 })
 

@@ -23,7 +23,7 @@ test("inline questions keep exact agent identity without duplicate top forms", (
   const html = askHtml(state)
   expect(html).toContain("Open test account")
   expect(html).toContain("Check test wallet")
-  expect(html).toContain("Keep passwords and codes in the browser")
+  expect(html).toContain("Never put passwords or codes in Reply")
   expect(html).toContain("Reply and Cancel do not approve it")
   const settled = reduceEvents([spawn, first, second, { ev: "ask-answered", id: "one", agent: "a-1", answer: "reply" }])
   for (const label of [">Watch<", ">Take control<", ">Release<"]) expect(html).not.toContain(label)

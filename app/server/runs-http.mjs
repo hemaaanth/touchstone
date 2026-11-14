@@ -100,8 +100,8 @@ export async function handleRuns(req, res) {
   if ((req.method === "POST" && ((parts.length === 4 && ["ask", "desktop", "session-artifacts"].includes(parts[3])) || (parts.length === 6 && parts[3] === "session-artifacts" && ["read", "review", "release"].includes(parts[5])))) || (req.method === "DELETE" && parts.length === 4 && parts[3] === "desktop")) {
     res.setHeader("cache-control", "no-store")
     res.setHeader("x-content-type-options", "nosniff")
-    if (["review", "release"].includes(parts[5])) {
-      send(res, 409, { error: "Exact-image review and screenshot release are not enabled in this release." })
+    if (parts[3] === "desktop" || ["review", "release"].includes(parts[5])) {
+      send(res, 409, { error: "Desktop streaming, takeover, and screenshot release are not enabled in this release." })
       return true
     }
     const body = await readBody(req)

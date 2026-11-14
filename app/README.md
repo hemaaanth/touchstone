@@ -90,7 +90,7 @@ Every worker receives explicit `FREE_ROAM`, an empty `ROAM_OPTIONS`,
 `ROAM_CONTROL_EPOCH`, and the server-owned `SESSION_ARTIFACT_DIR`.
 
 Human questions appear in order inside the originating agent's chat.
-Pending child questions have links beside the existing desktop disclosures.
+Pending child questions have links in the conversation.
 The child's composer stays read-only; only the current Ask action can answer.
 Done approves only that exact request. Reply and Cancel do not approve it.
 An answer succeeds only after the current worker acknowledges it. Pending controls
@@ -105,30 +105,11 @@ acknowledgements without display text say the answer text was not saved.
 After uncertain delivery, the first possibly-sent answer stays frozen. Retry that
 same answer or refresh its status; edited answers require a definite pre-send refusal.
 
-Live free-roam agents expose Watch, then explicit Take control, within the human
-desktop disclosures even when no Ask is pending. Watch uses an existing machine only; it does
-not create, restart or pause one. Desktop access requires the console's exact
-HTTPS origin and a private signed preview.
-
-Take control waits for the current worker's matched pause acknowledgment for
-managed shell and browser automation. It is not isolation from shared root
-processes: other sandbox processes may observe input. Release removes the viewer,
-closes the runtime and revokes the preview before a matched resume. Cancellation,
-expiry, worker replacement and setup failures cannot return a late viewer URL.
-Unknown pause/resume state stays latched; stop the run. Incomplete revocation
-also refuses a new worker. A child turn ending does not imply lost membership;
-the current worker gate is authoritative.
-
-Each desktop starts with a client request ID before its POST is sent. The server
-binds it to the existing worker epoch and returns that binding privately.
-Take control and Release reuse it. Unmount and late-response cleanup name only
-that original request, never whichever desktop is current for the agent.
-Cancelled IDs stay retired in this process, including cancellation before POST;
-old worker responses and expiry callbacks cannot release a newer session.
-
-These controls are development source with isolated fixture coverage, not proof
-of a deployed desktop image or real streaming. Exact-image review and screenshot
-release remain disabled. No post-run machine retention is implied.
+Desktop Watch and takeover remain disabled in the release UI and HTTP routes.
+The worker-bound control service and its fencing/cleanup tests are retained as
+source foundations. They do not establish a working headed image or streaming.
+Ask Reply is model-visible; never use it for passwords or codes. Exact-image
+review and screenshot release also remain disabled.
 
 Private routes use authenticated same-origin JSON POSTs, except desktop close:
 

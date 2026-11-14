@@ -96,7 +96,7 @@ export function AskHuman({ ask }: { ask: HumanAsk }) {
         <Button size="sm" variant="ghost" onClick={() => context?.refresh()}>Refresh answer status</Button>
       </div>
     </> : <>
-      <p className="text-xs text-muted-foreground">Replies are visible to the agent. Keep passwords and codes in the browser, never in Reply. Do not include secrets. Done approves only this request. Reply and Cancel do not approve it.</p>
+      <p className="text-xs text-muted-foreground">Replies are visible to the agent. Never put passwords or codes in Reply. Browser takeover is not enabled in this release. Do not include secrets. Done approves only this request. Reply and Cancel do not approve it.</p>
       {presentation ? <OptionList aria-labelledby={questionId} options={presentation.options} selectionMode={presentation.select} minSelections={presentation.select === "multiple" ? presentation.min : undefined} maxSelections={presentation.select === "multiple" ? presentation.max : undefined} defaultValue={draft.choices} disabled={!live} onConfirm={live ? (ids) => submit({ ask: ask.id, reply: formatAskChoiceReply(presentation, ids) }, ids) : undefined} /> : null}
       <form className="flex min-w-0 flex-wrap items-center gap-2" onSubmit={(e) => { e.preventDefault(); void submit({ ask: ask.id, reply: draft.reply ?? "" }).catch(failed) }}>
         <Input aria-label={`Reply to ${name}`} value={draft.reply ?? ""} onChange={(e) => context?.patch(ask.id, { reply: e.target.value })} disabled={!live} className="min-w-32 flex-1" />
