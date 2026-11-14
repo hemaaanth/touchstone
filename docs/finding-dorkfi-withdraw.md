@@ -78,31 +78,35 @@ next line, `withdraw(5)`, leaves supply 5 against debt 5, i.e. 100 % LTV, and no
 
 ## Where it actually runs
 
-This is the part that decides whether the finding has money behind it.
+The code is from **GitHub**, not from a chain: the public repo `github.com/DorkFi/df-evm`, reached
+from the DefiLlama entry, stored as the scope's member URL and cloned by the run. Nothing here was
+decompiled or read from an explorer — so everything below is a claim about that repository.
 
 | Question | Answer | Evidence |
 |---|---|---|
-| What chains does DefiLlama track for `dorkfi`? | Algorand, Voi Network — both AVM, not EVM | `api.llama.fi/protocol/dorkfi` |
-| What is the audited code? | Algorand Python contracts, ARC4/ARC200 | Entersoft audit, Nov 2025, §2.2 Scope |
-| What is `df-evm`? | A separate EVM implementation with Base mainnet, Hedera and Monad deploy scripts (chain-8453 assert) | `script/LendingPoolV2BaseMainnet.s.sol`, `docs/deployment/*` |
-| Is `LendingPoolV2` (the Base deploy path) affected? | **No.** `_withdraw` re-checks `HealthFactorWouldViolate` inline | `LendingPoolV2.sol:743-806` |
-| Is a legacy pool deployment live? | Not recorded in the repo; the live app names Algorand and Sepolia | `app.dork.fi` |
+| Where did the code come from? | `github.com/DorkFi/df-evm`, public | scope `scope-dorkfi-df-evm-d3cf98d9` |
+| Does DefiLlama track DorkFi on any EVM chain? | No — Algorand and Voi only | `api.llama.fi/protocol/dorkfi` |
+| Does the live app offer any EVM chain? | No. 31 "algorand" / 34 "voi" hits, zero `0x` addresses, zero chain ids in its bundle | `app.dork.fi` |
+| Is any EVM contract deployed? | Yes, on **testnets** only: Base Sepolia `LendingPoolV2` `0xd344…3605` has code, unverified on the explorer | Base Sepolia RPC, `docs/deployment/base-sepolia.md` |
+| Is that deployed contract affected? | No — it is V2, which re-checks health inline | `LendingPoolV2.sol:743` |
+| Is a **Base mainnet** deployment recorded? | No address in the repo, only a deploy command that asserts chain 8453 | `script/LendingPoolV2BaseMainnet.s.sol` |
+| Is a **phase-0** pool (the affected code) deployed anywhere? | No address recorded; `script/LendingPool.s.sol` is chain-agnostic | repo-wide search |
 
-So: the bug is real in shipped EVM source, is *not* in the newer V2 the Base script deploys, and the
-tracked TVL sits on a different (AVM) implementation that our Foundry proof cannot execute.
+So the honest shape: **source-level finding.** The vulnerable contracts are Phase 0, superseded by
+V2, and no deployment of them is recorded. The one EVM deployment that is recorded is a testnet V2.
 
-Saying "it is on Base" would be too strong. The affected contracts are the **Phase 0** pools
-(`script/LendingPool.s.sol`, chain-agnostic), which V2 supersedes. Base mainnet's documented path
-deploys V2, so Base is exposed only where a phase-0 pool is still deployed. The repo records no
-address, and Base's explorer APIs are key-gated (Blockscout behind a challenge, Etherscan v2 needs a
-key), so that last step is unconfirmed.
+Why "on Base" was said at all: the repo ships a Base mainnet deploy script and a
+`docs/deployment/base-mainnet.md` production guide. That is intent, not evidence of a deployment.
+A free Etherscan key serves `getsourcecode` on 8453 but refuses `txlist` ("Free API access is not
+supported for this chain"), so a deployer scan needs a paid plan.
 
 ## TVL at risk
 
-Tracked supplied TVL is ~$220 k (Algorand $149.3 k, Voi $70.6 k); borrowed $43.6 k. Free liquidity,
-the amount a full drain could take, is about **$176 k**.
+Nothing is at risk on the EVM side today that is documented: no live phase-0 deployment is recorded.
 
-That number applies *if* the AVM code has the same hole. Entersoft already reported a close relative
+For scale, the protocol's tracked supplied TVL is ~$220 k (Algorand $149.3 k, Voi $70.6 k), borrowed
+$43.6 k, free liquidity about **$176 k** — all of it on the AVM implementation. That number applies
+to this finding only *if* the AVM code has the same hole. Entersoft already reported a close relative
 there — "Redeem Function Accounting Bypass: users will be able to withdraw assets while the protocol
 still considers their collateral locked", with the same consequence list (insolvency, liquidation
 failure, protocol drain). Ours is an independent, source-proven instance on the EVM side, with a
