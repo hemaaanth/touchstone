@@ -23,7 +23,7 @@ import { halmosBrief, halmosRecord, halmosScan } from "./halmos.mjs";
 import { chimeraBrief, chimeraRecord, chimeraScan } from "./chimera.mjs";
 import { bytecodeFindingsTool, bytecodeKickoff, bytecodePrepass, bytecodeUnits } from "./bytecode/index.mjs";
 import { CANDIDATE_HINT, FORGE_POC, candidateTool, withCandidateLine, forgeLookup, provedLater, recordForge } from "../../lib/candidate.mjs";
-
+import { classChecklist, classIds, normalizeClass } from "../../lib/attack-classes.mjs";
 // Total run_poc attempts for the whole audit. No count cap unless MAX_POC is
 // set: the run's spend budget is the stop (see lib/attempt-cap.mjs). When a cap
 // is set, the prompt tells the agent the number so it can plan across suspects.
@@ -45,6 +45,10 @@ const AUDIT = `How the audit works:
   funds. Examples: no receive() function, ETH sent by mistake staying put, or a
   user who can only lose their own funds through their own setup (such as a
   depositor contract that cannot receive ETH).
+- The proof gate measures only three things: ETH leaving a scope contract, an
+  in-scope ERC-20 balance dropping, or an owner/admin/implementation slot being
+  re-pointed. A real bug that harms in another way is still a real bug: record it
+  with submit_candidate and say why the gate cannot see it. Do not discard it.
 - Plan first. Before you write any test, list every suspect root cause you see,
   ranked worst first. Include suspects the analyzers did not flag. Write the list
   in your reply.
@@ -62,6 +66,15 @@ const AUDIT = `How the audit works:
 - Stop when every suspect root cause is proven or ruled out, or the budget is spent.
   Then write a short coverage summary: one line per suspect, marked "proven",
   "not exploitable", or "not tried".
+- Sweep EVERY class below before you stop. Each row is a question about this
+  code. Answer each one in your coverage summary as "proven", "not present", or
+  "not tried", and give the class id. A class you never opened is the most likely
+  bug you will miss: the incidents that took the most money in 2025-2026 are
+  mostly classes a generic static analyzer does not model.
+
+Attack classes to sweep:
+
+${classChecklist()}
 
 Severity:
 - critical: an attacker steals or locks most of the funds.
@@ -115,9 +128,10 @@ Keep going without asking the operator questions. Work from the actual source.`;
 
 // A brief scope has no local source at the start. The code to audit lives behind
 // the links the scope section of the instructions lists; the agent fetches it into vendor/ with fetch_source,
-// then audits and proves it the same way. The proof is still an offline Foundry
-// test that deploys the contracts in a local EVM — there is no forking and no
-// live chain, so a proof can never touch real funds.
+// then audits and proves it the same way. A proof is a Foundry test that deploys
+// the contracts in a local EVM. A scope may carry a `fork` pin, and then the replay
+// forks that chain at that block and reads it (lib/fork.mjs); either way nothing
+// signs or broadcasts, so a proof can never touch real funds.
 const SYSTEM_BRIEF = `You are an authorized offensive-security agent in an isolated sandbox.
 The operator has asked you to audit a target they own. Your job: find EVERY real,
 exploitable vulnerability in the code the scope points at and PROVE each one with
@@ -250,7 +264,7 @@ function tools(ws, state) {
   });
   const fetchSourceTool = defineTool({
     name: "fetch_source",
-    description: "Fetch one of the scope's GitHub links into the workspace so you can read and compile it. Pass the URL exactly as the scope section of your instructions lists it: a repo or tree link is cloned into vendor/<owner>__<repo>/ (\"@<ref>\" for a tree), a blob (single-file) link is saved under vendor/files/<owner>__<repo>@<ref>/<path>. Any other URL is refused. The fetch happens on the host; the proof still runs offline.",
+    description: "Fetch one of the scope's GitHub links into the workspace so you can read and compile it. Pass the URL exactly as the scope section of your instructions lists it: a repo or tree link is cloned into vendor/<owner>__<repo>/ (\"@<ref>\" for a tree), a blob (single-file) link is saved under vendor/files/<owner>__<repo>@<ref>/<path>. Any other URL is refused. The fetch happens on the host. A lab or folder proof runs offline; a forked scope replay reads its chain.",
     parameters: obj({ url: str({ description: "one GitHub link exactly as the scope lists it" }) }),
     replay: "unsafe",
     execute: async (args) => {
@@ -264,7 +278,7 @@ function tools(ws, state) {
         return { output: [{ type: "text", text: `Could not fetch ${url}: ${String(e?.message ?? e)}` }], isError: true };
       }
       // Pre-install the solc each fetched file pins into the shared cache, with
-      // network, so the later offline proof can compile them. Best-effort — a warm
+      // network, so the later proof can compile them. Best-effort — a warm
       // failure is not fatal; the proof just reports a clear compiler error if a
       // version is truly unavailable.
       const versions = new Set();
@@ -329,10 +343,16 @@ function tools(ws, state) {
   });
   const submitFinding = defineTool({
     name: "submit_finding",
-    description: "Record one proven vulnerability: one root cause, meaning one code fix. Call it as soon as a test passes. Never submit a second finding for the same root cause. It returns at once; then continue the audit with the next suspect.",
+    description: "Record one proven vulnerability: one root cause, meaning one code fix. Call it as soon as a test passes. Never submit a second finding for the same root cause. Name the attack class from the sweep: it is how the operator sees which classes this audit covered. It returns at once; then continue the audit with the next suspect.",
     parameters: obj({
       title: str(), severity: str({ description: "critical | high | medium | low" }),
+      // The passing test contract. This MUST stay in the schema: pi-durable drops any
+      // argument a tool does not declare, so removing it made every submit_finding
+      // arrive with an empty `poc_contract` and be refused as "not-passed". Every
+      // unit test passed because they call execute() directly and never go through
+      // the schema. Found by a real model run (2026-11-14).
       poc_contract: str({ description: "name of your passing test contract" }),
+      class: str({ description: `the attack class from your sweep; one of: ${classIds()}` }),
       explanation: str({ description: "Plain-language write-up a non-expert 15-year-old can follow: short sentences, one idea each, identifiers in `backticks`, every multi-line code snippet in a fenced block whose opening fence names the language (```solidity, ```javascript, ```typescript, …), and a final line starting with \"Fix:\"." }),
     }),
     replay: "safe",
@@ -341,6 +361,14 @@ function tools(ws, state) {
       if (!proofOpen(ws)) {
         event("submit-rejected", { poc, reason: "no-solidity" });
         return { output: [{ type: "text", text: PROOF_CLOSED }], isError: true };
+      }
+      // The class is how the operator reads coverage. A finding with no class
+      // cannot be counted against the sweep, so it is refused before the replay
+      // spends time: the agent picks the row, and `other` is the honest escape.
+      const attackClass = normalizeClass(args.class);
+      if (!attackClass) {
+        event("submit-rejected", { poc, reason: "no-class" });
+        return { output: [{ type: "text", text: `Cannot record this finding: \`class\` is missing or not one of the sweep's ids. Pass the id of the row this root cause belongs to, for example \`access-control\` or \`share-accounting\`. Use \`other\` only for a real root cause no row describes, and say which class it is in the explanation. The ids are: ${classIds()}.` }], isError: true };
       }
       // Hard gate: a finding is real ONLY when its own Foundry test passed AND
       // its replay shows harm to a scope target. Otherwise it is refused here.
@@ -369,8 +397,8 @@ function tools(ws, state) {
       }
       const n = state.found.length + 1;
       // The final replay sets pocProved; a candidate for this test stays until then.
-      state.found.push(provedLater({ n, title: args.title, severity: args.severity, poc, explanation: args.explanation, source }));
-      event("finding-submitted", { pack: "contracts", n, title: args.title, severity: args.severity, poc });
+      state.found.push(provedLater({ n, title: args.title, severity: args.severity, class: attackClass, poc, explanation: args.explanation, source }));
+      event("finding-submitted", { pack: "contracts", n, title: args.title, severity: args.severity, class: attackClass, poc });
       return { output: [{ type: "text", text: `Recorded finding #${n}: ${args.title} (${args.severity}). Do NOT stop. Continue with the next suspect root cause on your list, worst first. Skip anything this finding's fix would also stop. ${leftText(MAX_POC, state.poc, "run_poc")} When every suspect is proven or ruled out, write the coverage summary.` }] };
     },
   });
@@ -443,6 +471,12 @@ function kickoff(ws, env) {
     ? "Read the scope section of your instructions first. Fetch the sources it links with fetch_source, then audit the fetched code under vendor/. Do a complete audit: list every suspect worst first, then prove each one you can with its own passing Foundry PoC that deploys the code locally — no forking, no live chain. Submit each proven finding as soon as its test passes, and keep going until every suspect is proven or ruled out. End with the coverage summary."
     : "Audit the contract(s) under src/. Do a complete audit: list every suspect worst first, then prove each one you can with its own passing Foundry PoC. Submit each proven finding as soon as its test passes, and keep going until every suspect is proven or ruled out. End with the coverage summary.";
   const leadBlocks = [];
+  // A scan that did not run is a gap, not a clean result. Without this line the
+  // brief is simply absent, so "no leads" reads as "nothing wrong" and the agent
+  // trusts a scan that read no file. Keep the gap first: it changes how much the
+  // leads below are worth.
+  if (env.STATIC_GAP) leadBlocks.push(env.STATIC_GAP);
+  if (env.FUZZ_GAP) leadBlocks.push(env.FUZZ_GAP);
   if (env.STATIC_BRIEF) leadBlocks.push(`${env.STATIC_BRIEF}\n\nThese are leads from two static analyzers (Slither + Aderyn), scariest first; a spot both flag is a stronger lead. A lead is only real once your PoC proves it. Call static_findings for the full detail on any lead.`);
   if (env.FUZZ_BRIEF) leadBlocks.push(`${env.FUZZ_BRIEF}\n\nThese are leads from two property fuzzers (Echidna + Medusa): each is an invariant they broke from ordinary calls, and an invariant both broke is a stronger lead. A broken invariant is only a lead until your PoC reproduces it. Call fuzz_findings for the breaking call sequence.`);
   if (env.SYMBOLIC_BRIEF) leadBlocks.push(env.SYMBOLIC_BRIEF);
@@ -469,11 +503,11 @@ async function prepass(ws, { emit }) {
     runStatic: modules == null || moduleOn(modules, "static"),
     runFuzz: modules == null || moduleOn(modules, "fuzz"),
     onStatic: (ev, scan) => {
-      record.static = { tool: scan.tool, engines: scan.engines, mode: scan.mode, files: scan.files, analysed: scan.analysed, suspects: scan.findings.length, top: ev.top };
+      record.static = { tool: scan.tool, engines: scan.engines, mode: scan.mode, files: scan.files, analysed: scan.analysed, suspects: scan.findings.length, top: ev.top, ...(ev.gap ? { gap: ev.gap } : {}) };
       emit(ev);
     },
     onFuzz: (ev, fuzz) => {
-      record.fuzz = { tool: fuzz.tool, engines: fuzz.engines, template: fuzz.template, applicable: fuzz.applicable, suspects: fuzz.findings.length, top: ev.top };
+      record.fuzz = { tool: fuzz.tool, engines: fuzz.engines, template: fuzz.template, applicable: fuzz.applicable, suspects: fuzz.findings.length, top: ev.top, ...(ev.gap ? { gap: ev.gap } : {}) };
       emit(ev);
     },
   });
@@ -505,7 +539,7 @@ export default {
   // What the module tests, in one plain sentence (from its SKILL.md). The
   // Modules page shows it; it makes no proof claim.
   description: "Solidity contracts you own, from a lab, a local folder or a GitHub repo.",
-  tier: "P", // passive: the target code and PoCs run only in our offline sandbox
+  tier: "P", // passive: the target code and PoCs run only in our own sandbox (a forked replay reads its chain, read-only)
   proof: "forge", // a finding is real only when its Foundry test replays green
   // Where its tools reach. The Modules page reads this. fetch_source clones the
   // scope's GitHub links on the host, and warmSolc downloads the compilers those

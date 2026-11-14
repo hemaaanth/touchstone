@@ -24,20 +24,32 @@ replays green and shows the harm.
 Before the agent starts, two ensembles scan the code. Each gives leads, never
 findings.
 
-- Static: Slither and Aderyn. A spot both flag ranks higher.
+- Static: Slither and Aderyn, plus our own crypto source checks
+  (`packs/keys/source-checks.mjs`, shared by three packs): unprotected privileged
+  functions, unprotected initializers, a signature with no domain or nonce, a
+  caller-chosen delegatecall. Slither and Aderyn do not model those rules at all,
+  so a check only we have can outrank a generic alert. A spot two engines flag
+  ranks higher.
 - Fuzz: Echidna and Medusa run one invariant harness. An invariant both break
-  ranks higher. The lead comes with the call sequence that broke it.
+  ranks higher. The lead comes with the call sequence that broke it. The harness
+  is the vault-solvency template only: a target that does not match it gets an
+  explicit gap, never a silent "nothing broken".
+
+A scan that read no file is reported as a gap (`STATIC_GAP`, `FUZZ_GAP`) in the
+agent's first message and in the run's tools row. A gap is not a clean result.
 
 A brief has no local code at the start, so both ensembles are off for a brief.
 
 ## Steps
 
-1. Read the code and the leads. List every suspect root cause, worst first.
-2. For each suspect, write a Foundry test and run it with `run_poc`. Use at most
+1. Read the code and the leads.
+2. Sweep the attack classes. `lib/attack-classes.mjs` lists them with a question
+   per class. Answer every class: proven, not present, or not tried.
+3. For each suspect, write a Foundry test and run it with `run_poc`. Use at most
    3 attempts per suspect.
-3. When a test passes and shows the harm, call `submit_finding`. Then go on to
-   the next suspect.
-4. End with one coverage line per suspect: proven, not exploitable, or not tried.
+4. When a test passes and shows the harm, call `submit_finding` with the class id
+   from the sweep. Then go on to the next suspect.
+5. End with one coverage line per class: proven, not present, or not tried.
 
 ## Oracle
 
@@ -46,8 +58,22 @@ settles, the engine replays each submitted test once more with `--json -vvvv`.
 It records who gained and who lost funds. A test that does not replay green is
 not a finding.
 
+Two oracles decide what "harm" means, and the run says which one judged it:
+
+- **Deployed** (`lib/oracle-deployed.mjs`): a contract at a pinned address lost
+  native ETH or an ERC-20, and another address gained it. Used when the scope
+  carries a fork pin.
+- **Scope code**: a contract the test deployed from source lost value or had a
+  control slot repointed. Used for every offline run.
+
+A cheatcode that fakes a target's state disqualifies it either way, and a test that
+creates code at a pinned address is refused: on a fork those addresses already
+exist.
+
 ## Limits
 
-- No chain fork and no live network. The proof deploys the code in a local EVM.
+- A lab or a folder proves in a local EVM with no fork. A **forked** scope proves
+  on a copy of a real chain at a pinned block, read through an RPC: the block is
+  required, and the fork is read-only. Either way nothing signs or broadcasts.
 - Solidity only. Vyper, Move, Rust (NEAR, Solana) and Cairo are not covered yet.
   See TOOLS.md.
