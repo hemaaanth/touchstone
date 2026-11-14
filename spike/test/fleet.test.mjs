@@ -43,8 +43,8 @@ async function runtime(t, route, { max = 4, budgeted = false, required = false, 
   registry.install(defineExtension({ name: "pack", tools: fleet ? fleet.wrapTools([read]) : [read] }));
   if (fleet) registry.install(fleet.extension);
   const harness = await Harness.open(new MemoryStorage(), { models, registry, settings: { retry: { maxRetries: 0 } }, onReport: (r) => reports.push(r) }, ctx);
-  const root = await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" }, instructions: fleet ? COORDINATOR_INSTRUCTIONS : "Audit the lab only." } });
   await fleet?.attach(harness, ctx);
+  const root = await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" }, instructions: fleet ? COORDINATOR_INSTRUCTIONS : "Audit the lab only." } });
   t.after(async () => { await fleet?.close(); await harness.close(ctx); });
   async function run(content, drain) {
     let settled = await (await root.submit({ type: "input", content }, ctx)).wait(ctx);
@@ -258,8 +258,8 @@ async function worker(t, storage, { brief, changed = "", briefChange }, seen) {
   const registry = createRegistry();
   registry.install(fleet.extension);
   const harness = await Harness.open(storage, { models, registry, settings: { retry: { maxRetries: 0 } } }, ctx);
-  const root = await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" }, instructions: COORDINATOR_INSTRUCTIONS } });
   await fleet.attach(harness, ctx);
+  const root = await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" }, instructions: COORDINATOR_INSTRUCTIONS } });
   return {
     harness,
     async say(content) {
@@ -363,5 +363,5 @@ test("the engine gives the fleet the worker's brief, the change text and the cha
   // agent-run.mjs runs on import, so its wiring is pinned by its source.
   const src = readFileSync(new URL("../agent-run.mjs", import.meta.url), "utf8");
   assert.match(src, /import \{[^}]*\bbriefChange\b[^}]*\} from "\.\/lib\/targets\.mjs"/);
-  assert.match(src, /createFleet\(\{ system, costOf, brief: process\.env\.SCOPE_BRIEF \?\? "", briefChange, changed: process\.env\.BRIEF_CHANGE \?\? ""[ ,]/);
+  assert.match(src, /createFleet\(\{ system, costOf, brief: process\.env\.SCOPE_BRIEF \?\? "", briefChange, changed: process\.env\.BRIEF_CHANGE \?\? "" \}\)/);
 });

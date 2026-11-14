@@ -8,7 +8,6 @@
 //
 // The first process is this same file, started as a plain program. It is killed
 // with SIGKILL while the child's model call is in flight: a crash, not a close.
-import "./helpers/isolated-env.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -38,8 +37,8 @@ async function open(db, route, brief = {}) {
   registry.install(fleet.extension);
   const reports = [];
   const harness = await Harness.open(await openNodeSqliteStorage(db), { models, registry, settings: { retry: { maxRetries: 5, baseDelayMs: 20 } }, onReport: (r) => reports.push(r.kind) }, ctx);
-  const root = await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" }, instructions: COORDINATOR_INSTRUCTIONS } });
   await fleet.attach(harness, ctx);
+  const root = await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" }, instructions: COORDINATOR_INSTRUCTIONS } });
   return { harness, fleet, root, reports };
 }
 
