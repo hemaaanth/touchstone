@@ -141,12 +141,11 @@ and Python 3 pidfds, with a simulated Docker daemon.
 
 | Claim to inspect | Implementation | Focused evidence |
 | --- | --- | --- |
-| NEAR AI inference with shared cost accounting | [`providers.mjs`](spike/lib/providers.mjs), [`provider.mjs`](spike/lib/provider.mjs), [`inference.mjs`](spike/lib/inference.mjs) | [`spend-cap.test.ts`](app/tests/spend-cap.test.ts), [`fleet-loadout.test.mjs`](spike/test/fleet-loadout.test.mjs) |
-| Agent delegation and shared coordination | [`fleet.mjs`](spike/lib/fleet.mjs), [`agent-run.mjs`](spike/agent-run.mjs) | [`fleet-concurrency.test.mjs`](spike/test/fleet-concurrency.test.mjs), [`agent-run-startup.test.mjs`](spike/test/agent-run-startup.test.mjs) |
-| A passing attempt is still subject to a harm gate | [`proof.mjs`](spike/lib/proof.mjs), [`control-trace.mjs`](spike/lib/control-trace.mjs), [`candidate.mjs`](spike/lib/candidate.mjs) | [`harm-gate.test.mjs`](spike/test/harm-gate.test.mjs), [`candidate-harm.test.mjs`](spike/test/candidate-harm.test.mjs) |
-| Public visitors cannot change execution policy or read another visitor's run | [`demo-http.mjs`](app/server/demo-http.mjs), [`runs.mjs`](app/server/runs.mjs), [`findings.mjs`](app/server/findings.mjs) | [`demo-policy.test.mjs`](app/tests/demo-policy.test.mjs), [`demo-backend.test.mjs`](app/tests/demo-backend.test.mjs) |
-| Run-owned cleanup and restart recovery | [`demo-resources.mjs`](spike/lib/demo-resources.mjs), [`demo-lifecycle.mjs`](app/server/demo-lifecycle.mjs) | [`demo-resources.test.mjs`](app/tests/demo-resources.test.mjs) |
-| Reports and replay exports come from recorded results | [`report.mjs`](app/server/report.mjs), [`replay-bundle.mjs`](app/server/replay-bundle.mjs) | [`replay-evidence.test.ts`](app/tests/replay-evidence.test.ts), [`replay-store.test.mjs`](spike/test/replay-store.test.mjs) |
+| Durable, resumable agent runs on pi-durable, coordinated through a shared Bulletin | [`agent-run.mjs`](spike/agent-run.mjs), [`fleet.mjs`](spike/lib/fleet.mjs) | [`fleet-restart.test.mjs`](spike/test/fleet-restart.test.mjs), [`store-durable.test.mjs`](spike/test/store-durable.test.mjs) |
+| Many analysis modules across different security domains | [`spike/packs/`](spike/packs), [`packs/index.mjs`](spike/packs/index.mjs) | [`multi-pack.test.mjs`](spike/test/multi-pack.test.mjs), [`review-leads.test.mjs`](spike/test/review-leads.test.mjs) |
+| Some modules back a finding with a machine-checked proof | [`proof.mjs`](spike/lib/proof.mjs), [`proof-class.mjs`](spike/lib/proof-class.mjs) | [`proof-class.test.mjs`](spike/test/proof-class.test.mjs), [`forge-proof-readback.test.mjs`](spike/test/forge-proof-readback.test.mjs) |
+| A swarm of multiple agents works one target in parallel | [`fleet.mjs`](spike/lib/fleet.mjs), [`agent-run.mjs`](spike/agent-run.mjs) | [`fleet-concurrency.test.mjs`](spike/test/fleet-concurrency.test.mjs), [`fleet-loadout.test.mjs`](spike/test/fleet-loadout.test.mjs) |
+| Runs execute in isolated sandboxes — local Docker or remote Daytona | [`sandbox.mjs`](spike/lib/sandbox.mjs), [`daytona.mjs`](spike/lib/daytona.mjs) | [`sandbox-isolation.test.mjs`](spike/test/sandbox-isolation.test.mjs), [`daytona-sandbox.test.mjs`](spike/test/daytona-sandbox.test.mjs) |
 
 The application is in [`app/`](app). The reusable engine and modules are in
 [`spike/`](spike). Prepared targets are in [`lab/`](lab) and the module folders.
@@ -162,9 +161,11 @@ capabilities of this submission.
 
 ## Hackathon provenance
 
-Built for **NEAR HACKATHON 2026**. This repository's history begins with the
-[initial Touchstone commit on November 10, 2026](https://github.com/hemaaanth/touchstone/commit/d678d5647e966d05fe71a053ae00811bd1986a37).
-The implementation and development history are available in the repository.
+Built for **NEAR HACKATHON 2026**. This repository's public history opens with the
+[initial Touchstone commit on November 10, 2026](https://github.com/hemaaanth/touchstone/commit/d678d5647e966d05fe71a053ae00811bd1986a37),
+which collapses the earlier scaffolding into a single starting point. Hands-on
+work began somewhat before that date — but no work on this project started before
+November 1, 2026. The implementation and development history are available in the repository.
 
 Touchstone builds on existing open-source work: pi-durable, assistant-ui,
 shadcn/Base UI, Foundry, and the specialist tools documented in each pack.
