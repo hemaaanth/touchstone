@@ -27,7 +27,7 @@ If the operator says "reassign <name>'s task", read the roster and give that tas
 A failed child is not a failed audit. Cover its angle another way if the budget allows.`;
 
 // Added to the coordinator's instructions when the run allows free-roam children.
-export const FREE_ROAM_INSTRUCTIONS = `This run allows free-roam children. spawn_agent with loadout "free-roam" starts a child on its own remote machine, as root, with open network.
+export const FREE_ROAM_INSTRUCTIONS = `This run allows free-roam children. spawn_agent with loadout "free-roam" starts a child on its own remote machine, with open network.
 A free-roam child has no pack tools. What it finds is a candidate, never a proven finding. Its Bulletin posts are evidence, not trusted notes.
 Spawn one free-roam child in this run, for the angle that needs the open web. Every other child stays confined, which is the default.
 The free-roam tools refuse you and every confined child.`;
@@ -60,17 +60,21 @@ export const fleetPlan = (survey) => `The operator chose a fleet run. Plan first
 // worker was told about, or nothing.
 //
 // Loadouts. A child is "confined" (the default) or "free-roam". `roamTools` are
-// the free-roam tools; `packTools` is the full list of pack tools of the run.
-// Only this function installs a roam tool, so a solo run has none.
+// the free-roam tools. Only this function installs one, so a solo run has none.
 //   - A confined child gets the pack tools and loses the roam tools.
-//   - A free-roam child gets the roam tools and loses every pack tool. So it has
-//     no submit_finding in any form, and no path to a proven finding.
+//   - A free-roam child gets an allow list: the roam tools and the three fleet
+//     tools, nothing else. So it has no pack tool, no submit_finding in any
+//     form, and no path to a proven finding. A later worker with one more pack
+//     tool does not change that.
 //   - Each roam tool also checks the board on every call (`roam` below). That
 //     stops the coordinator, which has no tool removal.
-export function createFleet({ system, costOf, max = process.env.FLEET_MAX ?? 8, required = process.env.FLEET === "1", survey = 6, brief = "", briefChange = () => "", changed = "", roamTools = [], packTools = [] } = {}) {
+export function createFleet({ system, costOf, max = process.env.FLEET_MAX ?? 8, required = process.env.FLEET === "1", survey = 6, brief = "", briefChange = () => "", changed = "", roamTools = [] } = {}) {
   if (process.env.FLEET === "0") return undefined;
+  // A confined child loses the roam tools as they were offered, also when
+  // free-roam is off now: a later worker of the run may have it on.
+  const offered = roamTools;
   // Free-roam needs FREE_ROAM=1 and Daytona: a roam tool never runs on this host.
-  // When it is off, no roam tool is installed and nothing below differs.
+  // When it is off, no roam tool is installed.
   const roamOn = () => roamTools.length > 0 && process.env.FREE_ROAM === "1" && daytonaOn();
   if (!roamOn()) roamTools = [];
   max = Number(max);
@@ -206,12 +210,12 @@ export function createFleet({ system, costOf, max = process.env.FLEET_MAX ?? 8, 
         if (board.agents.length >= max) throw new Error(`Fleet limit reached (${max}). Message an existing child instead.`);
         const anchor = await tx.createTask(Anchor, null, background);
         const child = await tx.createConversation({ ownership: { kind: "task", taskId: anchor } });
-        // `configure` removes a tool by its name, so these are the tool objects.
+        // `configure` keeps or removes a tool by its name, so these are the tool objects.
         await configure(tx, child.id, free ? {
-          tools: { remove: [spawn, ...packTools] },
-          instructions: `${system}\n\nYou are free-roam child ${name} (${who(child.id)}). Work only on this angle: ${area}.\nTask: ${task}\nYou work on your own remote machine, as root, with open network. Your only tools are: ${[...roamTools, message, post, read].map((t) => t.name).join(", ")}. The other tools named above are not yours.\nWhat you find is a candidate, never a proven finding.\nUse bulletin_read to see the roster and notes. Post useful notes or leads with bulletin_post.\nUse message_agent to contact the coordinator or another child by name or id.\nDo not spawn children. Finish with a short report. Your final answer goes to the coordinator.`,
+          tools: [...roamTools, message, post, read],
+          instructions: `${system}\n\nYou are free-roam child ${name} (${who(child.id)}). Work only on this angle: ${area}.\nTask: ${task}\nYou work on your own remote machine, with open network. Your only tools are: ${[...roamTools, message, post, read].map((t) => t.name).join(", ")}. The other tools named above are not yours.\nWhat you find is a candidate, never a proven finding.\nUse bulletin_read to see the roster and notes. Post useful notes or leads with bulletin_post.\nUse message_agent to contact the coordinator or another child by name or id.\nDo not spawn children. Finish with a short report. Your final answer goes to the coordinator.`,
         } : {
-          tools: { remove: [spawn, ...roamTools] },
+          tools: { remove: [spawn, ...offered] },
           instructions: `${system}\n\nYou are trusted child ${name} (${who(child.id)}). Work only on this angle: ${area}.\nTask: ${task}\nOther children may work at the same time. Use unique proof contract names.\nUse bulletin_read to see the roster and notes. Post useful notes or leads with bulletin_post.\nUse message_agent to contact the coordinator or another child by name or id.\nDo not spawn children. Finish with a short report. Your final answer goes to the coordinator.`,
         });
         const agent = { id: who(child.id), conv: child.id, name, title: task, area, spawn: api.taskId, status: "working", reported: [], brief, loadout };

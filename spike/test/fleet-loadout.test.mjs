@@ -1,7 +1,9 @@
 import "./helpers/isolated-env.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
@@ -16,6 +18,7 @@ import { currentAgent } from "../lib/event.mjs";
 const ON = { FLEET: undefined, FREE_ROAM: "1", TOUCHSTONE_EXEC: "daytona", DAYTONA_API_KEY: "made-up-test-key", DAYTONA_API_URL: undefined };
 const PACK = ["read_source", "submit_finding_web", "submit_finding_contracts"]; // a joined run of two modules
 const ROAM = ["shell", "submit_session_candidate"];
+const ORIGINAL = Object.fromEntries(Object.keys(ON).map((k) => [k, process.env[k]]));
 const Roster = defineDoc({ kind: "touchstone.fleet", version: 1, scope: "conversation", history: "latest", fork: "initial", initial: () => ({ agents: [], jobs: {}, bulletin: [] }), checkpointWhen: () => false });
 
 const result = (blocks) => answer(blocks, { stopReason: "toolUse" });
@@ -36,11 +39,12 @@ function seen(request) {
   return { last: request.messages.findLast((m) => m.role !== "system"), instructions, tools: [...tools], who: child ?? "coordinator" };
 }
 
-async function runtime(t, route, { env = ON, required = false, survey, hooks = {} } = {}) {
-  const old = Object.fromEntries(Object.keys(env).map((k) => [k, process.env[k]]));
+// One worker of a run. `storage` and `pack` let a case open a second worker on
+// the same run, with another environment or another pack tool list.
+async function runtime(t, route, { env = ON, required = false, survey, hooks = {}, storage = new MemoryStorage(), pack = PACK } = {}) {
   const set = (values) => { for (const [k, v] of Object.entries(values)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; } };
   set(env);
-  t.after(() => set(old));
+  t.after(() => set(ORIGINAL));
   const events = [], reports = [], ran = [], lists = {};
   t.mock.method(console, "log", (line) => { if (line.startsWith("EVENT ")) events.push(JSON.parse(line.slice(6))); });
   // Each fake records who ran it. `hooks[name]` lets one case hold a call open.
@@ -48,20 +52,22 @@ async function runtime(t, route, { env = ON, required = false, survey, hooks = {
     name, description: `Fake ${name}.`, parameters: obj({}), replay: "safe",
     execute: async () => { ran.push(`${currentAgent() ?? "coordinator"}:${name}`); await hooks[name]?.(); return { output: [{ type: "text", text: `${name} ran.` }] }; },
   });
-  const packTools = PACK.map(fake), roamTools = ROAM.map(fake);
+  const packTools = pack.map(fake), roamTools = ROAM.map(fake);
   const faux = fauxProvider({ tokensPerSecond: 100000 });
   faux.setResponses(Array.from({ length: 150 }, () => (request) => { const s = seen(request); lists[s.who] = s.tools; return route(s); }));
   const models = createModels();
   models.setProvider(faux.provider);
-  const fleet = createFleet({ system: "Audit the lab only.", costOf: () => 0, max: 4, required, survey, roamTools, packTools });
+  const fleet = createFleet({ system: "Audit the lab only.", costOf: () => 0, max: 4, required, survey, roamTools });
   const registry = createRegistry();
   // The same wiring as agent-run.mjs: the pack extension, then the fleet's own.
   registry.install(defineExtension({ name: "pack", tools: fleet ? fleet.wrapTools(packTools) : packTools }));
   if (fleet) registry.install(fleet.extension);
-  const harness = await Harness.open(new MemoryStorage(), { models, registry, settings: { retry: { maxRetries: 0 } }, onReport: (r) => reports.push(r) }, ctx);
+  const harness = await Harness.open(storage, { models, registry, settings: { retry: { maxRetries: 0 } }, onReport: (r) => reports.push(r) }, ctx);
   await fleet?.attach(harness, ctx);
   const root = await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" }, instructions: fleet ? fleet.instructions : "Audit the lab only." } });
-  t.after(async () => { await fleet?.close(); await harness.close(ctx); });
+  let closed = false;
+  const close = async () => { if (closed) return; closed = true; await fleet?.close(); await harness.close(ctx); };
+  t.after(close);
   async function run(content) {
     let settled = await (await root.submit({ type: "input", content }, ctx)).wait(ctx);
     settled = await fleet?.drain(ctx) ?? settled;
@@ -72,8 +78,25 @@ async function runtime(t, route, { env = ON, required = false, survey, hooks = {
   const spawned = (name) => events.find((e) => e.ev === "subagent-spawned" && e.name === name);
   // The wrapped roam tool, called with no model in between, as conversation `conv`.
   const direct = (name, conv) => fleet.extension.tools.find((tool) => tool.name === name).execute({}, { conversationId: conv, snapshot: (doc, id, c) => harness.snapshot(doc, id, c) }, ctx);
-  return { events, fleet, harness, run, ran, lists, results, spawned, direct };
+  return { events, fleet, harness, run, ran, lists, results, spawned, direct, close };
 }
+
+// A run that a second worker continues: one SQLite file for both.
+async function shared(t) {
+  const dir = mkdtempSync(join(tmpdir(), "fleet-loadout-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const { openNodeSqliteStorage } = await import("@earendil-works/pi-durable/storage/sqlite/node");
+  return () => openNodeSqliteStorage(join(dir, "session.sqlite"));
+}
+// For two workers: "start" spawns the child, "go on" sends it one more message.
+const twoWorkers = (name, loadout, childCalls) => (s) => {
+  if (s.who === "coordinator") {
+    if (text(s.last) === "start") return result([spawnCall(name, loadout)]);
+    if (text(s.last) === "go on") return result([call("message_agent", { to: name, text: "Go on." })]);
+    return answer("Coverage complete.");
+  }
+  return s.last.role === "user" && text(s.last).includes("Go on.") ? result(childCalls.map((n) => call(n, {}))) : answer("Done.");
+};
 
 // A coordinator that spawns the given children on "start", then ends.
 const coordinator = (s, children) => text(s.last) === "start" ? result(children) : answer("Coverage complete.");
@@ -120,6 +143,7 @@ test("the coordinator cannot call a roam tool, and a refused call is not a surve
   assert.deepEqual(r.ran, ["coordinator:read_source"]);
 });
 
+// The fleet is not told the pack tool list: the child's tools are an allow list.
 test("a free-roam child has no pack tool, so no submit_finding in any form, and it cannot call one", { timeout: 15000 }, async (t) => {
   const r = await runtime(t, (s) => {
     if (s.who === "coordinator") return coordinator(s, [spawnCall("Beta", "free-roam")]);
@@ -169,14 +193,55 @@ test("with FLEET=0 and FREE_ROAM=1 the tool list has no shell", { timeout: 15000
   assert.deepEqual(r.lists.coordinator, PACK);
   assert.ok((await r.results(undefined, "shell")).every((m) => m.isError));
   assert.deepEqual(r.ran, []);
-  // agent-run.mjs runs on import, so its wiring is pinned by its source: the
-  // pack tool list goes to createFleet, and only two extensions are installed.
+  // agent-run.mjs runs on import, so its wiring is pinned by its source: only
+  // two extensions are installed, the pack's and the fleet's.
   const src = readFileSync(new URL("../agent-run.mjs", import.meta.url), "utf8");
-  assert.match(src, /createFleet\(\{ system, [^\n]*\bpackTools: tools\b/);
   assert.deepEqual(src.match(/registry\.install\([^\n]*/g), [
     "registry.install(defineExtension({ name: pack.id, tools: fleet ? fleet.wrapTools(tools) : tools }));",
     "registry.install(fleet.extension);",
   ]);
+});
+
+test("a free-roam child cannot run a pack tool that a later worker adds", { timeout: 20000 }, async (t) => {
+  const open = await shared(t);
+  const route = twoWorkers("Beta", "free-roam", ["submit_finding_review", "submit_finding_web", "shell"]);
+  let w = await runtime(t, route, { storage: await open() });
+  await w.run("start");
+  const beta = w.spawned("Beta");
+  await w.close();
+  // The next worker of the run has one more pack tool.
+  w = await runtime(t, route, { storage: await open(), pack: [...PACK, "submit_finding_review"] });
+  await w.run("go on");
+  assert.ok(w.lists.coordinator.includes("submit_finding_review"), "the new pack tool is installed in this worker");
+  assert.deepEqual(w.lists.Beta.toSorted(), ["bulletin_post", "bulletin_read", "message_agent", "shell", "submit_session_candidate"]);
+  for (const name of ["submit_finding_review", "submit_finding_web"]) {
+    const refused = await w.results(beta.conv, name);
+    assert.equal(refused.length, 1, name);
+    assert.ok(refused[0].isError && /not available/.test(text(refused[0])), name);
+  }
+  assert.deepEqual(w.ran, [`${beta.id}:shell`]);
+});
+
+test("a confined child does not see a roam tool when a later worker has FREE_ROAM=1", { timeout: 20000 }, async (t) => {
+  const open = await shared(t);
+  const route = twoWorkers("Alpha", undefined, ["shell", "submit_session_candidate", "read_source"]);
+  // Free-roam is off in the worker that spawns the child.
+  let w = await runtime(t, route, { storage: await open(), env: { ...ON, FREE_ROAM: undefined } });
+  await w.run("start");
+  const alpha = w.spawned("Alpha");
+  assert.deepEqual(w.lists.coordinator.filter((n) => ROAM.includes(n)), []);
+  await w.close();
+  w = await runtime(t, route, { storage: await open() });
+  await w.run("go on");
+  assert.ok(ROAM.every((n) => w.lists.coordinator.includes(n)), "the roam tools are installed in this worker");
+  assert.deepEqual(w.lists.Alpha.filter((n) => ROAM.includes(n)), []);
+  // Refused as a tool it does not have, before the board guard.
+  for (const name of ROAM) {
+    const refused = await w.results(alpha.conv, name);
+    assert.equal(refused.length, 1, name);
+    assert.ok(refused[0].isError && /not available/.test(text(refused[0])), name);
+  }
+  assert.deepEqual(w.ran, [`${alpha.id}:read_source`]);
 });
 
 test("a roam tool call does not wait for a pack tool call that is held open", { timeout: 15000 }, async (t) => {
