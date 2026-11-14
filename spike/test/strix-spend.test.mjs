@@ -4,6 +4,7 @@
 // use that process's run budget: three $4.30 scans under a $5 run budget must
 // all run while the total cap allows them. Offline: the scanners, Docker and
 // the provider are fakes; the ledger is a temp file.
+import "./helpers/isolated-env.mjs";
 import { test, mock, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";

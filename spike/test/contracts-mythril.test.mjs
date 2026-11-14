@@ -7,6 +7,7 @@
 // The Docker tests run the real image against lab/vault-bytecode and skip when
 // the image is not built. The forge test proves the oracle exploit through the
 // harm gate and skips when the Foundry image is not built.
+import "./helpers/isolated-env.mjs";
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";

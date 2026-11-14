@@ -8,6 +8,7 @@
 //    pi-ai's retry classifier only knows "stream was interrupted", so the run
 //    ended with no retry. A non-retryable error must still fail fast, and a
 //    retry must not double-count spend or pass either budget.
+import "./helpers/isolated-env.mjs";
 import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";

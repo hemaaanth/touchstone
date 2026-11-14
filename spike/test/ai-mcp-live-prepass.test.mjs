@@ -3,6 +3,7 @@
 // prepassView. Docker is replaced by a stub at runTool, so this test needs no
 // image and sends no request. The stub returns real mcp-shield output that was
 // recorded once (test/fixtures/mcp-shield/poisoned.json).
+import "./helpers/isolated-env.mjs";
 import { test, mock } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";

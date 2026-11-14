@@ -1,13 +1,22 @@
-// Settings for the execution backend (app/server/settings.mjs). These tests
-// only read Settings, or fail before a write, so the saved file never changes.
-import "./helpers/isolated-env.mjs";
-import { test } from "node:test";
+// Settings for the execution backend (app/server/settings.mjs).
+// Provider settings and the spend ledger stay in this test's private store.
+import { TEST_STORE_DIR } from "./helpers/isolated-env.mjs";
+import { mock, test } from "node:test";
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 // A known console token, set before the import, so the guard can be tested.
 const TOKEN = "t6-test-token";
 process.env.TOUCHSTONE_GRANT_TOKEN = TOKEN;
+process.env.SPEND_LEDGER = join(TEST_STORE_DIR, "spend.json");
+const providersUrl = new URL("../lib/providers.mjs", import.meta.url).href;
+const realProviders = await import(providersUrl);
+let store = {};
+const readConfig = () => structuredClone({ default: null, capUsd: null, providers: {}, ...store });
+const writeConfig = (cfg) => { store = structuredClone(cfg); };
+mock.module(providersUrl, { exports: { ...realProviders, readConfig, writeConfig } });
 const { getSettings, setExecution, settingsWriteAllowed, settingsWriteRefusal } = await import("../../app/server/settings.mjs");
 
 function withEnv(vars, fn) {
@@ -32,10 +41,18 @@ test("getSettings shows the execution backend with a masked key", () => {
   });
 });
 
-test("getSettings defaults to local Docker", () => {
+test("a saved Daytona configuration cannot leak into the default-local case", () => {
   withEnv({ DAYTONA_API_KEY: undefined, TOUCHSTONE_EXEC: undefined }, () => {
+    try {
+      store = { execution: { backend: "daytona", apiKey: "dtn_fixture_key_9z8y" } };
+      assert.equal(getSettings().execution.backend, "daytona");
+    } finally {
+      store = {};
+    }
     const s = getSettings();
-    if (!s.execution.key.set) assert.equal(s.execution.backend, "local");
+    assert.equal(s.execution.backend, "local");
+    assert.equal(s.execution.saved, "local");
+    assert.equal(s.execution.key.set, false);
     assert.equal(typeof s.execution.target, "string");
   });
 });
@@ -44,7 +61,20 @@ test("setExecution rejects a bad backend and Daytona with no key, before any wri
   withEnv({ DAYTONA_API_KEY: undefined, TOUCHSTONE_EXEC: undefined }, () => {
     assert.throws(() => setExecution({ backend: "cloud" }), /backend must be/);
     assert.throws(() => setExecution({ backend: "local", target: "us west; rm" }), /bad characters/);
-    if (!getSettings().execution.key.set) assert.throws(() => setExecution({ backend: "daytona" }), /needs an API key/);
+    assert.throws(() => setExecution({ backend: "daytona" }), /needs an API key/);
+  });
+});
+
+test("the saved provider config follows TOUCHSTONE_PROVIDERS_FILE, and defaults to spike/data", () => {
+  const file = join(TEST_STORE_DIR, "providers.json");
+  assert.equal(process.env.TOUCHSTONE_PROVIDERS_FILE, file);
+  assert.equal(realProviders.providersFile(), file);
+  realProviders.writeConfig({ default: null, capUsd: 7, providers: {}, execution: { backend: "local" } });
+  assert.equal(realProviders.readConfig().capUsd, 7);
+  assert.equal(realProviders.readConfig().execution.backend, "local");
+  // Unset, the path is the one the app has always used. Not read here.
+  withEnv({ TOUCHSTONE_PROVIDERS_FILE: undefined }, () => {
+    assert.equal(realProviders.providersFile(), fileURLToPath(new URL("../data/providers.json", import.meta.url)));
   });
 });
 

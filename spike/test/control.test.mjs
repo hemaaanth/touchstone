@@ -1,6 +1,7 @@
 // Unit tests for control harm. Pure: synthetic replay traces, no Docker, no model.
 //
 //   node --experimental-test-module-mocks --test test/control.test.mjs
+import "./helpers/isolated-env.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { concat, keccak256, toBeHex } from "ethers";

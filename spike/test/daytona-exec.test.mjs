@@ -3,6 +3,7 @@
 // The pure parts run everywhere. The fallback test needs local Docker. The live
 // test makes real Daytona machines, so it runs only when asked:
 //   TOUCHSTONE_EXEC_LIVE=1 DAYTONA_API_KEY=... node --test spike/test/daytona-exec.test.mjs
+import "./helpers/isolated-env.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";

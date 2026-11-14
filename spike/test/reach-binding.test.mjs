@@ -9,6 +9,7 @@
 // "proxy" mode starts a proxy on 127.0.0.1 and sends nothing. No docker.
 //
 //   node --test spike/test/reach-binding.test.mjs
+import "./helpers/isolated-env.mjs";
 import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";

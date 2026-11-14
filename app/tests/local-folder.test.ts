@@ -1,3 +1,4 @@
+import "./helpers/isolated-env"
 import { useEnv } from "./helpers/env"
 import { afterAll, beforeEach, describe, expect, test } from "bun:test"
 import { closeSync, existsSync, fstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs"

@@ -1,6 +1,7 @@
 // katana and jsluice in the live surface path: capture -> pinned snapshot -> inventory leads -> run view.
 // The capture tools are faked with recorded output. No request leaves the machine.
 // The snapshot analyzer is real: it runs in the domains tools image, offline.
+import "./helpers/isolated-env.mjs";
 import { test, mock, beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';

@@ -4,6 +4,7 @@
 // exact origin. Web and AI/MCP read `baseUrl`; AI/MCP also takes the caller's
 // token; Domains and Surface capture a root domain over UDP DNS, so they get
 // `domain` plus a reach block instead. No network, no Docker here.
+import "./helpers/isolated-env.mjs";
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";

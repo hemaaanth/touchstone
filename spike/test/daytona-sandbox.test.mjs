@@ -4,6 +4,7 @@
 // real with `sh`, but with a stub `docker` first on PATH. So a value that
 // breaks out of the script's quoting would really run, and leave a marker
 // file. No machine, no network, no cost.
+import "./helpers/isolated-env.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";

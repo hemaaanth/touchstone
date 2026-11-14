@@ -13,6 +13,7 @@
 // text holds the token or any part of it.
 //
 //   node --experimental-test-module-mocks --test spike/test/supply-chain-networked-record.test.mjs
+import "./helpers/isolated-env.mjs";
 import { test, after, mock } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, chmodSync, statSync } from "node:fs";

@@ -1,4 +1,5 @@
 // The shared candidate record and submit_candidate checks (lib/candidate.mjs).
+import "./helpers/isolated-env.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";

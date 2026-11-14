@@ -3,6 +3,7 @@
 // The checks are pure. The prepass test runs Aderyn in Docker and skips when its image is missing.
 //
 //   node --experimental-test-module-mocks --test test/keys-source.test.mjs
+import "./helpers/isolated-env.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";

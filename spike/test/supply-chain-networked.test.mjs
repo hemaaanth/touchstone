@@ -10,6 +10,7 @@
 // stand-in boundary and docker, or is refused by the real gate first.
 //
 //   node --experimental-test-module-mocks --test spike/test/supply-chain-networked.test.mjs
+import "./helpers/isolated-env.mjs";
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, readdirSync, writeFileSync, chmodSync, existsSync } from "node:fs";

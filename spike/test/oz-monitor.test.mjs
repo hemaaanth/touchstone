@@ -1,6 +1,7 @@
 // OpenZeppelin Monitor through runTool() for the chain-watch pack (lib/oz-monitor.mjs).
 // The real-run tests need the monitor image (tools/build-oz-monitor-image.sh) and the
 // chain-tools image, and skip when one is missing. The parse tests need no Docker.
+import "./helpers/isolated-env.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";

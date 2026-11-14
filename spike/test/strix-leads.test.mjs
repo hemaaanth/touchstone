@@ -1,4 +1,5 @@
 // Strix's SARIF becomes our lead shape. No Docker and no model here.
+import "./helpers/isolated-env.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { parseSarif } from "../lib/strix.mjs";

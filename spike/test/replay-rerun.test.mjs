@@ -2,6 +2,7 @@
 // keyed by the hash of the checked files (replay/rerun/<hash>.json), never in
 // a run record. A stub runner stands in for forge, so no Docker is needed;
 // the real offline re-run is the opt-in Docker test in app/tests/report.test.ts.
+import "./helpers/isolated-env.mjs";
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
