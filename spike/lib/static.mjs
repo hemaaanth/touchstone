@@ -197,22 +197,17 @@ export function staticBrief(scan) {
   return `Static analysis (${who}) flagged ${scan.findings.length} suspect(s), scariest first:\n${lines.join("\n")}`;
 }
 
-// The honest caveat for a scan that did not read the code. A brief that is empty
-// because nothing ran is not a clean brief: before this, a failed Slither compile
-// produced "" and the agent started with no leads and no note, so "no leads" read
-// as "nothing wrong". A caller with a gap must show it to the agent and to the
-// run view. Returns "" when the scan really did read every file it lists.
+// These file counts belong to Slither; other engines may still return leads.
 export function staticGap(scan) {
-  if (!scan) return "";
-  if (scan.mode === "none") return "";
+  if (!scan || scan.mode === "none") return "";
   const read = Number(scan.analysed) || 0;
   const failed = Number(scan.failed) || 0;
   if (read > 0 && failed === 0) return "";
-  const who = scan.engines?.length ? scan.engines.join(" + ") : "Slither";
+  const keep = "Keep any leads returned by Aderyn and Touchstone source checks. Audit the files Slither missed directly; a coverage gap is not a clean result.";
   if (read === 0) {
-    return `Static analysis did not run on this target: ${who} read 0 of ${scan.files} file(s) it was given, so it produced no leads. That is a gap, not a clean result. Audit the source directly, and treat every static row as absent.`;
+    return `Slither did not complete analysis: it read 0 of ${scan.files} file(s) it was given. ${keep}`;
   }
-  return `Static analysis read ${read} of ${scan.files} file(s); ${failed} file(s) did not compile for ${who}, so the leads below do not cover them. Audit those files directly.`;
+  return `Slither read ${read} of ${scan.files} file(s); ${failed} file(s) did not compile for Slither. ${keep}`;
 }
 
 // Back-compat shim: older callers imported slitherScan and read .findings. The

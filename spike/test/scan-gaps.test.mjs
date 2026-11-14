@@ -16,3 +16,17 @@ test("fuzz gaps distinguish no template, unavailable engines and a completed pas
   assert.match(fuzzGap({ applicable: true, engines: [] }), /neither Echidna nor Medusa was available/);
   assert.equal(fuzzGap({ applicable: true, engines: ["Echidna"] }), "");
 });
+
+
+test("Slither failure preserves successful Aderyn and Touchstone leads", () => {
+  const gap = staticGap({
+    mode: "per-file", engines: ["Slither", "Aderyn"], files: 1, analysed: 0, failed: 1,
+    findings: [{ engines: ["Aderyn", "Touchstone"], check: "unprotected-control-function" }],
+  });
+  assert.match(gap, /Slither did not complete analysis: it read 0 of 1/);
+  assert.match(gap, /Keep any leads returned by Aderyn and Touchstone/);
+  assert.doesNotMatch(gap, /treat every static row as absent|produced no leads|Slither \+ Aderyn read/);
+  const partial = staticGap({ mode: "per-file", engines: ["Slither", "Aderyn"], files: 2, analysed: 1, failed: 1 });
+  assert.match(partial, /did not compile for Slither/);
+  assert.match(partial, /Keep any leads returned by Aderyn and Touchstone/);
+});
