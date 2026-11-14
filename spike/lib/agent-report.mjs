@@ -1,5 +1,10 @@
 // Agent evidence is a separate verification method. It never sets oracle proof.
-export const AGENT_FINDING_CAP = 3;
+//
+// A cap exists because each report costs a human's review. Three was too tight on
+// a large scope: DorkFi's run produced five distinct, evidenced root causes and
+// two of them were marked "PROVEN, blocked from filing" in the write-up itself
+// (2026-11-14). Twelve still bounds review while fitting a real contract audit.
+export const AGENT_FINDING_CAP = 12;
 export const REPORT_FIELDS = ["attacker_capability", "observed_result", "harm", "limitations"];
 export function agentReport(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;

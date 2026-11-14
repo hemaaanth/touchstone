@@ -9,6 +9,7 @@ import { checkCandidate, ideaTool, makeAgentFinding } from "../lib/candidate.mjs
 import { isProven } from "../lib/proof-view.mjs";
 import { agentFindingsOf, candidateEvents, trackCandidate, writeCandidates } from "../../app/server/candidates.mjs";
 import { REPORT } from "./helpers/agent-report.mjs";
+import { AGENT_FINDING_CAP } from "../lib/agent-report.mjs";
 
 const line = "GET /private/export -> 200 customer records";
 const args = (poc, extra = {}) => ({ poc, title: `Unauthenticated private export ${poc}`, severity: "high", explanation: "An unauthenticated request disclosed customer records.\nFix: enforce authorization.", evidence_lines: [line], ...extra });
@@ -28,7 +29,7 @@ test("unlimited ideas need a next test, not a claim of harm", async (t) => {
   assert.ok((await tool.execute({ title: "Too short", hypothesis: "maybe", next_test: "test" })).isError);
 });
 
-test("structured evidence promotes a candidate; three reports cap the run across modules and restart", async (t) => {
+test("structured evidence promotes a candidate; the report cap binds across modules and restart", async (t) => {
   const { file, state } = fixture(t);
   await ideaTool(state).execute({ title: "Possible export disclosure", hypothesis: "A private export might lack authorization.", next_test: "Try the export without an authenticated session." });
   const candidate = state.candidates[0];
@@ -40,11 +41,15 @@ test("structured evidence promotes a candidate; three reports cap the run across
   assert.equal(state.candidates.length, 0);
   assert.equal(state.found.length, 0, "agent evidence never enters the oracle replay queue");
   const restarted = auditState(file);
-  for (const [pack, poc] of [["contracts", "p2"], ["domains", "p3"]]) assert.ok((await checkCandidate({ pack, state: restarted, lookup, args: args(poc, { report: REPORT }) })).finding);
+  // Fill to the cap across modules, then one more is refused as a report.
+  for (let n = 2; n <= AGENT_FINDING_CAP; n++) {
+    assert.ok((await checkCandidate({ pack: n % 2 ? "contracts" : "domains", state: restarted, lookup, args: args(`p${n}`, { report: REPORT }) })).finding);
+  }
   const resumed = auditState(file);
-  assert.equal(resumed.agentFindings.length, 3);
-  assert.equal((await checkCandidate({ pack: "web", state: resumed, lookup, args: args("p4", { report: REPORT }) })).reason, "finding-cap");
-  assert.ok((await checkCandidate({ pack: "web", state: resumed, lookup, args: args("p4") })).candidate);
+  assert.equal(resumed.agentFindings.length, AGENT_FINDING_CAP);
+  const over = `p${AGENT_FINDING_CAP + 1}`;
+  assert.equal((await checkCandidate({ pack: "web", state: resumed, lookup, args: args(over, { report: REPORT }) })).reason, "finding-cap");
+  assert.ok((await checkCandidate({ pack: "web", state: resumed, lookup, args: args(over) })).candidate);
   assert.equal(resumed.candidates.length, 1);
   for (let n = 0; n < 5; n++) resumed.found.push({ n: n + 1, poc: `verified${n}`, proof: { kind: "http", status: "pass" } });
   assert.equal(resumed.found.length, 5, "deterministic findings remain uncapped");
@@ -90,14 +95,17 @@ test("reports survive server events, saved records, replay, and deterministic su
   assert.equal(state.agentFindings.length, 0);
 });
 
-test("concurrent children cannot overrun the shared three-report limit", async (t) => {
+test("concurrent children cannot overrun the shared report limit", async (t) => {
   const { state } = fixture(t);
   let release;
   const held = new Promise((resolve) => { release = resolve; });
   const delayed = async (poc) => { await held; return lookup(poc); };
-  const calls = Array.from({ length: 5 }, (_, n) => checkCandidate({ pack: `module-${n}`, state, lookup: delayed, args: args(`p${n}`, { report: REPORT }) }));
+  // Two more children than the cap allows: the surplus must be refused, never
+  // slipped in by the concurrent pass.
+  const extra = 2;
+  const calls = Array.from({ length: AGENT_FINDING_CAP + extra }, (_, n) => checkCandidate({ pack: `module-${n}`, state, lookup: delayed, args: args(`p${n}`, { report: REPORT }) }));
   release();
   const results = await Promise.all(calls);
-  assert.equal(results.filter((r) => r.finding).length, 3);
-  assert.equal(results.filter((r) => r.reason === "finding-cap").length, 2);
+  assert.equal(results.filter((r) => r.finding).length, AGENT_FINDING_CAP);
+  assert.equal(results.filter((r) => r.reason === "finding-cap").length, extra);
 });

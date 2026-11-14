@@ -1,7 +1,7 @@
-import { REPORT } from "./helpers/agent-report.mjs";
 // submit_candidate in the oracle-replay packs (web, ai-mcp). The lab is
 // mocked: runRequestScript returns a fixed transcript, so no container runs.
 import "./helpers/isolated-env.mjs";
+import { REPORT } from "./helpers/agent-report.mjs";
 import { test, mock } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
