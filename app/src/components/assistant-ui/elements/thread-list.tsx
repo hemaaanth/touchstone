@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
 import { ModuleDots } from "@/components/module-dots";
+import { restWidth } from "@/lib/module-dots-layout";
 import { RunStatusMark } from "@/components/assistant-ui/elements/indicators";
 import { dateGroups, startMs, type RunMarkKind } from "@/components/thread-model";
 import {
@@ -399,10 +400,12 @@ export const ThreadListItem: FC = () => {
               <ThreadListItemPrimitive.Title fallback="Untitled run" />
             </span>
           </span>
-          {/* Under the title, beside the dots' fixed box (right). */}
+          {/* Under the title. It ends 6 px before the module mark, whose width
+              follows the run's module count (scopeEnd). */}
           <span
             data-slot="aui_thread-list-item-scope"
-            className="text-muted-foreground ms-[22px] me-1 block h-4 min-w-0 truncate text-xs leading-4"
+            className="text-muted-foreground ms-[22px] block h-4 min-w-0 truncate text-xs leading-4"
+            style={{ marginInlineEnd: scopeEnd(run?.modules.length ?? 0) }}
           >
             {run?.scope ?? "—"}
           </span>
@@ -411,12 +414,9 @@ export const ThreadListItem: FC = () => {
       )}
       {run && !isRenaming ? (
         <span className="absolute end-2.5 bottom-[7px] flex">
-          {/* The names open right, past the rail, level with the dots, so they
-              never cover this title or the rows above. The dots end 19 px
-              inside the rail's edge (measured at 1440: 237 against 256); 8 px
-              more is the usual gap. On a phone the tooltip flips or shifts to
-              fit the screen. */}
-          <ModuleDots ids={run.modules.map((m) => m.id)} packs={run.modules} side="right" sideOffset={27} />
+          {/* Open, the mark grows right into a pill, past the rail, over the
+              main area; the row does not change. */}
+          <ModuleDots ids={run.modules.map((m) => m.id)} packs={run.modules} />
         </span>
       ) : null}
       <ThreadListItemMore
@@ -426,6 +426,11 @@ export const ThreadListItem: FC = () => {
     </ThreadListItemPrimitive.Root>
   );
 };
+
+// The scope's end margin inside the row's trigger, so the scope ends 6 px
+// before the module mark. The trigger keeps 36 px on its right (pe-9) for the
+// menu; the mark sits 10 px from the row's edge (end-2.5).
+const scopeEnd = (modules: number) => Math.max(4, restWidth(modules) + 10 + 6 - 36);
 
 const ThreadListItemRename: FC<{
   onDone: (restoreFocus: boolean) => void;

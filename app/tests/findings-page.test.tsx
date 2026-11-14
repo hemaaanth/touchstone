@@ -490,7 +490,7 @@ describe("still columns: every row has the same tracks, whatever its title, modu
     expect(cells).toEqual(rows.map(() => ["severity", "module"]))
   })
 
-  test("the module cell is the sidebar's module dots: one dot in the module's colour, in a fixed 28 px box", () => {
+  test("the module cell is the sidebar's module mark: one dot in the module's colour, in the one-dot box (16 px)", () => {
     const four = ["web", "domains", "surface", "phishing"].map((pack, i) => ({ ...many[10 + i], pack }))
     const out = renderToStaticMarkup(
       <ul>
@@ -505,11 +505,11 @@ describe("still columns: every row has the same tracks, whatever its title, modu
       const dots = [...cells[i].matchAll(/data-slot="module-dot" data-module="([\w-]+)"/g)].map((m) => m[1])
       expect(dots).toEqual([f.pack])
       expect(cells[i]).toContain(`aria-label="Module: ${f.pack} title"`)
-      expect(cells[i]).toMatch(/data-slot="module-dots"[^>]*style="width:28px"/)
+      expect(cells[i]).toMatch(/data-slot="module-dots"[^>]*style="width:16px;height:16px"/)
       expect(cells[i]).not.toContain('data-slot="module-pill"')
     })
     // No module: the same empty box, so the column does not move.
-    expect(cells[4]).toMatch(/data-slot="module-dots" aria-hidden="true"[^>]*style="width:28px"/)
+    expect(cells[4]).toMatch(/data-slot="module-dots" aria-hidden="true"[^>]*style="width:16px;height:16px"/)
     expect(cells[4]).not.toContain("module-dot\"")
     // The dot's ring takes the row's fill: the card at rest.
     expect(out).toContain("[--module-dots-ring:var(--card)]")
