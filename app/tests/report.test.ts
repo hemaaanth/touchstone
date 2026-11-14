@@ -49,6 +49,25 @@ const forgeFinding = {
   ms: 1234,
 }
 
+describe("report: code status", () => {
+  test("a scope with no deployment identity is reported as source only", () => {
+    const sourceOnly = { ...forgeFinding, scope: { id: "s", title: "Some repo", contracts: [] } }
+    expect(buildReport(sourceOnly).provenance).toBe("source only")
+    expect(renderReportHtml(buildReport(sourceOnly), { marker: "m" })).toContain("source only")
+  })
+
+  test("a scope with a deployment identity is not labelled source only", () => {
+    const deployed = { ...forgeFinding, scope: { id: "s", title: "Some pool", contracts: [{ chainId: 8453, address: "0x" + "1".repeat(40) }] } }
+    const r = buildReport(deployed)
+    expect(r.provenance).toBe("deployed")
+    expect(renderReportHtml(r, { marker: "m" })).not.toContain("no deployment recorded")
+  })
+
+  test("a finding with no scope record says nothing about code status", () => {
+    expect(buildReport(forgeFinding).provenance).toBe(null)
+  })
+})
+
 describe("report: honesty", () => {
   test("extracts the fix only from a stated Fix label, never invents one", () => {
     const r = buildReport(forgeFinding)
