@@ -197,6 +197,19 @@ export function staticBrief(scan) {
   return `Static analysis (${who}) flagged ${scan.findings.length} suspect(s), scariest first:\n${lines.join("\n")}`;
 }
 
+// These file counts belong to Slither; other engines may still return leads.
+export function staticGap(scan) {
+  if (!scan || scan.mode === "none") return "";
+  const read = Number(scan.analysed) || 0;
+  const failed = Number(scan.failed) || 0;
+  if (read > 0 && failed === 0) return "";
+  const keep = "Keep any leads returned by Aderyn and Touchstone source checks. Audit the files Slither missed directly; a coverage gap is not a clean result.";
+  if (read === 0) {
+    return `Slither did not complete analysis: it read 0 of ${scan.files} file(s) it was given. ${keep}`;
+  }
+  return `Slither read ${read} of ${scan.files} file(s); ${failed} file(s) did not compile for Slither. ${keep}`;
+}
+
 // Back-compat shim: older callers imported slitherScan and read .findings. The
 // orchestrator replaces it; this keeps a single Slither-only entry available for
 // anything that still wants the raw Slither view.

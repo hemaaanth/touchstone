@@ -41,7 +41,12 @@ function where(w, line) {
   return str(ln != null ? `${file}:${ln}` : file, 160);
 }
 
+// A scan that read no file (or could not read some) is a gap, and it must not
+// render as a clean pass with zero leads. `t.gap` is the same sentence the agent
+// reads, so the operator and the model see one reason, not two. It outranks the
+// ordinary reasons: "the tool failed" says less than "it read 0 of 3 files".
 function statusOf(t) {
+  if (t.gap) return { status: "unavailable", reason: str(t.gap, 400) };
   const s = String(t.status ?? "").toLowerCase();
   if (t.applicable === false) return { status: "unavailable", reason: str(t.reason) || "Does not apply to this target." };
   if (s === "timed-out") return { status: "ran", reason: "Stopped at the time cap; the leads it found before that are kept." };

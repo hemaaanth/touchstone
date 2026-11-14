@@ -87,7 +87,7 @@ for (const pack of [contracts, keys, chainWatch]) {
       replay = noHarmDelta;
       const out = await runPoc("PauseTest");
       if (pack.id === "contracts") {
-        const refused = await tools.submit_finding.execute({ title: "t", severity: "high", poc_contract: "PauseTest", explanation: "x" });
+        const refused = await tools.submit_finding.execute({ title: "t", severity: "high", ...(pack.id === "contracts" ? { class: "logic" } : {}), poc_contract: "PauseTest", explanation: "x" });
         assert.equal(refused.isError, true, "the finding gate still refuses a no-harm replay");
         assert.match(refused.output[0].text, /shows no harm/);
         assert.match(refused.output[0].text, /submit_candidate/);
@@ -155,7 +155,7 @@ for (const pack of [contracts, keys, chainWatch]) {
       assert.ok(!(await tools.submit_candidate.execute(candidateArgs("PauseTest"))).isError);
       // contracts runs a harm replay at submit; keys and chain-watch take a pass.
       replay = fundsDelta;
-      const r = await tools.submit_finding.execute({ title: "Drain", severity: "high", poc_contract: "PauseTest", explanation: "x\nFix: y" });
+      const r = await tools.submit_finding.execute({ title: "Drain", severity: "high", ...(pack.id === "contracts" ? { class: "logic" } : {}), poc_contract: "PauseTest", explanation: "x\nFix: y" });
       assert.ok(!r.isError, r.output[0].text);
       assert.equal(state.found.length, 1);
       assert.deepEqual(state.candidates.map((c) => c.poc), ["PauseTest"], "the candidate stays while the finding is unproven");

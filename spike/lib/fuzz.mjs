@@ -90,7 +90,7 @@ async function echidnaScan(scratch, target, { timeoutMs = 240_000, testLimit = 5
   const out = r.stdout + r.stderr;
   // No property line at all means the harness never compiled/ran — honest empty.
   if (!/echidna_\w+:/.test(out)) {
-    return { tool: "Echidna", available: false, reason: r.timedOut ? "timed out" : "no result", leads: [] };
+    return { tool: "Echidna", available: false, reason: r.timedOut ? "timed out" : "no result", leads: [], timedOut: r.timedOut };
   }
   const leads = parseEchidna(out)
     .filter((p) => p.broke)
@@ -159,4 +159,18 @@ export function fuzzBrief(scan) {
   });
   const who = scan.engines.length ? scan.engines.join(" + ") : "Echidna + Medusa";
   return `Property fuzzing (${who}) broke ${scan.findings.length} invariant(s):\n${lines.join("\n")}`;
+}
+
+// The honest caveat for a fuzz pass that could not run. `applicable:false` means
+// no invariant template fit the target's shape — the single vault-solvency
+// template is the only one that ships — so zero broken invariants is not evidence
+// of solvency. The agent must be told, because its own fuzz_findings tool would
+// otherwise read "no lead". Returns "" when the pass really did explore.
+export function fuzzGap(scan) {
+  if (!scan) return "";
+  if (scan.applicable !== false) {
+    if (scan.timedOut) return "Property fuzzing reached its time limit. Keep any leads it found; zero broken invariants is not a completed pass.";
+    return scan.engines?.length ? "" : "Property fuzzing did not run on this target: neither Echidna nor Medusa was available. Zero broken invariants is not a clean result.";
+  }
+  return `Property fuzzing did not run on this target: the only invariant template we ship is a deposit/withdraw vault (a payable constructor plus a public total), and this code does not match it. Zero broken invariants here says nothing about this code. Do not read it as "solvent" or "safe". Reason about the accounting invariants yourself and prove any break with run_poc.`;
 }

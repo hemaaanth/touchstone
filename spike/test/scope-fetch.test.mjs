@@ -244,7 +244,7 @@ test("a repo-only scope added under Contracts keeps run_poc, submit_finding and 
     assert.equal(run.isError, true);
     assert.match(run.output[0].text, /nothing can be proven/);
     assert.equal(state.poc, 0, "a closed run_poc spends no attempt");
-    const sub = await tools.submit_finding.execute({ title: "t", severity: "critical", poc_contract: "T", explanation: "x" });
+    const sub = await tools.submit_finding.execute({ title: "t", severity: "critical", class: "logic", poc_contract: "T", explanation: "x" });
     assert.equal(sub.isError, true);
     const forged = [{ title: "x", severity: "critical", poc: "T", explanation: "x", source: "contract T {}" }];
     assert.deepEqual(await contracts.prove(ws, forged, [{ ev: "run_poc-done", passed: true, contract: "T" }], () => {}), []);

@@ -169,3 +169,24 @@ test("a timed-out row keeps its reason; a clean ran row still has reason null", 
   assert.equal(by.noted.status, "ran");
   assert.equal(by.noted.reason, "no package-lock.json in snapshot");
 });
+
+// A scan that read no file is a gap. It must not render as a clean "ran" row
+// with zero leads: that is the shape an operator reads as "nothing wrong".
+test("a scan that read no file shows as a gap, not a clean ran row", () => {
+  const v = prepassView({
+    static: { engines: ["Slither"], mode: "per-file", files: 3, analysed: 0, suspects: 0, top: [],
+      gap: "Static analysis did not run on this target: Slither read 0 of 3 file(s). That is a gap, not a clean result." },
+  });
+  assert.equal(v.tools[0].status, "unavailable");
+  assert.match(v.tools[0].reason, /read 0 of 3 file\(s\)/);
+  assert.equal(v.leads.length, 0);
+  assert.equal(v.total, 0);
+});
+
+test("a gap outranks a status field that would otherwise read as a pass", () => {
+  const v = prepassView({
+    static: { engines: ["Slither"], status: "ok", suspects: 0, top: [], gap: "read 2 of 5 files" },
+  });
+  assert.equal(v.tools[0].status, "unavailable");
+  assert.equal(v.tools[0].reason, "read 2 of 5 files");
+});

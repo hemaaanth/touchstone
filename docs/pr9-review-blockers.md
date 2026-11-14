@@ -1,18 +1,29 @@
 # PR #9 — review blockers
 
-The PR remains open and unmerged. Neither main nor the owner release includes
-these changes. Reconciled local candidate: `2ed40ee5d2d33791e29ab1dd1a6c66a5b2562547`
-on `takeover/pr9`. Original head: `77386e0e8c1775f960d544279d0618d0f135645d`.
+The original PR head `77386e0e8c1775f960d544279d0618d0f135645d` is not safe to land.
+The reports below apply to that prototype and the assembled candidate
+`2ed40ee5d2d33791e29ab1dd1a6c66a5b2562547`.
 
-The parent also reproduced a false positive through real offline Foundry:
+## Landing scope
+
+The repair keeps attack-class guidance, finding classification, crypto source
+leads, and explicit scanner gaps. It preserves main's existing offline proof,
+tamper checks, and container network boundary. It adds no fork RPC settings,
+networked Forge execution, locked-funds oracle, or deployed-theft oracle.
+The two new fuzz templates are also excluded until their generated Solidity is
+validated against the target interfaces.
+
+Chain-fork execution remains future work. It needs credentials outside the Forge
+container, restricted read-only RPC transport, enforced chain/block pins, and
+consistent execution and replay metadata. A generic reverted withdrawal or
+Transfer event cannot establish unauthorized harm. Those observations can inform
+an existing unproven candidate; protocol-specific entitlement is needed to prove
+more.
+
+The parent reproduced the locked-oracle false positive through offline Foundry:
 a holder deposited 1 ETH; a safe vault correctly rejected withdrawing 2 ETH;
-the new locked oracle returned proven harm. No external target or real RPC was used.
-
-Disposition: do not land either new oracle as a proven-finding path. A sound
-repair needs entitlement evidence, common tamper/backstop enforcement, authentic
-asset and final-state accounting, operator-pin binding, and an isolated RPC
-transport that never hands credentials or host networking to submitted code.
-Keep useful source work preserved; continue independent delivery slices.
+the prototype returned proven harm. No external target or real RPC was used.
+The original work and review reports remain preserved for future repairs.
 
 ## Independent proof/RPC review
 

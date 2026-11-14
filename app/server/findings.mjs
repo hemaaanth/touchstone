@@ -273,6 +273,10 @@ function normalize(raw, { id, runId, finding }) {
     // A title that is only a check id reads as the check's title (N3).
     title: readableTitle(finding.title, finding.proof?.check ?? finding.evidence?.check ?? finding.proof?.oracle?.name ?? finding.oracleName, measuredRule(finding)) || null,
     severity: finding.severity || null,
+    // The attack class the audit assigned, from the sweep in the agent's
+    // instructions (spike/lib/attack-classes.mjs). Absent on runs older than the
+    // sweep, so it stays absent rather than reading "other" for everything.
+    ...(finding.class ? { class: finding.class } : {}),
     ...(pack ? { pack } : {}),
     proofKind: kind,
     // The pack's own pre-pass record, as the run kept it (any shape).

@@ -9,8 +9,11 @@ import { writeTouchstone } from "../lib/sandbox.mjs";
 const lead = { check: "reentrancy", impact: "High", where: "Vault.withdraw", lines: [22], engines: ["Slither"], corroborated: false };
 const scan = { tool: "ensemble", engines: ["Slither", "Aderyn"], mode: "project", files: 1, analysed: 1, failed: [], findings: [lead] };
 const fuzz = { tool: "ensemble", engines: ["Echidna", "Medusa"], template: null, applicable: false, findings: [] };
-mock.module("../lib/static.mjs", { exports: { staticScan: async () => scan, staticBrief: () => "static leads" } });
-mock.module("../lib/fuzz.mjs", { exports: { fuzzScan: async () => fuzz, fuzzBrief: () => "fuzz leads" } });
+// The mock must carry every export the real module has that prepass.mjs imports:
+// a gap helper is part of the module's contract now, so a stale mock is a test
+// that no longer models the real module.
+mock.module("../lib/static.mjs", { exports: { staticScan: async () => scan, staticBrief: () => "static leads", staticGap: () => "" } });
+mock.module("../lib/fuzz.mjs", { exports: { fuzzScan: async () => fuzz, fuzzBrief: () => "fuzz leads", fuzzGap: () => "" } });
 const { default: contracts } = await import("../packs/contracts/pack.mjs");
 const { runPrepass } = await import("../lib/prepass.mjs");
 const { proveFindings } = await import("../lib/record.mjs");
@@ -29,6 +32,7 @@ test("Contracts hooks preserve prepass events, leads, and existing record fields
       });
       const prep = await contracts.prepass(ws, { emit: (ev) => events.push(ev) });
       assert.deepEqual(prep.env, legacy.runEnv);
+      if (legacy.fuzz) assert.equal(prep.env.FUZZ_BRIEF, "fuzz leads");
       assert.deepEqual(events.map(withoutTime), legacyEvents.map(withoutTime));
       const record = {};
       if (legacy.scan) record.static = { tool: scan.tool, engines: scan.engines, mode: scan.mode, files: scan.files, analysed: scan.analysed, suspects: 1, top: legacy.scanEvent.top };

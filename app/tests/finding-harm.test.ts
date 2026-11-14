@@ -21,7 +21,7 @@ const record = (proof: Record<string, unknown>) => ({
   result: {
     outcome: "recorded",
     recorded: true,
-    findings: [{ title: "Reentrancy in withdrawAll", severity: "critical", poc: "ReentrancyTest", proof: { kind: "forge", tool: "forge", contract: "ReentrancyTest", test: "test_drain", status: "pass", pass: true, gasUsed: 1000, logs: [], ...proof } }],
+    findings: [{ ...(proof.harm ? { class: "reentrancy" } : {}), title: "Reentrancy in withdrawAll", severity: "critical", poc: "ReentrancyTest", proof: { kind: "forge", tool: "forge", contract: "ReentrancyTest", test: "test_drain", status: "pass", pass: true, gasUsed: 1000, logs: [], ...proof } }],
   },
 })
 writeFileSync(path.join(dir, "run-harm-new-2611110619-1.json"), JSON.stringify(record({ transfers, harm })))
@@ -36,6 +36,7 @@ describe("the finding answer and the proof gate's harm (K5)", () => {
     const { getFinding } = await import("../server/findings.mjs")
     const f = await getFinding("harm-new-2611110619-1.1", { events: false })
     expect(f.proof.harm).toEqual(harm)
+    expect(f.class).toBe("reentrancy")
     expect(f.proof.transfers).toEqual(transfers)
   })
 

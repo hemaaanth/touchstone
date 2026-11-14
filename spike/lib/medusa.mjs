@@ -124,7 +124,7 @@ export async function medusaScan(scratch, target, { timeoutMs = 240_000, testLim
   // No summary at all means it never compiled/ran — report unavailable so the
   // ensemble notes only one fuzzer ran rather than implying the vault is sound.
   const ran = /Test summary:/.test(out) || /\[(PASSED|FAILED)\]\s+Property Test/.test(out);
-  if (!ran) return { tool: "Medusa", available: false, reason: r.timedOut ? "timed out" : "no result", leads: [] };
+  if (!ran) return { tool: "Medusa", available: false, reason: r.timedOut ? "timed out" : "no result", leads: [], timedOut: r.timedOut };
 
   const leads = parseMedusa(out).map((p) => ({
     engine: "Medusa",
