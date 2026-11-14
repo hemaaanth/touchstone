@@ -19,6 +19,7 @@ import { ModuleDots } from "@/components/module-dots";
 import { restWidth } from "@/lib/module-dots-layout";
 import { RunStatusMark } from "@/components/assistant-ui/elements/indicators";
 import { dateGroups, startMs, type RunMarkKind } from "@/components/thread-model";
+import { isDemoMode } from "@/lib/demo";
 import {
   AuiIf,
   ThreadListItemMorePrimitive,
@@ -310,7 +311,7 @@ export const ThreadListNew = forwardRef<
               data-slot="aui_thread-list-new-label"
               className={cn("whitespace-nowrap", labelClassName)}
             >
-              New run
+              {isDemoMode() ? "New demo" : "New run"}
             </span>
           </>
         )}
@@ -419,10 +420,10 @@ export const ThreadListItem: FC = () => {
           <ModuleDots ids={run.modules.map((m) => m.id)} packs={run.modules} />
         </span>
       ) : null}
-      <ThreadListItemMore
+      {isDemoMode() ? null : <ThreadListItemMore
         canArchive={run?.canArchive ?? false}
         onRename={() => setIsRenaming(true)}
-      />
+      />}
     </ThreadListItemPrimitive.Root>
   );
 };

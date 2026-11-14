@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { OptionList } from "@/components/assistant-ui/elements/option-list"
+import { isDemoMode } from "@/lib/demo"
 
 type Draft = { reply?: string; choices?: string[]; pending?: boolean; uncertain?: boolean; error?: string; accepted?: AskReceipt; candidate?: AskAnswer }
 type AskContextValue = {
@@ -111,7 +112,7 @@ export function AskHuman({ ask }: { ask: HumanAsk }) {
         <p>{answer === "reply" ? "Answered" : answer === "done" ? "Done for this request" : "Cancelled"}</p>
         {answer === "reply" && presentation && draft.choices ? <OptionList options={presentation.options} choice={draft.choices} /> : answer === "reply" && receipt?.text !== undefined ? <p className="whitespace-pre-wrap break-words">{receipt.text}</p> : answer === "reply" ? <p>The answer text was not saved.</p> : null}
       </>}
-    </div> : draft.pending ? <p role="status">Waiting for the agent to accept this answer…</p> : draft.uncertain ? <>
+    </div> : isDemoMode() ? <p className="text-xs text-muted-foreground">This demo does not accept replies or approvals.</p> : draft.pending ? <p role="status">Waiting for the agent to accept this answer…</p> : draft.uncertain ? <>
       <p role="status">Delivery is uncertain. Only the original answer can be retried until its status is known.</p>
       <div className="flex flex-wrap gap-2">
         <Button size="sm" variant="outline" disabled={!live || !draft.candidate} onClick={() => draft.candidate && void submit(draft.candidate).catch(failed)}>Retry original answer</Button>

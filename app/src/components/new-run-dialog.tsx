@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Badge } from "@/components/ui/badge"
+import { DEMO_ADMIN_MESSAGE, demoConfig, isDemoTarget } from "@/lib/demo"
 
 const RANDOM = "random"
 const DEFAULT_BUDGET = "5.00"
@@ -50,17 +51,18 @@ export function NewRunDialog({
   // One run covers every module in `modules`.
   onStart: (alias: string, targetId: string | undefined, budgetUsd: number, modules: string[], mode: RunMode, roam: RoamSelection) => void
 }) {
+  const demo = demoConfig()
   const alias = models[0]?.alias ?? ""
   // The modules a scope allows that the server also lists.
   const allowed = (t: TargetChoice) => (t.packs ?? [packOf(t)]).flatMap((id) => packs.find((p) => p.id === id) ?? [])
-  const runnable = targets.filter((t) => t.runnable && allowed(t).length > 0)
-  const [scopeId, setScopeId] = useState(RANDOM)
+  const runnable = targets.filter((t) => t.runnable && allowed(t).length > 0 && (!demo || isDemoTarget(t.id)))
+  const [scopeId, setScopeId] = useState(demo ? "" : RANDOM)
   const [ticked, setTicked] = useState<string[]>([])
   const [modulesMissing, setModulesMissing] = useState(false)
   const [budget, setBudget] = useState(DEFAULT_BUDGET)
   // The last choice sticks, so an operator who runs fleets keeps getting one.
-  const [mode, setModeState] = useState<RunMode>(() => (localStorage.getItem(MODE_KEY) === "solo" ? "solo" : "fleet"))
-  const [freeRoam, setFreeRoam] = useState(true)
+  const [mode, setModeState] = useState<RunMode>(() => (demo ? "fleet" : localStorage.getItem(MODE_KEY) === "solo" ? "solo" : "fleet"))
+  const [freeRoam, setFreeRoam] = useState(!demo)
   const setMode = (m: RunMode) => {
     setModeState(m)
     localStorage.setItem(MODE_KEY, m)
@@ -72,8 +74,8 @@ export function NewRunDialog({
   const modules = !scope ? [DEFAULT_PACK] : eligible.length === 1 ? [eligible[0].id] : eligible.filter((p) => ticked.includes(p.id)).map((p) => p.id)
   const budgetN = Number(budget.replace(/^\$/, "").trim())
   const budgetOk = Number.isFinite(budgetN) && budgetN >= 0.01 && budgetN <= 1000
-  const needsRoamSetup = mode === "fleet" && freeRoam && !roamReady
-  const canStart = !needsRoamSetup && alias !== "" && !setupError && runnable.length > 0 && !busy && budgetOk
+  const needsRoamSetup = !demo && mode === "fleet" && freeRoam && !roamReady
+  const canStart = !needsRoamSetup && alias !== "" && !setupError && runnable.length > 0 && !busy && (demo ? !!scope : budgetOk)
 
   const submit = () => {
     if (!canStart) return
@@ -81,7 +83,7 @@ export function NewRunDialog({
       setModulesMissing(true)
       return
     }
-    onStart(alias, scope?.id, budgetN, modules, mode, { freeRoam: mode === "fleet" && freeRoam, options: [] })
+    onStart(alias, scope?.id, demo?.budgetUsd ?? budgetN, demo ? ["contracts"] : modules, mode, { freeRoam: mode === "fleet" && freeRoam, options: [] })
   }
 
   const own = (target: TargetChoice) => isOwnScope(target.id) || target.kind === "live"
@@ -89,10 +91,10 @@ export function NewRunDialog({
     { label: "Your scopes", targets: runnable.filter(own) },
     { label: "Demo scopes", targets: runnable.filter((target) => !own(target)) },
   ]
-  const scopeItems = [{ value: RANDOM, label: "Random scope" }, ...scopeGroups.flatMap((group) => group.targets.map((t) => ({ value: t.id, label: t.title })))]
+  const scopeItems = [...(demo ? [] : [{ value: RANDOM, label: "Random scope" }]), ...scopeGroups.flatMap((group) => group.targets.map((t) => ({ value: t.id, label: t.title })))]
   const demoBadge = <Badge variant="outline" className="h-[18px] shrink-0 px-1.5 text-[10.5px] font-normal text-muted-foreground">Demo</Badge>
 
-  const notice = setupError || (needsRoamSetup ? "Set up and test Daytona in Settings to use free-roam agents. You can also turn off free-roam agents for this run." : null) || (!budgetOk
+  const notice = demo ? (setupError || alias === "" ? DEMO_ADMIN_MESSAGE : runnable.length === 0 ? "No prepared demos are available right now." : error) : setupError || (needsRoamSetup ? "Set up and test Daytona in Settings to use free-roam agents. You can also turn off free-roam agents for this run." : null) || (!budgetOk
     ? "The budget must be between $0.01 and $1,000."
     : alias === ""
       ? "Set up a provider key and model in Settings. NEAR AI Cloud is recommended."
@@ -113,7 +115,7 @@ export function NewRunDialog({
     }}>
       <DialogContent className="flex max-h-[calc(100svh-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-[440px]" showCloseButton={false}>
         <div className="flex h-12 shrink-0 items-center border-b px-5">
-          <DialogTitle className="text-sm font-semibold">New run</DialogTitle>
+          <DialogTitle className="text-sm font-semibold">{demo ? "New demo" : "New run"}</DialogTitle>
           <DialogClose
             render={<Button variant="ghost" size="icon-sm" className="-mr-2 ml-auto text-muted-foreground" />}
           >
@@ -129,6 +131,10 @@ export function NewRunDialog({
             submit()
           }}
         >
+          {demo ? <div className="space-y-1 text-sm text-muted-foreground">
+            <p>Inference sponsored by NEAR AI · DeepSeek</p>
+            <p>No API key needed. Choose one of two prepared contract scopes.</p>
+          </div> : null}
           <div className="flex flex-col gap-1.5">
             <span className={label} id="new-run-scope">SCOPE</span>
             <Select
@@ -142,11 +148,11 @@ export function NewRunDialog({
               }}
             >
               <SelectTrigger className={field} aria-labelledby="new-run-scope">
-                <SelectValue className="min-w-0 truncate" />
+                <SelectValue className="min-w-0 truncate" placeholder={demo ? "Select a demo scope" : undefined} />
                 {scope && !own(scope) ? demoBadge : null}
               </SelectTrigger>
               <SelectContent alignItemWithTrigger={false} className="p-1">
-                <SelectItem value={RANDOM} className="text-[13px]"><span className="min-w-0 flex-1 truncate">Random scope</span></SelectItem>
+                {!demo ? <SelectItem value={RANDOM} className="text-[13px]"><span className="min-w-0 flex-1 truncate">Random scope</span></SelectItem> : null}
                 {scopeGroups.filter((group) => group.targets.length > 0).map((group) => (
                   <SelectGroup key={group.label} className="p-0">
                     <SelectLabel>{group.label}</SelectLabel>
@@ -161,6 +167,12 @@ export function NewRunDialog({
             </Select>
           </div>
 
+          {demo ? (
+            <div className="space-y-2 rounded-lg bg-muted/40 p-3 text-sm">
+              <p>${demo.budgetUsd} budget · {demo.maxMinutes}-minute work limit</p>
+              <p className="text-xs leading-relaxed text-muted-foreground">Contracts · Fleet with up to 3 confined child agents. Free-roam and optional scans are off.</p>
+            </div>
+          ) : <>
             <div className="flex flex-col gap-1.5" role="group" aria-labelledby="new-run-modules">
               <span className={label} id="new-run-modules">MODULES</span>
               <div className="flex h-28 shrink-0 flex-col overflow-y-auto rounded-lg border border-input bg-background py-1">
@@ -238,9 +250,10 @@ export function NewRunDialog({
               <span className="shrink-0 text-muted-foreground/60">Run stops at this limit</span>
             </span>
           </label>
+          </>}
 
           {notice ? <p role="alert" className="text-xs text-bad">{notice}</p> : null}
-          {(setupError || needsRoamSetup || alias === "") && onOpenSettings ? (
+          {!demo && (setupError || needsRoamSetup || alias === "") && onOpenSettings ? (
             <Button type="button" variant="outline" onClick={onOpenSettings}>{needsRoamSetup ? "Set up Daytona" : "Set up provider"}</Button>
           ) : null}
         </form>
@@ -250,7 +263,7 @@ export function NewRunDialog({
           <Popover open={open && modulesMissing && modules.length === 0} onOpenChange={(next) => { if (!next) setModulesMissing(false) }}>
             <PopoverTrigger onClick={submit} render={<Button disabled={!canStart} />}>
               {busy ? <Loader2 className="animate-spin" /> : null}
-              Start run
+              {demo ? "Start demo" : "Start run"}
             </PopoverTrigger>
             <PopoverContent side="top" align="end" initialFocus={false} aria-label="Modules required" className="w-auto max-w-64 text-xs">
               <p role="alert">Select at least one module.</p>

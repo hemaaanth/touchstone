@@ -54,6 +54,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import { DEMO_SOURCE, demoConfig } from "@/lib/demo"
 
 // The center column. The run is a pi-durable agent session; its live SSE step
 // log is reduced into RunState, then mapped onto assistant-ui's message model
@@ -97,6 +98,7 @@ export function RunChat({
   // happen, and the server's sentence. It shows in the composer's line.
   actionError?: { title: string; text: string } | null
 }) {
+  const demo = demoConfig()
   const state = useRun(run.id)
   const [renaming, setRenaming] = useState(false)
   // The operator chose fleet or solo at start. A fleet's main chat is the
@@ -220,7 +222,7 @@ export function RunChat({
     // the text back in the same tick, so the box never blinks empty.
     const composer = restore ? composerOf() : undefined
     if (composer && text && !composer.getState().text) composer.setText(text)
-    if (!text || !state || archived || pendingRef.current) return
+    if (demo || !text || !state || archived || pendingRef.current) return
     pendingRef.current = true
     setPending(true)
     setSent((xs) => xs.filter((x) => !settled.current.has(x.id)))
@@ -302,6 +304,16 @@ export function RunChat({
     const take = (message: AppendMessage) => void sendRef.current(messageText(message))
     return { items: [], steerItems: [], enqueue: take, steer: take, move: () => {}, edit: () => {}, remove: () => {} }
   }, [])
+  const [stopping, setStopping] = useState(false)
+  const cancel = async () => {
+    setSendError(null)
+    setStopping(true)
+    try {
+      await stopRun(run.id)
+    } catch (err) {
+      setSendError(err instanceof Error ? err.message : String(err))
+    } finally { setStopping(false) }
+  }
 
   const runtime = useExternalStoreRuntime<ThreadMessageLike>({
     messages,
@@ -314,14 +326,7 @@ export function RunChat({
     },
     // The composer's stop button. The server ends the work; the run's stream
     // then reports it stopped and closed.
-    onCancel: async () => {
-      setSendError(null)
-      try {
-        await stopRun(run.id)
-      } catch (err) {
-        setSendError(err instanceof Error ? err.message : String(err))
-      }
-    },
+    onCancel: cancel,
   })
 
   useEffect(() => {
@@ -388,7 +393,7 @@ export function RunChat({
   }
 
   const fleetView: FleetView | null = state
-    ? { state, openPeek, jumpMain, highlight, steer: send, canSteer: !archived }
+    ? { state, openPeek, jumpMain, highlight, steer: send, canSteer: !demo && !archived }
     : null
 
   const peek = top?.kind === "agent" ? top : null
@@ -530,7 +535,7 @@ export function RunChat({
     refocusTitle.current = document.activeElement?.closest("header h1") != null
     setRenaming(false)
   }
-  const titleNode = renaming ? (
+  const titleNode = demo ? <h1 className="min-w-0 truncate text-sm font-medium">{title}</h1> : renaming ? (
     <h1 className="min-w-0 text-sm font-medium">
       <TitleInput
         value={title}
@@ -609,7 +614,7 @@ export function RunChat({
     ) : null
 
   return (
-    <AskHumanProvider key={run.id} runId={run.id} state={state} live={live && !archived}>
+    <AskHumanProvider key={run.id} runId={run.id} state={state} live={live && !archived && !demo}>
     <OpenArtifact.Provider value={openFile(false)}>
       <MarkedStep.Provider value={highlight}>
       <FindingNote.Provider value={findingNote}>
@@ -627,7 +632,7 @@ export function RunChat({
                 ) : null
               }
               actions={
-                <RunActions
+                demo ? live ? <Button size="sm" variant="destructive" disabled={stopping} onClick={() => void cancel()}>{stopping ? "Stopping…" : "Stop"}</Button> : null : <RunActions
                   archived={archived}
                   busy={live || !state}
                   findings={state?.findings.length ?? 0}
@@ -639,7 +644,11 @@ export function RunChat({
           </div>
           {narrow ? panelLayer : null}
           <div inert={drawerOpen} className="shrink-0">
-            <PendingAskLinks onOpen={openPeek} />
+            {demo ? <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2 text-xs text-muted-foreground">
+              <span>Inference sponsored by NEAR AI · ${demo.budgetUsd} budget · {demo.maxMinutes}-minute work limit</span>
+              <a className="focus-ring rounded-sm underline underline-offset-4 hover:text-foreground" href={DEMO_SOURCE} target="_blank" rel="noopener noreferrer">Build your own with Touchstone</a>
+              {sendError ? <p role="alert" className="w-full">{sendError}</p> : null}
+            </div> : <PendingAskLinks onOpen={openPeek} />}
           </div>
 
           <div data-run-chat-area className="relative flex min-h-0 flex-1 flex-col">

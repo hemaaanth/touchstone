@@ -22,6 +22,7 @@ import type {
   SessionManifest,
 } from "./types"
 import { reportStalePage, setConsoleToken, tokenHeaders } from "./console-token"
+import { DEMO_ADMIN_MESSAGE, DEMO_BUSY_MESSAGE, demoStartBody, isDemoMode, type DemoConfig } from "./demo"
 
 export class HttpError extends Error {
   status: number
@@ -40,7 +41,7 @@ async function getJson<T>(url: string): Promise<T> {
 async function postJson<T>(url: string, body: unknown): Promise<T> {
   const res = await fetch(url, {
     method: "POST",
-    headers: { "content-type": "application/json", ...tokenHeaders() },
+    headers: { "content-type": "application/json", ...(!isDemoMode() ? tokenHeaders() : {}) },
     body: JSON.stringify(body),
   })
   return writeResult<T>(url, res)
@@ -59,8 +60,9 @@ async function writeResult<T>(url: string, res: Response): Promise<T> {
     return {}
   })
   if (!res.ok) {
-    const error = (json as { error?: string }).error ?? `${url} -> ${res.status}`
-    if (res.status === 403) {
+    const serverError = json && typeof json === "object" && "error" in json && typeof json.error === "string" ? json.error : `${url} -> ${res.status}`
+    const error = isDemoMode() ? res.status === 429 ? DEMO_BUSY_MESSAGE : DEMO_ADMIN_MESSAGE : serverError
+    if (res.status === 403 && !isDemoMode()) {
       reportStalePage(error)
       throw new StalePageError(error)
     }
@@ -169,6 +171,7 @@ export async function fetchModels(): Promise<{
   spend: SpendState
   provider: ProviderInfo
   roam: { ready: boolean; backend: string }
+  demo?: DemoConfig
 }> {
   return getJson<{
     models: ModelChoice[]
@@ -177,6 +180,7 @@ export async function fetchModels(): Promise<{
     spend: SpendState
     provider: ProviderInfo
     roam: { ready: boolean; backend: string }
+    demo?: DemoConfig
   }>("/api/models")
 }
 
@@ -225,7 +229,7 @@ export async function startRun(
   mode?: RunMode,
   roam?: RoamSelection,
 ): Promise<RunView> {
-  const body = runStartBody(alias, targetId, budgetUsd, modules, mode, roam)
+  const body = isDemoMode() ? demoStartBody(targetId) : runStartBody(alias, targetId, budgetUsd, modules, mode, roam)
   const key = JSON.stringify(body)
   if (pendingRunStart?.body !== key) pendingRunStart = { body: key, requestId: crypto.randomUUID() }
   const { requestId } = pendingRunStart

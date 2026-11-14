@@ -22,8 +22,10 @@ import { useStoredWidth } from "@/components/resize-handle"
 import { ErrorState } from "@/components/assistant-ui/elements/error-state"
 import { onStalePage } from "@/lib/console-token"
 import { Button } from "@/components/ui/button"
+import { DEMO_ADMIN_MESSAGE, DEMO_SOURCE, demoConfig, isDemoTarget } from "@/lib/demo"
 
 export function App() {
+  const [demo] = useState(demoConfig)
   const [models, setModels] = useState<ModelChoice[]>([])
   const [targets, setTargets] = useState<TargetChoice[]>([])
   const [packs, setPacks] = useState<PackChoice[]>([])
@@ -49,20 +51,20 @@ export function App() {
   useEffect(() => onStalePage(setStalePage), [])
 
   const refreshModels = useCallback(() => {
-    fetchStoreErrors().then(setStoreErrors, () => setStoreErrors([]))
+    if (!demo) fetchStoreErrors().then(setStoreErrors, () => setStoreErrors([]))
     fetchModels()
       .then(({ models, targets, packs, provider, roam }) => {
         setRoamReady(roam?.ready === true && roam.backend === "daytona")
         setModels(models)
-        setSetupError(provider?.setupError ?? null)
+        setSetupError(provider?.setupError ? demo ? DEMO_ADMIN_MESSAGE : provider.setupError : null)
         // The operator's own scopes first, newest on top; then the labs that ship with the app.
         const own = (t: TargetChoice) => isOwnScope(t.id) || t.kind === "live"
-        setTargets([...targets.filter(own).reverse(), ...targets.filter((t) => !own(t))])
-        setPacks(packs ?? [])
+        setTargets(demo ? targets.filter((t) => isDemoTarget(t.id)) : [...targets.filter(own).reverse(), ...targets.filter((t) => !own(t))])
+        setPacks(demo ? packs.filter((p) => p.id === "contracts") : packs ?? [])
         setCatalog("ready")
       })
-      .catch(() => setCatalog("error"))
-  }, [])
+      .catch(() => { setCatalog("error"); if (demo) setSetupError(DEMO_ADMIN_MESSAGE) })
+  }, [demo])
 
   // Load everything once. Land on the newest live run so the stage is never
   // empty when there is work in flight.
@@ -226,9 +228,9 @@ export function App() {
         {setupError && catalog === "ready" && page !== "settings" ? (
           <ErrorState
             className="shrink-0"
-            title="Finish provider setup"
-            detail={setupError}
-            actions={<Button size="sm" onClick={() => select({ kind: "page", id: "settings" })}>Set up provider</Button>}
+            title={demo ? "Demo unavailable" : "Finish provider setup"}
+            detail={demo ? DEMO_ADMIN_MESSAGE : setupError}
+            actions={demo ? undefined : <Button size="sm" onClick={() => select({ kind: "page", id: "settings" })}>Set up provider</Button>}
           />
         ) : null}
         {activeRun ? (
@@ -242,13 +244,13 @@ export function App() {
             focus={focus?.run === activeRun.id ? focus : null}
             actionError={refused?.run === activeRun.id ? refused : null}
           />
-        ) : page === "settings" ? (
+        ) : page === "settings" && !demo ? (
           <SettingsPage onChanged={refreshModels} />
         ) : page === "findings" ? (
           <FindingsPage packs={packs} runs={rows} onOpenRun={openRun} />
-        ) : page === "modules" ? (
+        ) : page === "modules" && !demo ? (
           <ModulesPage catalog={catalog} packs={packs} targets={targets} runs={rows} briefs={briefs} onOpenRun={openRun} />
-        ) : page === "scopes" ? (
+        ) : page === "scopes" && !demo ? (
           <ScopesPage
             catalog={catalog}
             packs={packs}
@@ -261,7 +263,20 @@ export function App() {
           />
         ) : (
           <div className="grid flex-1 place-items-center p-8">
-            <p className="text-sm text-muted-foreground">{setupError ? "Set up an inference provider before starting your first run." : "Start a run to watch the agent work."}</p>
+            {demo ? (
+              <section className="flex w-full max-w-md flex-col items-start gap-5" aria-labelledby="demo-welcome">
+                <div className="space-y-2">
+                  <h1 id="demo-welcome" className="text-xl font-medium tracking-tight">Watch an audit take shape.</h1>
+                  <p className="text-sm leading-relaxed text-muted-foreground">Select a prepared demo, watch the agents work, then inspect their evidence, files and replay results.</p>
+                </div>
+                <div className="space-y-1 text-sm text-muted-foreground">
+                  <p>Inference sponsored by NEAR AI · DeepSeek</p>
+                  <p>${demo.budgetUsd} budget · {demo.maxMinutes}-minute work limit · No API key needed</p>
+                </div>
+                <Button onClick={() => { refreshModels(); setStartError(null); setDialogOpen(true) }}>Select a demo</Button>
+                <a className="focus-ring rounded-sm text-sm text-muted-foreground underline underline-offset-4 hover:text-foreground" href={DEMO_SOURCE} target="_blank" rel="noopener noreferrer">Explore Touchstone on GitHub</a>
+              </section>
+            ) : <p className="text-sm text-muted-foreground">{setupError ? "Set up an inference provider before starting your first run." : "Start a run to watch the agent work."}</p>}
           </div>
         )}
         {stalePage ? (
@@ -282,7 +297,7 @@ export function App() {
         error={startError}
         setupError={setupError}
         roamReady={roamReady}
-        onOpenSettings={() => { setDialogOpen(false); select({ kind: "page", id: "settings" }) }}
+        onOpenSettings={demo ? undefined : () => { setDialogOpen(false); select({ kind: "page", id: "settings" }) }}
         onStart={onStart}
       />
     </SidebarProvider>

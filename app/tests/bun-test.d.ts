@@ -14,6 +14,7 @@ declare module "bun:test" {
   export function beforeAll(fn: Body): void
   export function afterAll(fn: Body): void
   export function beforeEach(fn: Body): void
+  export function afterEach(fn: Body): void
 
   interface Matchers {
     not: Matchers

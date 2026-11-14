@@ -3,11 +3,13 @@ import type { Candidate } from "@/lib/candidate"
 import type { SessionArtifact, SessionManifest } from "@/lib/types"
 import { downloadSessionArtifact, fetchSessionArtifacts } from "@/lib/api"
 import { Button } from "@/components/ui/button"
+import { isDemoMode } from "@/lib/demo"
 
 export function SessionEvidence({ runId, candidate }: { runId?: string; candidate: Pick<Candidate, "evidence" | "poc"> }) {
   const [manifest, setManifest] = useState<SessionManifest | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  if (isDemoMode()) return null
   const evidence = candidate.evidence
   if (!evidence || typeof evidence !== "object" || !("kind" in evidence) || evidence.kind !== "session") return null
   const hasArtifacts = "artifacts" in evidence && evidence.artifacts != null

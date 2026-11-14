@@ -54,6 +54,7 @@ import { useSmoothText } from "@/components/assistant-ui/elements/streaming-text
 import { agentName, FleetContext, fleetSpend, stepAge, ThreadOwner } from "@/components/fleet-view"
 import { agentLook, FindingNote, MarkedStep, OpenArtifact, sentence, type CardState, type RunStartView } from "@/components/thread-model"
 import { AskHuman } from "@/components/ask-human"
+import { DEMO_ADMIN_MESSAGE, isDemoMode } from "@/lib/demo"
 
 // The run's thread: the message list, its part renderers, and the composer.
 // The main chat and a fleet peek both render through this one file, so a
@@ -110,8 +111,9 @@ function RunErrorCard({
 }) {
   const kind = info?.kind ?? "unknown"
   const Icon = ERROR_ICON[kind] ?? TriangleAlert
-  const title = info?.title ?? "The run did not complete"
-  const hint = info?.hint ?? fallback ?? "Try starting the run again."
+  const providerFailure = isDemoMode() && (["account", "model", "transient"].includes(kind) || /settings|api.?key|provider/i.test(info?.hint ?? fallback ?? ""))
+  const title = providerFailure ? "Demo unavailable" : info?.title ?? "The run did not complete"
+  const hint = providerFailure ? DEMO_ADMIN_MESSAGE : info?.hint ?? fallback ?? "Try starting the run again."
   // In a fleet run the agents report their own spend, so the card never says
   // less than the header does.
   const fleet = useContext(FleetContext)
@@ -129,8 +131,8 @@ function RunErrorCard({
   const said = split && parts.text && !same(parts.text, hint) && !same(parts.text, title) ? sentence(parts.text) : null
   const raw = split ? parts.raw : (detail ?? null)
   const code = info?.reason && info.reason !== "unknown" ? info.reason : null
-  const technical = !!said || !!raw || !!code
-  const retryable = (info?.retryable ?? true) && !archived && !warning
+  const technical = !providerFailure && (!!said || !!raw || !!code)
+  const retryable = !isDemoMode() && (info?.retryable ?? true) && !archived && !warning
 
   return (
     <Collapsible>
@@ -272,7 +274,7 @@ export function Thread({
         </div>
       </ThreadPrimitive.Viewport>
 
-      {readOnly ? null : <Composer to={to} archived={archived} notice={notice} sending={sending} context={context} compaction={compaction} />}
+      {readOnly || isDemoMode() ? null : <Composer to={to} archived={archived} notice={notice} sending={sending} context={context} compaction={compaction} />}
     </ThreadPrimitive.Root>
   )
 }
@@ -695,8 +697,8 @@ function AgentErrorRow({ step }: { step: Step }) {
       message={sentence(step.label)}
       retrying={busy}
       disabled={!fleet.canSteer}
-      onRetry={() => send(`Retry ${name}.`)}
-      onSkip={() => send(task ? `Reassign ${name}'s task: ${task}` : `Reassign ${name}'s task.`)}
+      onRetry={isDemoMode() ? undefined : () => send(`Retry ${name}.`)}
+      onSkip={isDemoMode() ? undefined : () => send(task ? `Reassign ${name}'s task: ${task}` : `Reassign ${name}'s task.`)}
       skipLabel="Reassign"
     />
   )

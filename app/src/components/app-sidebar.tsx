@@ -18,6 +18,7 @@ import {
 import { ResizeHandle } from "@/components/resize-handle"
 import { ThreadList, type RunThreadCustom } from "@/components/assistant-ui/elements/thread-list"
 import markRaw from "@/assets/touchstone-mark.svg?raw"
+import { DEMO_SOURCE, isDemoMode } from "@/lib/demo"
 
 // What the center column is showing. A run, or one of the single-item pages.
 export type View =
@@ -54,6 +55,7 @@ export function AppSidebar({
   onArchive: (id: string, archived: boolean) => void
   onRename: (id: string, name: string) => void
 }) {
+  const demo = isDemoMode()
   const isPage = (id: string) => view?.kind === "page" && view.id === id
   const open = useMemo(() => runs.filter((r) => !r.archived), [runs])
   const archived = useMemo(() => runs.filter((r) => r.archived), [runs])
@@ -117,7 +119,7 @@ export function AppSidebar({
           Settings rather than competing with the list. */}
       <SidebarFooter className="gap-0 border-t border-sidebar-border p-2 pb-3">
         <SidebarMenu className="gap-px">
-          {PAGES.map((p) => (
+          {PAGES.filter((p) => !demo || p.id === "findings").map((p) => (
             <SidebarMenuItem key={p.id}>
               <SidebarMenuButton
                 className="h-7 text-[13px]"
@@ -129,7 +131,7 @@ export function AppSidebar({
               </SidebarMenuButton>
             </SidebarMenuItem>
           ))}
-          <SidebarMenuItem>
+          {!demo ? <SidebarMenuItem>
             <SidebarMenuButton
               className="h-7 text-[13px]"
               isActive={isPage("settings")}
@@ -138,8 +140,13 @@ export function AppSidebar({
               <Settings2 className="size-4" />
               <span>Settings</span>
             </SidebarMenuButton>
-          </SidebarMenuItem>
+          </SidebarMenuItem> : <SidebarMenuItem>
+            <SidebarMenuButton render={<a href={DEMO_SOURCE} target="_blank" rel="noopener noreferrer" />}>
+              <FolderGit2 className="size-4" /><span>Source on GitHub</span>
+            </SidebarMenuButton>
+          </SidebarMenuItem>}
         </SidebarMenu>
+        {demo ? <p className="px-2 pt-3 text-xs leading-relaxed text-muted-foreground">Inference sponsored by NEAR AI</p> : null}
       </SidebarFooter>
       <ResizeHandle edge="right" width={width} onWidth={onWidth} initial={defaultWidth} label="Resize sidebar" />
     </Sidebar>
