@@ -5,6 +5,7 @@ import type {
   TargetChoice,
   PackChoice,
   RunMode,
+  RoamSelection,
 } from "@/lib/types"
 import { isOwnScope, type CatalogState } from "@/lib/catalog"
 import { archiveRun, deleteRun, fetchModels, fetchRuns, fetchStoreErrors, renameRun, startRun } from "@/lib/api"
@@ -81,11 +82,11 @@ export function App() {
   // ONE run for the whole ticked list: the server builds one workspace with a
   // part per module, one budget and one grant. A single tick is today's run.
   const onStart = useCallback(
-    async (alias: string, targetId: string | undefined, budgetUsd: number, modules: string[], mode: RunMode) => {
+    async (alias: string, targetId: string | undefined, budgetUsd: number, modules: string[], mode: RunMode, roam: RoamSelection) => {
       setBusy(true)
       setStartError(null)
       try {
-        const run = await startRun(alias, targetId, budgetUsd, modules, mode)
+        const run = await startRun(alias, targetId, budgetUsd, modules, mode, roam)
         setRuns((prev) => [
           {
             id: run.id,

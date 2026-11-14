@@ -4,7 +4,7 @@
 // SSE stream. So this handler takes the raw (req, res) instead of just a URL.
 // It returns true when it handled the request, false to fall through to the
 // findings router.
-import { createRun, steerRun, stopRun, archiveRun, renameRun, deleteRun, getRun, listRuns, subscribe, availableModels, availableTargets, availablePacks, spendState, providerInfo, listScopes, addScope, deleteScope } from "./runs.mjs"
+import { createRun, steerRun, stopRun, archiveRun, renameRun, deleteRun, getRun, listRuns, subscribe, availableModels, availableTargets, availablePacks, spendState, providerInfo, listScopes, addScope, deleteScope, answerRunAsk, runSessionArtifacts } from "./runs.mjs"
 import { dismissFinding, getFinding, nowCandidate } from "./findings.mjs"
 import { buildReport, renderReportAgent, renderReportHtml, renderReportMarkdown } from "./report.mjs"
 import { bundleRefusal, loadRecordedReplay, planReplayBundle, UNJUDGED_NOTE } from "./replay-bundle.mjs"
@@ -78,7 +78,7 @@ export async function handleRuns(req, res) {
   if (parts.length === 2 && req.method === "POST") {
     const body = await readBody(req)
     try {
-      send(res, 201, await createRun({ alias: body.alias, targetId: body.targetId, modules: body.modules, budgetUsd: body.budgetUsd, pack: body.pack, packs: body.packs, mode: body.mode }))
+      send(res, 201, await createRun({ alias: body.alias, targetId: body.targetId, modules: body.modules, budgetUsd: body.budgetUsd, pack: body.pack, packs: body.packs, mode: body.mode, freeRoam: body.freeRoam, options: body.options }))
     } catch (err) {
       send(res, 400, { error: String(err?.message ?? err) })
     }
@@ -86,6 +86,35 @@ export async function handleRuns(req, res) {
   }
 
   const id = parts[2]
+
+  // Private capabilities, replies, and captured bytes never use unguarded GETs.
+  if ((req.method === "POST" && ((parts.length === 4 && ["ask", "desktop", "session-artifacts"].includes(parts[3])) || (parts.length === 6 && parts[3] === "session-artifacts" && ["read", "review", "release"].includes(parts[5])))) || (req.method === "DELETE" && parts.length === 4 && parts[3] === "desktop")) {
+    res.setHeader("cache-control", "no-store")
+    res.setHeader("x-content-type-options", "nosniff")
+    if (parts[3] === "desktop" || ["review", "release"].includes(parts[5])) {
+      send(res, 409, { error: "Desktop streaming, takeover, and screenshot release are not enabled in this release." })
+      return true
+    }
+    const body = await readBody(req)
+    try {
+      if (parts[3] === "ask") send(res, 200, await answerRunAsk(id, body))
+      else {
+        const action = parts[5] ?? "list"
+        const result = await runSessionArtifacts(id, body, action, parts[4])
+        if (action !== "read") send(res, 200, result)
+        else {
+          res.statusCode = 200
+          res.setHeader("content-type", result.mime)
+          res.setHeader("content-disposition", `attachment; filename="${result.filename}"`)
+          res.setHeader("content-length", result.data.length)
+          res.end(result.data)
+        }
+      }
+    } catch (err) {
+      send(res, Number.isInteger(err?.status) ? err.status : 409, { error: ["ask", "desktop"].includes(parts[3]) ? String(err?.message ?? "Control request failed.") : "Session artifact is not available for this candidate." })
+    }
+    return true
+  }
 
   // GET /api/runs/:id/stream — Server-Sent Events, live + replayed
   if (parts.length === 4 && parts[3] === "stream" && req.method === "GET") {

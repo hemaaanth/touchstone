@@ -202,3 +202,37 @@ export function measuredAtLoad(id, events, result) {
     events[last] = { ...events[last], status: "no-finding", decision: null, findingId: null, findingIds: [] }
   }
 }
+
+// The store owns paths and sanitization. The API selects only a current candidate.
+export function createSessionArtifactsApi({ getRun, rootOf, store }) {
+  return async (runId, body, action = "list", id) => {
+    const refused = () => Object.assign(new Error("Session artifact is not available for this candidate."), { status: 404 })
+    const run = getRun(runId)
+    if (!run) throw refused()
+    const candidate = run.candidates?.find((c) => c.poc === body?.candidate && c.proven === false)
+    const evidence = candidate?.evidence
+    const b = evidence?.artifacts
+    const sequence = /^session:([A-Za-z0-9_-]{1,128}):([1-9][0-9]*)$/.exec(candidate?.poc ?? "")
+    if (!sequence || evidence?.kind !== "session" || !b || b.version !== 1 || b.run !== runId || b.agent !== evidence.agent || b.agent !== sequence[1] || b.poc !== candidate.poc || b.manifest !== `m-${sequence[2]}`) throw refused()
+    const selectors = { run: runId, agent: b.agent, poc: b.poc }
+    const adapter = await store()
+    const root = rootOf(runId)
+    let manifest
+    try { manifest = await adapter.listSessionArtifacts(root, selectors) } catch { throw refused() }
+    if (manifest?.version !== 1 || manifest.run !== runId || manifest.agent !== b.agent || manifest.sequence !== Number(sequence[2]) || !Array.isArray(manifest.files) || manifest.files.length > 14) throw refused()
+    const validFile = (f) => /^[A-Za-z0-9_-]{1,128}$/.test(f?.id ?? "") && /^[a-f0-9]{64}$/.test(f?.sha256 ?? "") && ["har", "transcript", "screenshot"].includes(f?.kind) && ["not-required", "pending", "released"].includes(f?.approval) && Number.isSafeInteger(f?.bytes) && f.bytes >= 0 && f.bytes <= (f.kind === "screenshot" ? 5 : 2) * 1024 * 1024 && f.mime === ({ har: "application/json", transcript: "text/plain; charset=utf-8", screenshot: "image/png" })[f.kind]
+    if (!manifest.files.every(validFile)) throw refused()
+    // Rebuild, rather than serializing unexpected store metadata.
+    const safe = { version: 1, run: runId, agent: b.agent, sequence: manifest.sequence, files: manifest.files.map(({ id, kind, sha256, bytes, mime, approval }) => ({ id, kind, sha256, bytes, mime, approval })) }
+    if (action === "list") return safe
+    const file = safe.files.find((f) => f.id === id)
+    if (!file) throw refused()
+    // Exact-image review is not part of the first release. No receipt, no pixels.
+    if (["review", "release"].includes(action) || file.kind === "screenshot") throw refused()
+    if (action !== "read" || file.approval === "pending") throw refused()
+    let result
+    try { result = await adapter.readSessionArtifact(root, { ...selectors, id }) } catch { throw refused() }
+    if (!Buffer.isBuffer(result?.data) || result.data.length !== file.bytes || result.mime !== file.mime) throw refused()
+    return { data: result.data, mime: file.mime, filename: `${file.id}.${file.kind === "screenshot" ? "png" : file.kind === "har" ? "json" : "txt"}` }
+  }
+}

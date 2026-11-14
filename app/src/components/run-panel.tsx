@@ -43,6 +43,7 @@ import {
 export type PanelSection = "info" | "agents" | "bulletin" | "leads" | "findings" | "candidates" | "files"
 
 export function RunPanel({
+  runId,
   state,
   live,
   mode,
@@ -64,6 +65,7 @@ export function RunPanel({
   packs,
   candidateOpen = null,
 }: {
+  runId?: string,
   state: RunState
   live: boolean
   mode: RunMode
@@ -249,7 +251,7 @@ export function RunPanel({
               expanded={section === "candidates"}
               onToggle={() => toggle("candidates")}
             >
-              <CandidateList items={state.candidates} focus={candidateOpen ?? null} />
+              <CandidateList runId={runId} items={state.candidates} focus={candidateOpen ?? null} />
             </Section>
           ) : null}
           <Section
@@ -632,7 +634,7 @@ function AgentList({
           key={a.id}
           look={agentLook(state, a)}
           name={a.name || a.title}
-          sub={a.title && a.name ? a.title : null}
+          sub={[a.title && a.name ? a.title : null, a.loadout, a.model ?? state.provider?.model].filter(Boolean).join(" · ") || null}
           t2={a.tier === "T2"}
           selected={a.id === selected}
           onClick={() => onAgent(a.id)}

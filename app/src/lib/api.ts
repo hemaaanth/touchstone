@@ -13,6 +13,10 @@ import type {
   TargetChoice,
   PackChoice,
   RunMode,
+  AskAnswer,
+  RoamSelection,
+  SandboxDesktopView,
+  SessionManifest,
 } from "./types"
 import { reportStalePage, setConsoleToken, tokenHeaders } from "./console-token"
 
@@ -191,13 +195,15 @@ export interface RunStartBody {
   mode?: RunMode
   pack?: string
   packs?: string[]
+  freeRoam?: boolean
+  options?: RoamSelection["options"]
 }
 
 // The one body of a run start, split out so its shape is testable without a DOM.
 // A repeated module is sent once; a list of one is the old `pack`.
-export function runStartBody(alias: string, targetId: string | undefined, budgetUsd: number | undefined, modules: string[], mode?: RunMode): RunStartBody {
+export function runStartBody(alias: string, targetId: string | undefined, budgetUsd: number | undefined, modules: string[], mode?: RunMode, roam?: RoamSelection): RunStartBody {
   const packs = [...new Set(modules)]
-  return { alias, targetId, budgetUsd, mode, ...(packs.length > 1 ? { packs } : { pack: packs[0] }) }
+  return { alias, targetId, budgetUsd, mode, ...roam, ...(packs.length > 1 ? { packs } : { pack: packs[0] }) }
 }
 
 export function startRun(
@@ -206,8 +212,9 @@ export function startRun(
   budgetUsd?: number,
   modules: string[] = [],
   mode?: RunMode,
+  roam?: RoamSelection,
 ): Promise<RunView> {
-  return postJson<RunView>("/api/runs", runStartBody(alias, targetId, budgetUsd, modules, mode))
+  return postJson<RunView>("/api/runs", runStartBody(alias, targetId, budgetUsd, modules, mode, roam))
 }
 
 // One member of a scope: a GitHub repo, or a local folder with its files.
@@ -300,6 +307,22 @@ export function dismissFinding(id: string, dismissed: boolean): Promise<{ id: st
 // One run with its full event list, for the first load of a run.
 export function fetchRun(id: string): Promise<RunView> {
   return getJson<RunView>(`/api/runs/${encodeURIComponent(id)}`)
+}
+
+export const answerRunAsk = (run: string, answer: AskAnswer) => postJson<{ ok: true }>(`/api/runs/${encodeURIComponent(run)}/ask`, answer)
+export const openRunDesktop = (run: string, agent: string, viewOnly: boolean) => postJson<SandboxDesktopView>(`/api/runs/${encodeURIComponent(run)}/desktop`, { agent, viewOnly })
+export async function closeRunDesktop(run: string, agent: string): Promise<SandboxDesktopView> {
+  const url = `/api/runs/${encodeURIComponent(run)}/desktop`
+  const res = await fetch(url, { method: "DELETE", headers: { "content-type": "application/json", ...tokenHeaders() }, body: JSON.stringify({ agent }) })
+  return writeResult<SandboxDesktopView>(url, res)
+}
+const sessionPath = (run: string, id?: string, action?: string) => `/api/runs/${encodeURIComponent(run)}/session-artifacts${id ? `/${encodeURIComponent(id)}/${action}` : ""}`
+export const fetchSessionArtifacts = (run: string, candidate: string) => postJson<SessionManifest>(sessionPath(run), { candidate })
+export async function downloadSessionArtifact(run: string, candidate: string, id: string): Promise<Blob> {
+  const url = sessionPath(run, id, "read")
+  const res = await fetch(url, { method: "POST", headers: { "content-type": "application/json", ...tokenHeaders() }, body: JSON.stringify({ candidate }) })
+  if (!res.ok) await writeResult(url, res)
+  return res.blob()
 }
 
 // Follow a run's event stream from event index `since` on (the events before
