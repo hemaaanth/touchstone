@@ -1008,7 +1008,8 @@ function spawnAgent(run, leads) {
   // reach.env confines a live run: it carries the scope proxy's URL and allow-list
   // so the module's network seam routes target-bound traffic through the gate. It
   // is empty for an offline run, so a lab child's env is unchanged.
-  run.roamEpoch = randomUUID()
+  roamControl.assertIdle(run)
+  const epoch = run.roamEpoch = randomUUID()
   const env = { ...process.env, TOUCHSTONE_PARENT_PIPE: "1", PROVIDER: runProvider(run), ALIAS: run.alias, EVENTS_FILE: run.eventsFile, RUN_CHARGE_FILE: path.join(RESULTS_DIR, `run-${run.id}.charges.jsonl`), ATTEMPT_BASE: attemptBase(run), ...budgetEnv(run), ...fleetEnv(run), ...scopeEnv(run.target, run.packs), ...(run.reach?.env ?? {}), ...leads }
   // stdin is a pipe (not "ignore") so the operator can steer the live run: we
   // write one JSON line per message to the worker, which injects it into the
@@ -1021,16 +1022,18 @@ function spawnAgent(run, leads) {
   })
   child.stdin.on("error", () => {})
   run.child = child
-  roamControl.begin(run, child, run.roamEpoch)
+  roamControl.begin(run, child, epoch)
 
-  pipeEvents(child, engineEvents(run), (line) => {
+  pipeEvents(child, engineEvents(run, child, epoch), (line) => {
     run.stderr += line + "\n"
   })
   child.stderr.on("data", (d) => {
     run.stderr += d
   })
   child.on("exit", async (code, signal) => {
-    await roamControl.invalidate(run).catch(() => {})
+    if (run.child !== child || run.roamEpoch !== epoch) return
+    await roamControl.invalidate(run, child, epoch).catch(() => {})
+    if (run.child !== child || run.roamEpoch !== epoch) return
     if (run.status !== "running" && run.status !== "starting") return
     if (!run.stopping) recoverSettled(run, since)
     const s = run.settled
@@ -1751,7 +1754,7 @@ const sourceLines = (sources) => [
 // the workspace is gone, a new one is built from the run's scope, and one
 // `workspace` event tells the operator and the agent the same true thing.
 export function followUp(run, text, clientId) {
-  run.roamEpoch = randomUUID()
+  roamControl.assertIdle(run)
   const capRefusal = spendCapRefusal()
   if (capRefusal) throw new Error(capRefusal)
   const money = budgetEnv(run)
@@ -1845,6 +1848,7 @@ export function followUp(run, text, clientId) {
       broadcast(run, { t: Date.now(), ev: "reply-error", error: "The workspace's old live route could not be cleared, so this follow-up did not start. Start a new run for live testing." })
       return void end()
     }
+    const epoch = run.roamEpoch = randomUUID()
     const env = { ...process.env }
     delete env.TOUCHSTONE_SCOPE_PROXY
     delete env.TOUCHSTONE_SCOPE_ALLOW
@@ -1875,15 +1879,17 @@ export function followUp(run, text, clientId) {
     })
     child.stdin.on("error", () => {})
     run.child = child
-    roamControl.begin(run, child, run.roamEpoch)
-    pipeEvents(child, engineEvents(run), (line) => {
+    roamControl.begin(run, child, epoch)
+    pipeEvents(child, engineEvents(run, child, epoch), (line) => {
       run.stderr += line + "\n"
     })
     child.stderr.on("data", (d) => {
       run.stderr += d
     })
     child.on("exit", async (code, signal) => {
-      await roamControl.invalidate(run).catch(() => {})
+      if (run.child !== child || run.roamEpoch !== epoch) return
+      await roamControl.invalidate(run, child, epoch).catch(() => {})
+      if (run.child !== child || run.roamEpoch !== epoch) return
       if (!run.stopping) recoverSettled(run, since)
       const s = run.settled
       try {

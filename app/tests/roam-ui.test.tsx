@@ -7,6 +7,7 @@ import { candidateFrom } from "../src/lib/candidate"
 import { runStartBody } from "../src/lib/api"
 import { OptionList } from "../src/components/assistant-ui/elements/option-list"
 import { formatAskChoiceReply, isAskPresentation, type AskPresentation } from "../src/lib/types"
+import { SandboxDesktop } from "../src/components/sandbox-desktop"
 
 const spawn = { ev: "subagent-spawned", id: "a-1", name: "Scout", loadout: "free-roam", model: "test-model", t: 1 }
 const first = { ev: "ask-human", id: "one", agent: "a-1", kind: "login", question: "Open test account", t: 2 }
@@ -115,4 +116,31 @@ test("malformed saved presentation is ignored; long option content remains escap
   expect(html).toContain("overflow-wrap:anywhere")
   expect(html).toContain('aria-label="Long choices"')
   expect(html).toMatch(/<button[^>]*disabled/)
+})
+
+test("live free-roam desktops remain discoverable without asks or after a child turn ends", () => {
+  for (const events of [[spawn], [spawn, { ev: "subagent-done", id: "a-1", t: 3 }]]) {
+    const state = reduceEvents(events)
+    expect(state.humanAsks).toEqual([])
+    const html = renderToStaticMarkup(<HumanQueue runId="r1" state={state} live />)
+    expect(html).toContain("Scout")
+    expect(html).toContain("Model: test-model")
+    expect(html).toContain("Desktop")
+    expect(html).not.toContain("not enabled")
+    expect(html).not.toContain("<select")
+    expect(renderToStaticMarkup(<HumanQueue runId="r1" state={state} live={false} />)).toBe("")
+  }
+  const confined = reduceEvents([{ ...spawn, loadout: "confined" }])
+  expect(renderToStaticMarkup(<HumanQueue runId="r1" state={confined} live />)).toBe("")
+})
+
+test("desktop starts closed with Watch only; a stopped worker has no enabled desktop action", () => {
+  const live = renderToStaticMarkup(<SandboxDesktop runId="r1" agent="a-1" live closedAt={-1} />)
+  expect(live).toContain('aria-label="Desktop for a-1"')
+  expect(live).toContain(">Watch</button>")
+  expect(live).not.toContain(">Take control</button>")
+  expect(live).not.toContain(">Release</button>")
+  expect(live).not.toContain("<iframe")
+  const stopped = renderToStaticMarkup(<SandboxDesktop runId="r1" agent="a-1" live={false} closedAt={-1} />)
+  expect(stopped).toMatch(/<button[^>]*disabled[^>]*>Watch<\/button>/)
 })
