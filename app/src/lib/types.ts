@@ -460,6 +460,14 @@ export interface RunEvent {
 //   no-finding       { final }                                    agent's closing words
 //   run-complete     { status, findingId? }                       run settled
 //   closed           {}                                           stream ends
+//   compaction       { conv, active, blocking?, trigger?,          the model's context is
+//                      attempt?, retryAt?, done? }                  compacted: `active`
+//                                                                  true while a summarization
+//                                                                  runs (blocking = the next
+//                                                                  request waits for it; Stop
+//                                                                  aborts it), false when it
+//                                                                  clears, with `done` when a
+//                                                                  blocking one completed
 //
 // ---- Fleet contract (multi-agent runs).
 //

@@ -8,7 +8,7 @@ import {
 } from "@assistant-ui/react"
 import { Archive, ArchiveRestore, ChevronLeft, MoreHorizontal, Trash2, Loader2, X } from "lucide-react"
 import type { Finding, PackChoice, RunSummary } from "@/lib/types"
-import { reloadRun, threadSteps, useRun, type RunState } from "@/lib/runModel"
+import { activeCompaction, reloadRun, threadSteps, useRun, type RunState } from "@/lib/runModel"
 import { steerRun, stopRun, fetchFinding, fetchNowCandidate } from "@/lib/api"
 import { applyCandidateFocus, CANDIDATE_FOCUS } from "@/lib/candidate"
 import { awaitingReply, messageId, settleSent, type Sent } from "@/lib/sent"
@@ -659,6 +659,7 @@ export function RunChat({
                   notice={composerNotice(composerError, actionError)}
                   sending={pending}
                   context={state ? mainContext(state) : null}
+                  compaction={state ? activeCompaction(state) : null}
                   to={fleet ? "the coordinator" : "the agent"}
                 />
               </AssistantRuntimeProvider>

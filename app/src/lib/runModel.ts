@@ -128,6 +128,24 @@ export interface RunFailure {
   reason?: string
 }
 
+// A summarization of one conversation's older turns, from a `compaction` event.
+// `who` is the agent (COORDINATOR for the main thread). The run waits for a
+// blocking one before its next request, and Stop aborts it.
+export interface CompactionUse {
+  who: string
+  blocking: boolean
+  trigger: string
+  attempt: number
+  retryAt: number | null
+}
+
+// The compaction the composer reports: a blocking one first, so a held run is
+// never hidden behind a background tidy-up of another conversation.
+export function activeCompaction(state: RunState): CompactionUse | null {
+  const all = Object.values(state.compactions)
+  return all.find((c) => c.blocking) ?? all[0] ?? null
+}
+
 // The one module of a run from before the `packs` event: the scope's own pack,
 // and Contracts for a record older than modules (as the server's view says).
 const ownPack = (s: unknown): string[] => (s ? [(s as TargetScope).pack ?? "contracts"] : [])
@@ -182,6 +200,9 @@ export interface RunState {
   // What the agent is visibly doing right now, from the latest cognition event.
   // Drives the live AgentStatus pill. "idle" once the run is closed/terminal.
   activity: Activity
+  // The context compactions in flight, one per conversation (a fleet child
+  // compacts its own window). Empty when no context is being summarized.
+  compactions: Record<string, CompactionUse>
   // The owner→subagent tree, latest `agent-graph` snapshot. Empty on a single
   // agent run that never fanned out.
   agents: AgentNode[]
@@ -252,6 +273,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
   let packs: string[] = []
   let brief: string | null = null
   let activity: Activity = "working"
+  let compactions: Record<string, CompactionUse> = {}
   let agents: AgentNode[] = []
   const bulletin: BulletinNote[] = []
   const leads: RunLead[] = []
@@ -942,6 +964,26 @@ export function reduceEvents(events: RunEvent[]): RunState {
         for (const ask of humanAsks) if (!ask.answer) { ask.answer = "cancel"; ask.interrupted = true }
         steps.push({ key, kind: "note", phase, label: "Stopping the run" })
         break
+      // Context compaction: a summarization task, not a message. It shows as a
+      // composer line; a blocking one that lands leaves one note, so a run that
+      // grew past its window says why it paused instead of looking stalled.
+      case "compaction": {
+        const who = str(e.agent) || COORDINATOR
+        if (e.active !== true) {
+          const done = e.done === true && compactions[who]?.blocking === true
+          delete compactions[who]
+          if (done) steps.push({ key, kind: "note", phase, label: "Context compacted: the oldest turns are now a summary, so the run has room again." })
+          break
+        }
+        compactions[who] = {
+          who,
+          blocking: e.blocking === true,
+          trigger: str(e.trigger) || "threshold",
+          attempt: num(e.attempt) ?? 1,
+          retryAt: num(e.retryAt),
+        }
+        break
+      }
       case "phase-restarted": {
         for (const ask of humanAsks) if (!ask.answer) { ask.answer = "cancel"; ask.interrupted = true }
         const step = ({ setup: "setup", prepass: "tool scan", agent: "agent turn", proof: "proof check" } as Record<string, string>)[str(e.phase)] ?? "step"
@@ -1018,6 +1060,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
   // Once the run has settled there is nothing in flight — the status pill, not
   // the activity pill, carries the outcome.
   if (closed || (isTerminal(status as RunStatus) && !replying)) activity = "idle"
+  if (closed) compactions = {}
   if (closed || stopped) for (const ask of humanAsks) if (!ask.answer) { ask.answer = "cancel"; ask.interrupted = true }
 
   return {
@@ -1051,6 +1094,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
     candidates,
     agentFindings,
     steers,
+    compactions,
     artifacts,
     latestArtifact,
     findingId,

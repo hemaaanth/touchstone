@@ -18,7 +18,30 @@ export async function watchCognition(harness, conversationId, { agent, base = 0,
   };
   const initial = skipStale ? read(w.value?.generation?.message) : null;
   let stale = initial ? initial.think + "\u0000" + initial.say : null;
+  // Compaction is a summarization task, not a message, so a blocking one
+  // otherwise looks like a stalled run. The key covers the retry clock, so a
+  // backoff shows as one more update. A clear after a blocking compaction
+  // leaves the `done` flag for the UI's one-line note; a failure clears
+  // silently because the run's own failure card carries the error.
+  let compactKey = null, compactTask = null, compactBlocking = false;
+  const emitCompaction = (live) => {
+    const list = live?.compactions ?? [];
+    const key = list.map((c) => `${c.taskId}:${c.trigger}:${c.attempt}:${c.retry?.at ?? 0}`).join("|");
+    if (key === compactKey) return;
+    compactKey = key;
+    const last = list.at(-1);
+    if (last) {
+      compactTask = last.taskId;
+      compactBlocking = list.some((c) => c.blocking);
+      event("compaction", { ...identity, active: true, blocking: compactBlocking, trigger: last.trigger, attempt: last.attempt, ...(last.retry ? { retryAt: last.retry.at } : {}) });
+      return;
+    }
+    const failed = live?.compactionFailure?.taskId === compactTask;
+    event("compaction", { ...identity, active: false, ...(compactBlocking && !failed ? { done: true } : {}) });
+    compactBlocking = false;
+  };
   const emit = (live) => {
+    emitCompaction(live);
     const r = read(live?.generation?.message);
     if (!r) return;
     if (stale !== null) {

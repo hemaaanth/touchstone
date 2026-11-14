@@ -38,7 +38,7 @@ import { RunStart } from "@/components/assistant-ui/elements/start-progress"
 import { ErrorState } from "@/components/assistant-ui/elements/error-state"
 import { ToolError } from "@/components/assistant-ui/elements/tool-error"
 import { ProofMark, SeverityMark } from "@/components/assistant-ui/elements/indicators"
-import { splitRaw, type RunFailure, type Step } from "@/lib/runModel"
+import { splitRaw, type CompactionUse, type RunFailure, type Step } from "@/lib/runModel"
 import { candidateGroupLabel } from "@/lib/candidate"
 import { cn } from "cn"
 import { composerRoomRef } from "@/lib/run-layout"
@@ -188,6 +188,7 @@ export function Thread({
   notice,
   sending = false,
   context = null,
+  compaction = null,
   to = "the agent",
   readOnly = false,
 }: {
@@ -210,6 +211,9 @@ export function Thread({
   sending?: boolean
   // How full the main thread's context is, when the engine reported it.
   context?: ContextUse | null
+  // The context compaction in flight, if any. Shows in the composer instead of
+  // leaving a held run looking idle.
+  compaction?: CompactionUse | null
   // Who a message goes to: "coordinator" in a fleet run, "the agent" in a solo run.
   to?: string
   // A peek: no composer, no prepass, no start line.
@@ -267,7 +271,7 @@ export function Thread({
         </div>
       </ThreadPrimitive.Viewport>
 
-      {readOnly ? null : <Composer to={to} archived={archived} notice={notice} sending={sending} context={context} />}
+      {readOnly ? null : <Composer to={to} archived={archived} notice={notice} sending={sending} context={context} compaction={compaction} />}
     </ThreadPrimitive.Root>
   )
 }
@@ -287,18 +291,21 @@ function Composer({
   notice,
   sending,
   context,
+  compaction,
 }: {
   to: string
   archived: boolean
   notice: { title: string; detail: string } | null
   sending: boolean
   context: ContextUse | null
+  compaction: CompactionUse | null
 }) {
   return (
     // The ref tells the run panel where the composer's top is (run-layout.ts).
     <div ref={composerRoomRef} className="px-5 pt-2 pb-5 max-md:px-3 max-md:pb-3">
       <div className="mx-auto max-w-(--thread-max-width)">
         <ComposerPrimitive.Root
+          data-compaction={JSON.stringify(compaction)}
           className={cn(
             // A field at a glance: the input edge, and in dark the control step of
             // the surface ladder (--muted) above the chat. Focus moves the edge only.
@@ -320,12 +327,19 @@ function Composer({
           <div className="relative flex items-center justify-between gap-3">
             <div className="flex min-w-0 flex-1 items-center gap-1">
               {context ? <ContextRing use={context} /> : null}
+              {compaction ? <Compacting use={compaction} /> : null}
               {notice ? <ErrorState compact title={notice.title} detail={notice.detail} /> : null}
             </div>
             <div className="flex shrink-0 items-center gap-1.5">
               <AuiIf condition={(s) => s.thread.isRunning}>
                 <ComposerPrimitive.Cancel asChild>
-                  <Button size="icon" variant="outline" className="size-7 rounded-full" aria-label="Stop">
+                  <Button
+                    size="icon"
+                    variant="outline"
+                    className="size-7 rounded-full"
+                    aria-label={compaction?.blocking ? "Stop (aborts the compaction)" : "Stop"}
+                    title={compaction?.blocking ? "Stop — this ends the run, because the compaction waits for the next request" : "Stop"}
+                  >
                     <Square className="size-3 fill-current" />
                   </Button>
                 </ComposerPrimitive.Cancel>
@@ -346,6 +360,34 @@ function Composer({
         </ComposerPrimitive.Root>
       </div>
     </div>
+  )
+}
+
+// The model's context is being summarized. A blocking compaction holds the next
+// request, so it is called out here instead of leaving the thinking row to stand
+// in for a pause that is not thinking.
+function Compacting({ use }: { use: CompactionUse }) {
+  const where = use.who === COORDINATOR ? "" : " (a subagent)"
+  const label = use.blocking
+    ? use.retryAt !== null
+      ? `Compacting context${where} · retrying`
+      : use.attempt > 1
+        ? `Compacting context${where} · try ${use.attempt}`
+        : `Compacting context${where}`
+    : `Tidying context${where} in the background`
+  return (
+    <span
+      role="status"
+      className="flex items-center gap-1.5 px-1.5 text-xs text-muted-foreground"
+      title={
+        use.blocking
+          ? "Older turns are being summarized so the run has room to continue. Stop aborts this compaction, and the run ends."
+          : "Older turns are being summarized in the background. The run does not wait for it."
+      }
+    >
+      <Loader2 className="size-3.5 motion-safe:animate-spin" aria-hidden />
+      {label}
+    </span>
   )
 }
 

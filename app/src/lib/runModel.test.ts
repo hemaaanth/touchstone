@@ -2,7 +2,7 @@
 // Runs with `bun test src/lib`.
 import { mock, test } from "node:test"
 import assert from "node:assert/strict"
-import { getRunState, isRunningNow, loadRun, reduceEvents, threadSteps } from "./runModel"
+import { activeCompaction, getRunState, isRunningNow, loadRun, reduceEvents, threadSteps } from "./runModel"
 import type { RunEvent } from "./types"
 
 const ev = (ev: string, extra: Record<string, unknown> = {}): RunEvent => ({ ev, ...extra })
@@ -59,6 +59,33 @@ test("a server restart shows which step started again, and its new steps stay se
 
 test("a stop request shows before the run stops", () => {
   assert.deepEqual(rows([ev("stop-requested"), ev("stopped")]), ["note:Stopping the run", "note:You stopped the run. Send a message to continue."])
+})
+
+// Compaction is a summarization task, not a message. It holds the composer's
+// line, and one blocking compaction that lands leaves one note so the pause has
+// a reason on the record.
+test("a compaction holds the composer line until it clears", () => {
+  const on = ev("compaction", { conv: "root", active: true, blocking: true, trigger: "threshold", attempt: 1 })
+  const off = ev("compaction", { conv: "root", active: false, done: true })
+  assert.deepEqual(reduceEvents([on]).compactions, { coordinator: { who: "coordinator", blocking: true, trigger: "threshold", attempt: 1, retryAt: null } })
+  const after = reduceEvents([on, off])
+  assert.deepEqual(after.compactions, {})
+  assert.deepEqual(rows([on, off]), ["note:Context compacted: the oldest turns are now a summary, so the run has room again."])
+  // A background tidy-up does not claim the note, and clearing it leaves none.
+  assert.deepEqual(rows([ev("compaction", { conv: "root", active: true, trigger: "threshold" }), off]), [])
+})
+
+test("a fleet child's compaction is its own entry, and the composer prefers a blocking one", () => {
+  const child = ev("compaction", { conv: "c1", agent: "a1", active: true, trigger: "overflow", attempt: 2, retryAt: 9 })
+  const root = ev("compaction", { conv: "root", active: true, blocking: true, trigger: "threshold", attempt: 1 })
+  const both = reduceEvents([child, root])
+  assert.deepEqual(Object.keys(both.compactions), ["a1", "coordinator"])
+  assert.equal(activeCompaction(both)?.who, "coordinator")
+  const onlyChild = reduceEvents([child])
+  assert.equal(activeCompaction(onlyChild)?.who, "a1")
+  assert.equal(activeCompaction(onlyChild)?.retryAt, 9)
+  // A closed run drops the line even if the clear never arrives.
+  assert.deepEqual(reduceEvents([root, ev("closed")]).compactions, {})
 })
 
 test("a rebuilt workspace shows its message once, as a quiet system line", () => {
