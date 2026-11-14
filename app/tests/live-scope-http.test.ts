@@ -33,11 +33,11 @@ afterAll(() => rmSync(dir, { recursive: true, force: true }))
 
 const CONSOLE = { origin: "http://localhost:5173", host: "localhost:5173", "content-type": "application/json" }
 
-function mockReq(body: unknown, headers: Record<string, string>) {
+function mockReq(body: unknown, headers: Record<string, string>, url = "/api/scopes") {
   const handlers: Record<string, (arg?: unknown) => void> = {}
   const req = {
     method: "POST",
-    url: "/api/scopes",
+    url,
     headers,
     on(ev: string, cb: (arg?: unknown) => void) {
       handlers[ev] = cb
@@ -53,7 +53,7 @@ function mockReq(body: unknown, headers: Record<string, string>) {
   return req
 }
 
-async function post(body: unknown, headers: Record<string, string>) {
+async function post(body: unknown, headers: Record<string, string>, url = "/api/scopes") {
   const res = {
     statusCode: 0,
     body: "",
@@ -62,7 +62,7 @@ async function post(body: unknown, headers: Record<string, string>) {
       this.body = s ?? ""
     },
   }
-  await handleScopes(mockReq(body, headers), res)
+  await handleScopes(mockReq(body, headers, url), res)
   return { status: res.statusCode, json: res.body ? JSON.parse(res.body) : null }
 }
 
@@ -166,4 +166,41 @@ describe("POST /api/scopes, kind live, private lab opt-in", () => {
     expect(g[0].scopeId).toBe(r.json.id)
     expect(g[0].allowPrivate).toBe(true)
   })
+})
+
+test("strict network policy survives scope creation; unknown policies save nothing", async () => {
+  const headers = { ...CONSOLE, "x-touchstone-grant-token": TOKEN }
+  const invalid = await post({ ...live, networkPolicy: "typo" }, headers)
+  expect(invalid.status).toBe(400)
+  expect(grants().length).toBe(0)
+  const r = await post({ ...live, networkPolicy: "strict" }, headers)
+  expect(r.status).toBe(201)
+  expect(r.json.networkPolicy).toBe("strict")
+  expect(JSON.parse(readFileSync(SCOPES, "utf8"))[0].networkPolicy).toBe("strict")
+})
+
+
+test("network access can be changed for a saved scope and requires the console token", async () => {
+  const headers = { ...CONSOLE, "x-touchstone-grant-token": TOKEN }
+  const created = await post(live, headers)
+  const url = `/api/scopes/${created.json.id}/network-policy`
+  const denied = await post({ networkPolicy: "public" }, CONSOLE, url)
+  expect(denied.status).toBe(403)
+  for (const networkPolicy of ["public", "strict"]) {
+    const updated = await post({ networkPolicy }, headers, url)
+    expect(updated.status).toBe(200)
+    expect(updated.json.networkPolicy).toBe(networkPolicy)
+    expect(JSON.parse(readFileSync(SCOPES, "utf8"))[0].networkPolicy).toBe(networkPolicy)
+  }
+  expect((await post({}, headers, url)).status).toBe(400)
+  expect(JSON.parse(readFileSync(SCOPES, "utf8"))[0].networkPolicy).toBe("strict")
+})
+
+test("private labs refuse public access on creation and update", async () => {
+  const headers = { ...CONSOLE, "x-touchstone-grant-token": TOKEN }
+  const lab = { ...live, hosts: ["127.0.0.1"], allowPrivate: true }
+  expect((await post({ ...lab, networkPolicy: "public" }, headers)).status).toBe(400)
+  const created = await post(lab, headers)
+  expect(created.status).toBe(201)
+  expect((await post({ networkPolicy: "public" }, headers, `/api/scopes/${created.json.id}/network-policy`)).status).toBe(400)
 })

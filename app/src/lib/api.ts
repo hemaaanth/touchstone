@@ -274,6 +274,7 @@ export function attachScope(body: {
   permission?: boolean
   // The operator's opt-in for a local lab (loopback or private hosts only).
   allowPrivate?: boolean
+  networkPolicy?: "strict" | "public"
   // A live AI/MCP target may carry its own credential and its scopes.
   token?: string
   tokens?: Record<string, { client: string; scopes: string[] }>
@@ -488,3 +489,7 @@ export const discoverShellSnapshots = () => postJson<ShellDiscovery>("/api/setti
 export const checkShellSnapshot = () => postJson<ShellSetup>("/api/settings/execution/check", {})
 export const startShellSetup = (action: "build" | "test", requestId: string) => postJson<ShellSetup>(`/api/settings/execution/${action}`, { confirm: true, requestId })
 export const reconcileShellSetup = (id: string, action: "snapshot" | "probe") => postJson<ShellSetup>("/api/settings/execution/reconcile", { id, action })
+
+export function saveScopeNetworkPolicy(id: string, networkPolicy: "strict" | "public"): Promise<{ id: string; networkPolicy: "strict" | "public" }> {
+  return postJson(`/api/scopes/${encodeURIComponent(id)}/network-policy`, { networkPolicy })
+}

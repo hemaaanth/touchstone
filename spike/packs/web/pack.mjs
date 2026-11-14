@@ -708,7 +708,12 @@ How requests work:
 - Every request/response is recorded out of band; the tool reports whether that
   transcript tripped one of the engine's harm checks. Read the transcript, never your
   own console output.
-- The gate lets only the granted host through. A request to another host is refused.
+- The gate restricts request tools to the listed hosts by default. A scope with public
+  network access enabled can reach other public domains and IPs, including redirects and subdomains.
+  Stay focused on the operator’s authorized target. Private addresses remain blocked
+  unless this is an explicitly configured private lab. Strict scopes restrict hosts.
+- request follows up to 10 redirects and records every hop. Pass followRedirects: false
+  to inspect a redirect response itself. Credentials are stripped across origins.
 
 The checks this module can prove (a match is the ONLY thing that makes a finding):
 1. SIWE nonce replay: the same signed message and signature posted to the sign-in

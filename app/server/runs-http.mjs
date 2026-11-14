@@ -9,7 +9,7 @@ import { dismissFinding, getFinding, nowCandidate } from "./findings.mjs"
 import { buildReport, renderReportAgent, renderReportHtml, renderReportMarkdown } from "./report.mjs"
 import { bundleRefusal, loadRecordedReplay, planReplayBundle, UNJUDGED_NOTE } from "./replay-bundle.mjs"
 import { readGrants, addGrant, removeGrant, grantActive } from "../../spike/lib/grant-store.mjs"
-import { setScopeBrief } from "../../spike/lib/scopes-store.mjs"
+import { setScopeBrief, setScopeNetworkPolicy } from "../../spike/lib/scopes-store.mjs"
 import { getSettings, saveProvider, deleteProvider, setDefault, setRunBudget, discoverModels, setExecution, setStrixSettings, consoleWriteRefusal } from "./settings.mjs"
 
 import { execConfig } from "../../spike/lib/daytona.mjs"
@@ -344,7 +344,18 @@ export async function handleScopes(req, res) {
     // cannot add either.
     const body = await readBody(req)
     try {
-      send(res, 201, addScope({ kind: body.kind, title: body.title, brief: body.brief, blurb: body.blurb, files: body.files, repo: body.repo, members: body.members, pack: body.pack, hosts: body.hosts, permission: body.permission, token: body.token, tokens: body.tokens, toolScope: body.toolScope, assistant: body.assistant, allowPrivate: body.allowPrivate }))
+      send(res, 201, addScope({ kind: body.kind, title: body.title, brief: body.brief, blurb: body.blurb, files: body.files, repo: body.repo, members: body.members, pack: body.pack, hosts: body.hosts, permission: body.permission, token: body.token, tokens: body.tokens, toolScope: body.toolScope, assistant: body.assistant, allowPrivate: body.allowPrivate, networkPolicy: body.networkPolicy }))
+    } catch (err) {
+      send(res, 400, { error: String(err?.message ?? err) })
+    }
+    return true
+  }
+
+  if (parts.length === 4 && parts[3] === "network-policy" && req.method === "POST") {
+    const body = await readBody(req)
+    try {
+      const scope = setScopeNetworkPolicy(decodeURIComponent(parts[2]), body.networkPolicy)
+      send(res, 200, { id: scope.id, networkPolicy: scope.networkPolicy })
     } catch (err) {
       send(res, 400, { error: String(err?.message ?? err) })
     }

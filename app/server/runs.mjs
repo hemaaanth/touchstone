@@ -147,7 +147,7 @@ export function listScopes() {
 //   { kind: "live", title, hosts, pack?, permission: true }
 //       real websites. `permission` is the operator's checkbox; it becomes the
 //       grant that lets a run reach these hosts.
-export function addScope({ kind, title, brief, blurb, files, repo, members, pack, hosts, permission, token, tokens, toolScope, assistant, allowPrivate } = {}) {
+export function addScope({ kind, title, brief, blurb, files, repo, members, pack, hosts, permission, token, tokens, toolScope, assistant, allowPrivate, networkPolicy } = {}) {
   if (kind === "live") {
     // Checked before the grant is written, so an unknown module saves nothing.
     // `pack` is one module or the list the operator ticked.
@@ -159,7 +159,7 @@ export function addScope({ kind, title, brief, blurb, files, repo, members, pack
     const refusal = liveHostsRefusal(hosts, { pack })
     if (refusal) throw new Error(refusal)
     // allowPrivate reaches the store only on this live path, and only `true` opts in.
-    const live = addLiveScope({ title, hosts, pack, blurb, permission, token, tokens, toolScope, assistant, allowPrivate: allowPrivate === true })
+    const live = addLiveScope({ title, hosts, pack, blurb, permission, token, tokens, toolScope, assistant, allowPrivate: allowPrivate === true, networkPolicy })
     return { ...targetSummary(live), runnable: true }
   }
   const scope = members !== undefined
@@ -1938,6 +1938,7 @@ export function followUp(run, text, clientId) {
     const epoch = run.roamEpoch = randomUUID()
     const env = { ...process.env }
     delete env.TOUCHSTONE_SCOPE_PROXY
+    delete env.TOUCHSTONE_NETWORK_POLICY
     delete env.TOUCHSTONE_SCOPE_ALLOW
     const since = Date.now()
     const errFrom = run.stderr.length // the card must not quote an earlier worker's output

@@ -333,6 +333,8 @@ export interface TargetScope {
   kind: "lab" | "local-source" | "brief" | "scope" | "live"
   // A live scope's websites. `origins` is where a run sends requests (scheme,
   // host and port as typed); `hosts` is the gate's bare-host allow-list.
+  networkPolicy?: "strict" | "public"
+  allowPrivate?: boolean
   hosts?: string[]
   origins?: string[]
   // The module (pack) this scope belongs to. Absent on a record saved before modules.

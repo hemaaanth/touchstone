@@ -1,13 +1,8 @@
-// The scope proxy — one gate all target-bound traffic passes through.
-//
-// WHY THIS EXISTS. A live module must reach only the hosts a grant names, and
-// nothing else. The proxy is that one gate. It holds an allow-list (the hosts
-// from the active grants, see lib/grant-store.mjs allowedHosts). Every request
-// is decided against the list: a request to a listed host is forwarded; a
-// request to any other host is blocked with 403 and never leaves the gate. The
-// gate writes one log line per request. The log is the evidence that a run
-// stayed in bounds: it shows exactly which hosts a run reached, and which it was
-// stopped from reaching.
+// The scope proxy — the only network route for live request containers.
+// Strict mode is the default and checks an exact/wildcard host allow-list.
+// Scopes can opt into public egress: hosts need not be listed, but every
+// destination is still resolved, checked, and pinned before connecting.
+// The proxy logs allowed and blocked attempts in either mode.
 //
 // TWO PARTS, used together:
 //   - decide(allowSet, host): the pure rule. No I/O. Easy to test, and the same
@@ -126,13 +121,14 @@ export async function resolvePinned(host, allowPrivate, resolve = lookup) {
 
 // The pure rule. Given the allow-list and one request host, allow or block.
 // allowSet is any iterable of host entries (exact hosts or "*." wildcards).
-// Returns { allowed, reason }. An empty allow-list blocks everything: no grant,
-// no reach.
-export function decide(allowSet, host) {
+// Returns { allowed, reason }. Strict mode blocks an empty allow-list. Public
+// mode approves names only; resolvePinned must still approve their addresses.
+export function decide(allowSet, host, networkPolicy = "strict") {
   // Strip a ":port", but never from a bare IPv6 literal like "fd00::1".
   const raw = String(host || "").toLowerCase();
   const h = isIP(raw) ? raw : raw.replace(/:\d+$/, "");
   if (!h) return { allowed: false, reason: "no host" };
+  if (networkPolicy === "public") return { allowed: true, reason: "public network policy (address checked before connection)" };
   const entries = [...(allowSet || [])];
   if (!entries.length) return { allowed: false, reason: "empty allow-list (no grant)" };
   for (const e of entries) {
@@ -224,7 +220,8 @@ function httpTarget(req) {
 //                 the operator's own LAN, or a test, opts in. The covering grant
 //                 carries this, and lib/reach.mjs passes it here.
 //   resolve       the DNS lookup; default node:dns lookup. Tests only.
-export function startScopeProxy({ allowedHosts = [], log, host = "127.0.0.1", port = 0, allowPrivate = false, resolve = lookup } = {}) {
+export function startScopeProxy({ allowedHosts = [], log, host = "127.0.0.1", port = 0, allowPrivate = false, networkPolicy = "strict", resolve = lookup } = {}) {
+  if (!["strict", "public"].includes(networkPolicy)) throw new Error("Unknown network policy");
   const allow = [...allowedHosts];
   const scopeLog = log || new ScopeLog();
 
@@ -243,7 +240,7 @@ export function startScopeProxy({ allowedHosts = [], log, host = "127.0.0.1", po
       res.end("Scope gate: bad target URL.\n");
       return;
     }
-    const verdict = decide(allow, targetHost);
+    const verdict = decide(allow, targetHost, networkPolicy);
     if (!verdict.allowed) {
       scopeLog.record({ host: targetHost, method: req.method, url: target, allowed: false, reason: verdict.reason, status: 403 });
       res.writeHead(403, { "content-type": "text/plain" });
@@ -253,7 +250,7 @@ export function startScopeProxy({ allowedHosts = [], log, host = "127.0.0.1", po
     // Allowed by name — now check the ADDRESS and pin it, so a granted name that
     // resolves to private/metadata space is refused, and the forward connects to
     // exactly the address we checked.
-    resolvePinned(targetHost, allowPrivate, resolve).then((pin) => {
+    resolvePinned(targetHost, allowPrivate && networkPolicy === "strict", resolve).then((pin) => {
       if (!pin.ok) {
         scopeLog.record({ host: targetHost, method: req.method, url: target, allowed: false, reason: pin.reason, status: 403 });
         res.writeHead(403, { "content-type": "text/plain" });
@@ -274,14 +271,14 @@ export function startScopeProxy({ allowedHosts = [], log, host = "127.0.0.1", po
     const m = String(req.url || "").match(/^(\[[^\]]*\]|[^:]*)(?::(\d+))?$/);
     const [targetHost, portStr] = m ? [m[1], m[2]] : ["", ""];
     const tport = Number(portStr) || 443;
-    const verdict = decide(allow, targetHost);
+    const verdict = decide(allow, targetHost, networkPolicy);
     if (!verdict.allowed) {
       scopeLog.record({ host: targetHost, method: "CONNECT", url: req.url, allowed: false, reason: verdict.reason, status: 403 });
       clientSocket.write("HTTP/1.1 403 Forbidden\r\n\r\nScope gate: blocked by grant.\r\n");
       clientSocket.end();
       return;
     }
-    resolvePinned(targetHost, allowPrivate, resolve).then((pin) => {
+    resolvePinned(targetHost, allowPrivate && networkPolicy === "strict", resolve).then((pin) => {
       if (!pin.ok) {
         scopeLog.record({ host: targetHost, method: "CONNECT", url: req.url, allowed: false, reason: pin.reason, status: 403 });
         clientSocket.write("HTTP/1.1 403 Forbidden\r\n\r\nScope gate: blocked by address.\r\n");

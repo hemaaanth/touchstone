@@ -511,13 +511,15 @@ export function liveAssistant(a) {
 // loopback name or a loopback/private IP (privateLabHostError), so an opted-in
 // grant never covers a public host. The HTTP route still requires the console
 // grant token for any live scope (runs-http.mjs).
-export function addLiveScope({ title, hosts, pack, blurb, permission, token, tokens, toolScope, assistant, allowPrivate } = {}) {
+export function addLiveScope({ title, hosts, pack, blurb, permission, token, tokens, toolScope, assistant, allowPrivate, networkPolicy } = {}) {
   if (permission !== true) throw new Error("Tick the box to confirm you have permission to test these sites.");
+  if (networkPolicy != null && !["strict", "public"].includes(networkPolicy)) throw new Error("Unknown network policy");
   const chat = liveAssistant(assistant);
   const list = (Array.isArray(hosts) ? hosts : [hosts]).map((h) => String(h ?? "").trim()).filter(Boolean);
   if (!list.length) throw new Error("A live scope needs at least one website.");
   if (list.length > 20) throw new Error("A live scope holds at most 20 websites.");
   const priv = allowPrivate === true;
+  if (priv && networkPolicy === "public") throw new Error("Private labs require strict network access.");
   if (priv) {
     for (const h of list) {
       const err = privateLabHostError(h);
@@ -576,6 +578,7 @@ export function addLiveScope({ title, hosts, pack, blurb, permission, token, tok
     entry: github ? github[0] : grant.hosts[0],
     signal: "agent",
     hosts: grant.hosts,
+    ...(networkPolicy ? { networkPolicy } : {}),
     ...(github ? { github } : {}),
     // Where a run actually sends its requests, in the operator's own scheme and
     // port. `hosts` above is only the gate's allow-list; this is the aim.
@@ -631,6 +634,20 @@ export function setScopeBrief(id, text) {
     if (!scope) throw new Error(`unknown scope: ${id}`);
     if (brief) scope.brief = brief;
     else delete scope.brief;
+    writeScopes(all);
+    return scope;
+  });
+}
+
+// Applies to new runs only; a running gate keeps its original policy.
+export function setScopeNetworkPolicy(id, networkPolicy) {
+  if (!["strict", "public"].includes(networkPolicy)) throw new Error("Unknown network policy");
+  return withStoreLock(scopesFile(), "scope store", () => {
+    const all = loadScopes();
+    const scope = all.find((s) => s.id === id);
+    if (!scope || scope.kind !== "live") throw new Error("Choose a saved live scope.");
+    if (scope.permission?.allowPrivate && networkPolicy === "public") throw new Error("Private labs require strict network access.");
+    scope.networkPolicy = networkPolicy;
     writeScopes(all);
     return scope;
   });

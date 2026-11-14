@@ -2,7 +2,7 @@ import { useMemo, useRef, useState } from "react"
 import { Folder, FolderGit2, Globe, Loader2, PanelRight, Plus, Trash2, TriangleAlert } from "lucide-react"
 import type { PackChoice, RunSummary, TargetChoice } from "@/lib/types"
 import type { RunBrief } from "@/lib/runModel"
-import { removeScope, saveScopeBrief } from "@/lib/api"
+import { removeScope, saveScopeBrief, saveScopeNetworkPolicy } from "@/lib/api"
 import { isOwnScope, packOf, plural, SCOPE_KIND, scopedRuns, scopeMeta, siteEntry, type CatalogState, type ScopedRun } from "@/lib/catalog"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -259,6 +259,8 @@ function ScopeDetail({
           <ModulePills ids={modulesOf(t)} packs={packs} className="gap-1.5" />
         </section>
 
+        {own && t.kind === "live" ? <NetworkPolicyField key={`${t.id}:${t.networkPolicy ?? "strict"}`} target={t} onSaved={onChanged} /> : null}
+
         <section className="flex flex-col gap-2">
           <Label>Brief</Label>
           {own ? (
@@ -398,6 +400,35 @@ function BriefField({ target, onSaved }: { target: TargetChoice; onSaved: () => 
       )}
       <p className="-mt-1 text-[11px] leading-relaxed text-muted-foreground">Do not paste secrets here. The brief is saved with each run.</p>
     </>
+  )
+}
+
+function NetworkPolicyField({ target, onSaved }: { target: TargetChoice; onSaved: () => void }) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const enabled = target.networkPolicy === "public"
+  async function save(checked: boolean) {
+    setBusy(true)
+    setError(null)
+    try {
+      await saveScopeNetworkPolicy(target.id, checked ? "public" : "strict")
+      onSaved()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally { setBusy(false) }
+  }
+  return (
+    <section className="flex flex-col gap-2">
+      <Label>Network access</Label>
+      <label className="flex items-start gap-2.5 text-xs leading-relaxed">
+        <input type="checkbox" checked={enabled} disabled={busy || target.allowPrivate} onChange={(e) => void save(e.target.checked)} className="mt-0.5 size-3.5 shrink-0 accent-foreground" />
+        <span>Allow public network access</span>
+      </label>
+      {target.allowPrivate ? <p className="text-[11px] text-muted-foreground">Private labs require strict host confinement.</p> : null}
+      <p className="text-[11px] leading-relaxed text-muted-foreground">Off restricts request tools to the listed hosts. On allows other public hosts, including redirects and subdomains. Private addresses stay blocked. Changes apply to new runs.</p>
+      {busy ? <span role="status" className="text-xs text-muted-foreground">Saving…</span> : null}
+      {error ? <p role="alert" className="text-xs text-warn">{error}</p> : null}
+    </section>
   )
 }
 

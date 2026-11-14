@@ -306,6 +306,8 @@ export function targetSummary(target, { paths = false } = {}) {
   // A live target shows the host(s) it would touch, so the operator sees exactly
   // what a run reaches before starting it — and whether a grant must be added.
   if (target.kind === "live") {
+    s.networkPolicy = target.networkPolicy ?? "strict"
+    if (target.permission?.allowPrivate) s.allowPrivate = true
     s.hosts = reachHosts(target)
     s.origins = liveOrigins(target)
   }

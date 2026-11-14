@@ -234,3 +234,21 @@ test("an opted-in localhost grant still forwards a loopback answer", async () =>
     await gate.stop();
   }
 });
+
+test("public policy allows subdomains and public IP names; strict remains exact", () => {
+  for (const host of ["www.example.com", "app.example.com", "8.8.8.8"]) {
+    assert.equal(decide(["example.com"], host, "public").allowed, true);
+    assert.equal(decide(["example.com"], host, "strict").allowed, false);
+  }
+});
+
+test("public policy still blocks private destinations even with allowPrivate set", async () => {
+  const gate = await startScopeProxy({ networkPolicy: "public", allowPrivate: true, log: new ScopeLog({ sink() {} }) });
+  try {
+    for (const url of [targetUrl, "http://169.254.169.254/latest/meta-data/"]) {
+      const r = await fetch(gate.url, { headers: { "x-touchstone-url": url } });
+      assert.equal(r.status, 403);
+      assert.match(await r.text(), /address/);
+    }
+  } finally { await gate.stop(); }
+});

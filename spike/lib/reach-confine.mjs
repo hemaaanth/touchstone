@@ -107,7 +107,7 @@ const HARDEN = ["--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--p
 //                 omitted the proxy is bridged to the default `bridge` network, so
 //                 it can reach the real internet (the production shape). A test
 //                 passes its own origins' network so the reach stays controlled.
-export async function confineReach({ allowedHosts = [], allowPrivate = false, egressNetwork, proxyPort = DEFAULT_PROXY_PORT } = {}) {
+export async function confineReach({ allowedHosts = [], allowPrivate = false, networkPolicy = "strict", egressNetwork, proxyPort = DEFAULT_PROXY_PORT } = {}) {
   const tag = randomBytes(4).toString("hex");
   const netClient = `touchstone-reach-client-${tag}`;
   const proxyName = `touchstone-reach-proxy-${tag}`;
@@ -137,7 +137,7 @@ export async function confineReach({ allowedHosts = [], allowPrivate = false, eg
   const script =
     `const {startScopeProxy}=await import('/app/lib/scope-proxy.mjs');` +
     `const allow=(process.env.SCOPE_ALLOW||'').split(',').map(s=>s.trim()).filter(Boolean);` +
-    `await startScopeProxy({allowedHosts:allow,host:'0.0.0.0',port:Number(process.env.SCOPE_PORT||${DEFAULT_PROXY_PORT}),allowPrivate:process.env.SCOPE_ALLOW_PRIVATE==='1'});` +
+    `await startScopeProxy({allowedHosts:allow,host:'0.0.0.0',port:Number(process.env.SCOPE_PORT||${DEFAULT_PROXY_PORT}),allowPrivate:process.env.SCOPE_ALLOW_PRIVATE==='1',networkPolicy:process.env.SCOPE_NETWORK_POLICY});` +
     `process.stderr.write('${READY_MARKER}\\n');`;
 
   // Start the proxy on the egress network, then connect it to the client network
@@ -150,6 +150,7 @@ export async function confineReach({ allowedHosts = [], allowPrivate = false, eg
     "--user", `${process.getuid()}:${process.getgid()}`,
     "-v", `${LIB_DIR}:/app/lib:ro`,
     "-e", `SCOPE_ALLOW=${allowedHosts.join(",")}`,
+    "-e", `SCOPE_NETWORK_POLICY=${networkPolicy}`,
     "-e", `SCOPE_PORT=${proxyPort}`,
     "-e", `SCOPE_ALLOW_PRIVATE=${allowPrivate ? "1" : "0"}`,
     "--entrypoint", "node", PROXY_IMAGE,

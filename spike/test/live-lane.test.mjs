@@ -41,7 +41,7 @@ let originIp = null;
 
 before(async () => {
   if (skip) return;
-  const script = `require('http').createServer((q,s)=>{s.writeHead(200,{'content-type':'application/json'});s.end(JSON.stringify({path:q.url,query:q.url.split('?')[1]??null}))}).listen(${PORT},'0.0.0.0')`;
+  const script = `require('http').createServer((q,s)=>{if(q.url==='/redirect'){s.writeHead(302,{location:'/?x=redirected'});s.end();return;}s.writeHead(200,{'content-type':'application/json'});s.end(JSON.stringify({path:q.url,query:q.url.split('?')[1]??null}))}).listen(${PORT},'0.0.0.0')`;
   const r = await docker([
     "run", "-d", "--name", originName, "--network", "bridge",
     "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", "64", "--memory", "128m",
@@ -101,4 +101,18 @@ test("a proof replays the script and reads the recorded transcript", { skip }, a
   assert.equal(proof.kind, "http");
   assert.equal(proof.log.length, 1);
   assert.equal(proof.log[0].response.status, 200);
+});
+
+
+test("live request harness follows redirects through the gate and can opt out", { skip }, async () => {
+  const run = await runLiveScript(ws, `
+    const followed = await request("GET", "/redirect");
+    console.log("followed:" + followed.status + ":" + followed.resBody.query);
+    const raw = await request("GET", "/redirect", { followRedirects: false });
+    console.log("raw:" + raw.status);
+  `);
+  assert.equal(run.code, 0, run.stderr);
+  assert.match(run.stdout, /followed:200:x=redirected/);
+  assert.match(run.stdout, /raw:302/);
+  assert.deepEqual(run.transcript.map(e => e.status), [302, 200, 302]);
 });

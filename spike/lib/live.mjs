@@ -15,7 +15,7 @@
 //
 // CONFINEMENT. A live script runs in a hardened container on the reach
 // boundary's client network (lib/reach-confine.mjs): its only route off that
-// network is the scope gate, whose allow-list is the grant. The harness routes
+// network is the scope gate, which enforces the run's network policy. The harness routes
 // through the gate explicitly, so target traffic cannot leave any other way.
 // The pack supplies the image (its own lab image, already carrying the script
 // runtime) and its own scan; this file knows nothing about a website or an MCP
@@ -27,6 +27,7 @@
 // exchange to a file the parent reads after the container exits. The script
 // shares the process, so this is weaker than the lab's out-of-band recorder;
 // the helper never calls global fetch, so monkeypatching fetch cannot fake it.
+import { requestWithRedirects } from "./redirect-request.mjs";
 import { execFile } from "node:child_process";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -66,9 +67,9 @@ export function bindLive(ws, { net, gate, baseUrl, image }) {
 }
 
 // The request helpers, injected into the script before it runs. `request` goes
-// through the gate on the client network; the gate decides the host against the
-// grant, then forwards or refuses.
-export const HARNESS = String.raw`
+// through the gate on the client network; each redirect uses the same checked
+// route. Every response, including intermediate redirects, is recorded.
+export const HARNESS = `const requestWithRedirects = ${requestWithRedirects.toString()};\n` + String.raw`
 import http from "node:http";
 import https from "node:https";
 import net from "node:net";
@@ -155,13 +156,7 @@ globalThis.request = async function request(method, path, o = {}) {
   const headers = { "content-type": "application/json", "accept-encoding": "identity", ...(o.headers || {}) };
   const hasBody = o.body !== undefined;
   const body = hasBody ? (typeof o.body === "string" ? o.body : JSON.stringify(o.body)) : undefined;
-  const res = await send(url, method, headers, body);
-  const resBody = parse(res.body);
-  record({
-    method, path: url.pathname, url: url.href, reqHeaders: headers, reqBody: hasBody ? parse(body) : null,
-    status: res.status, resHeaders: res.headers, resBody,
-  });
-  return { method, path: url.pathname, url: url.href, reqHeaders: headers, reqBody: hasBody ? parse(body) : null, status: res.status, resHeaders: res.headers, resBody };
+  return requestWithRedirects(send, record, method, url, headers, body, o);
 };
 
 globalThis.signPersonal = async function signPersonal(privateKey, message) {

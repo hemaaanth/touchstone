@@ -448,7 +448,7 @@ function labHost(hostname: string): boolean {
 // Live websites go as { kind: "live", hosts, pack, permission }: `pack` is the
 // list of modules the operator ticked, and the checkbox is the operator saying
 // they may test the websites. The server records it as a grant.
-function scopeBody(sources: Source[], name: string, modules: string[], permission: boolean, token: string, chat: { path: string; budget: string }, allowPrivate: boolean): Parameters<typeof attachScope>[0] {
+function scopeBody(sources: Source[], name: string, modules: string[], permission: boolean, token: string, chat: { path: string; budget: string }, allowPrivate: boolean, publicNetwork: boolean): Parameters<typeof attachScope>[0] {
   const title = name || sources.map(sourceLabel).join(" + ")
   // Plain websites first: a run sends its requests to the first one, and a
   // wildcard entry is a grant pattern, not a website.
@@ -460,7 +460,7 @@ function scopeBody(sources: Source[], name: string, modules: string[], permissio
   const assistant = chatPath || chat.budget.trim() ? { path: chatPath, budget: Number(chat.budget) } : null
   if (sites.length) {
     const mcp = modules.includes("ai-mcp")
-    return { kind: "live", title, hosts: sites, permission, pack: modules, ...(bearer && mcp ? { token: bearer } : {}), ...(assistant && mcp ? { assistant } : {}), ...(allowPrivate ? { allowPrivate: true } : {}) }
+    return { kind: "live", title, hosts: sites, permission, pack: modules, networkPolicy: publicNetwork && !allowPrivate ? "public" : "strict", ...(bearer && mcp ? { token: bearer } : {}), ...(assistant && mcp ? { assistant } : {}), ...(allowPrivate ? { allowPrivate: true } : {}) }
   }
   const members = sources.flatMap((s): ScopeMember[] =>
     s.kind === "site" ? [] : s.kind === "folder" && "path" in s ? [{ kind: "folder", name: s.name, path: s.path }] : [s],
@@ -507,6 +507,7 @@ export function AddScope({
   // The modules ticked for a website scope. A run picks from them at start.
   const [modules, setModules] = useState<string[]>(["web"])
   const [allowPrivate, setAllowPrivate] = useState(false)
+  const [publicNetwork, setPublicNetwork] = useState(false)
   const folderRef = useRef<HTMLInputElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
@@ -533,6 +534,7 @@ export function AddScope({
     setModules(["web"])
     setPermission(false)
     setAllowPrivate(false)
+    setPublicNetwork(false)
     setToken("")
     setChatPath("")
     setChatBudget("")
@@ -614,7 +616,7 @@ export function AddScope({
     setBusy(true)
     onError(null)
     try {
-      onAttached(await attachScope(scopeBody(sources, name.trim(), siteModules, permission, token, { path: chatPath, budget: chatBudget }, lab && allowPrivate)))
+      onAttached(await attachScope(scopeBody(sources, name.trim(), siteModules, permission, token, { path: chatPath, budget: chatBudget }, lab && allowPrivate, live && !lab && publicNetwork)))
       close()
     } catch (e) {
       onError((e as Error).message)
@@ -850,6 +852,12 @@ export function AddScope({
                 className="h-7 w-20 shrink-0 bg-transparent text-right font-mono text-[11.5px] outline-none placeholder:font-sans placeholder:text-muted-foreground"
               />
             </div>
+          ) : null}
+          {live && !lab ? (
+            <label className="flex cursor-pointer items-start gap-2.5 py-2 pr-2 pl-2.5 text-xs leading-relaxed">
+              <input type="checkbox" checked={publicNetwork} disabled={busy} onChange={(e) => setPublicNetwork(e.target.checked)} className="mt-0.5 size-3.5 shrink-0 accent-foreground" />
+              <span>Allow public network access<span className="block text-muted-foreground">Off by default. Lets request tools reach other public hosts, including redirects and subdomains. Private addresses stay blocked.</span></span>
+            </label>
           ) : null}
           {live ? (
             <label className="flex cursor-pointer items-start gap-2.5 border-t border-border/60 py-2 pr-2 pl-2.5 text-xs leading-relaxed">

@@ -1,25 +1,8 @@
-// The reach gate — the one place a run is allowed (or refused) to touch a live
-// network target, and the one place its egress is confined to the granted hosts.
-//
-// WHY THIS EXISTS. Every offline lab runs with no network. A live-reach target
-// touches a REAL host, so two things must hold before a single byte leaves:
-//
-//   1. DEFAULT-DENY by kind. Only the offline kinds (lab, local-source, brief,
-//      scope) may run with no host. EVERY other kind — including a kind we do not
-//      recognize — must name its host(s) AND carry a grant. The SAFE set is the
-//      explicit allow-list here, not the live set, so a new or unknown kind is
-//      refused by default, never waved through by accident.
-//   2. CONFINEMENT. When a live run is allowed, a scope proxy is started here
-//      whose allow-list is exactly this target's own hosts.
-//      The proxy's URL and allow-list ride into the run, so the module's network
-//      seam (the http-proof request tool, the browser seam) reaches the granted
-//      host and nothing else. The grant pre-flight (requireGrant) REFUSES; the
-//      running proxy ENFORCES. One is a pre-flight; the other is confinement.
-//
-// THE SEAM. A module never calls this. The platform calls openReach in the run
-// launch (app/server/runs.mjs createRun) and hands the module a confined handle.
-// Swapping a module's direct network for this gated one happens here, behind the
-// seam, with no change to any module (WAVE2.md SEAM rule).
+// Run authorization and network setup. Every live target still needs its own
+// active grant before dispatch. Live request containers default to strict
+// egress through the address-checking proxy. Private labs, GitHub capture,
+// and explicit networkPolicy: "strict" retain host confinement.
+// Host-local proxy callers remain strict. Public mode requires confinement.
 import { requireGrant, normalizeHost, getGrant, grantActive, hostCovers } from "./grant-store.mjs";
 import { getUserScope } from "./scopes-store.mjs";
 import { startScopeProxy } from "./scope-proxy.mjs";
@@ -167,15 +150,20 @@ export async function openReach(target, { now = Date.now(), mode = "proxy", prox
   // 127.0.0.1) lets the proxy reach it; a public-host grant never does. Only
   // the grants this run uses count — the allow-list still confines WHICH hosts.
   const allowPrivate = grants.some((g) => g.allowPrivate === true);
+  // Existing scopes stay strict. Public egress requires an explicit scope setting.
+  const networkPolicy = target.networkPolicy ?? "strict";
+  if (!["strict", "public"].includes(networkPolicy)) throw new Error("Unknown network policy");
+  if (networkPolicy === "public" && mode !== "confine") throw new Error("Public network policy requires sandbox confinement");
   if (mode === "confine") {
-    const confine = await confineReach({ allowedHosts: allow, allowPrivate });
+    const confine = await confineReach({ allowedHosts: allow, allowPrivate, networkPolicy });
     return {
       live: true,
       networkKind,
       hosts,
       allowedHosts: allow,
       // The gate's URL as the RUN's tools see it: an alias on their own network.
-      env: { TOUCHSTONE_SCOPE_PROXY: confine.gateUrl, TOUCHSTONE_SCOPE_ALLOW: allow.join(",") },
+      networkPolicy,
+      env: { TOUCHSTONE_SCOPE_PROXY: confine.gateUrl, TOUCHSTONE_SCOPE_ALLOW: allow.join(","), TOUCHSTONE_NETWORK_POLICY: networkPolicy },
       proxy: null,
       confine,
       log: null,
