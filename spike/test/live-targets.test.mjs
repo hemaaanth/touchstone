@@ -117,3 +117,8 @@ test("every website pack takes a live scope; a source-only pack is refused", () 
   // A pack with no live lane is refused at workspace build.
   assert.throws(() => build({ ...scope, pack: "contracts" }), /cannot test a live website yet/);
 });
+
+test("listing preserves the title of a saved operator scope", () => {
+  const scope = addLiveScope({ title: "Acme · staging", hosts: ["https://scope-name.example.invalid"], permission: true });
+  assert.equal(listTargets().find((target) => target.id === scope.id)?.title, "Acme · staging");
+});

@@ -1,5 +1,5 @@
 {
   "pack": "infra-cloud",
-  "title": "Exposed crypto infrastructure",
+  "title": "Signer Infrastructure",
   "blurb": "Offline IaC lab with a broad KMS signer policy, public signer and RPC services, wallet-key exposure, CI access, and front-end bucket risks. Never deploy this lab."
 }
