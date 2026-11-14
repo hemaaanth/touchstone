@@ -420,7 +420,7 @@ test("docQueryUrls pulls documented input URLs out of the brief and the OpenAPI 
   assert.deepEqual(docQueryUrls(null, "http://lab:8080"), []);
 });
 
-test("scanWeb feeds dalfox the supplied input URLs, and reports 'no-input' (not 'ran') when it has none", async () => {
+test("scanWeb feeds dalfox the supplied input URLs, and harvests more when it has none", async () => {
   const dalfoxCalls = [];
   const run = async ({ image, ws, cmd }) => {
     if (image.includes("zaproxy")) { writeFileSync(join(ws, "zap.json"), JSON.stringify({ site: [] })); return { code: 0 }; }
@@ -432,8 +432,20 @@ test("scanWeb feeds dalfox the supplied input URLs, and reports 'no-input' (not 
   assert.deepEqual(dalfoxCalls, ["http://lab:8080/explorer?q=x"]);
   assert.equal(withUrls.coverage.find((c) => c.engine === "dalfox").status, "ran");
 
+  // No supplied URL and an empty spider: the target's own page and sitemap are
+  // unreachable from this unit test, so the conventional parameter names are
+  // tried rather than declaring the engine inputless. A single-page app has no
+  // query URL of its own, and that is exactly where XSS went untested.
   dalfoxCalls.length = 0;
-  const none = await scanWeb({ net: "n", baseUrl: "http://lab:8080", run });
+  const harvested = await scanWeb({ net: "n", baseUrl: "http://lab:8080", run });
+  assert.equal(dalfoxCalls.length, 5, "the fallback probes are real URLs for dalfox");
+  assert.match(dalfoxCalls[0], /^http:\/\/lab:8080\/\?/);
+  assert.equal(harvested.coverage.find((c) => c.engine === "dalfox").status, "ran");
+
+  // Only when even the fallback yields nothing is it 'no-input', which is not a
+  // clean result. A base URL that cannot parse has nothing to probe.
+  dalfoxCalls.length = 0;
+  const none = await scanWeb({ net: "n", baseUrl: "http://lab:8080", urls: [], run, harvest: async () => [] });
   assert.deepEqual(dalfoxCalls, [], "dalfox is not launched with nothing to test");
   const d = none.coverage.find((c) => c.engine === "dalfox");
   assert.equal(d.status, "no-input");

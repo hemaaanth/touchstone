@@ -45,12 +45,18 @@ export const STRIX_IMAGE = "touchstone/strix:1.7.0";
 
 // Cheap and honest: quick mode, a hard budget, a turn cap.
 // The budget is checked after each model response, so a large prompt can
-// overshoot it. Observed on a long DAST target: 25 turns cost about $4.30. Keep
-// the turn count low; that is the real brake.
+// overshoot it.
+//
+// `turns` is PER AGENT, not per scan: Strix fans out to several agents and each
+// one counts its own turns. A low value kills every child mid-thought and Strix
+// then reports "agent run failed ... marking stopped", which reads like a crash.
+// A live target's first agent (a surface mapper) spends 10 to 20 turns before it
+// reports anything, so 15 starved every run of 2026-11-14. The budget, not this
+// cap, is the brake.
 //
 // The three limits are Web module settings (Modules > Web). A saved setting
 // wins; else STRIX_TURNS / STRIX_BUDGET_USD / STRIX_TIMEOUT_MS; else these.
-export const STRIX_DEFAULTS = { turns: 15, budgetUsd: 0.5, timeoutMin: 8 };
+export const STRIX_DEFAULTS = { turns: 60, budgetUsd: 0.5, timeoutMin: 8 };
 export const STRIX_LIMITS = {
   turns: { min: 1, max: 200, integer: true },
   budgetUsd: { min: 0.01, max: 100 },
@@ -275,11 +281,18 @@ async function scanStrix({ baseUrl, provider, budgetUsd = DEFAULT_BUDGET_USD, tu
   const tail = [];
   let seen = 0;
   let crashLine = null;
+  // Sticky flags, read before the 40-line tail can push the evidence out.
+  // A turn-cap stop prints its own traceback 40+ lines after the "marking
+  // stopped" line, so the tail alone mislabels it as a crash.
+  let hitTurnCap = false;
+  let proxyDown = false;
   const onLine = (d) => {
     for (const line of String(d).split("\n")) {
       if (!line.trim()) continue;
       tail.push(line);
       if (!crashLine && CRASH.test(line)) crashLine = cap(line, 200);
+      if (!hitTurnCap && /MaxTurnsExceeded|Max turns/i.test(line)) hitTurnCap = true;
+      if (!proxyDown && /Caido bootstrap failed/i.test(line)) proxyDown = true;
       if (tail.length > 40) tail.shift();
       // The TUI prints a lot; one event per four lines is enough for the view.
       if (++seen % 4 === 0) emit({ ev: "web-strix-line", line: cap(line, 200) });
@@ -335,18 +348,26 @@ async function scanStrix({ baseUrl, provider, budgetUsd = DEFAULT_BUDGET_USD, tu
     if (left) tail.push(left);
   }
   // Hitting the turn cap exits non-zero with a MaxTurnsExceeded trace. That is
-  // a stop, not a failure: the leads it did produce are kept.
-  const hitCap = tail.some((l) => /MaxTurnsExceeded|Max turns/i.test(l));
+  // a stop, not a failure: the leads it did produce are kept. The flag is
+  // sticky, so a traceback line falling out of the tail cannot hide it.
+  // A dead Caido proxy is not a crash either: Strix keeps working with its
+  // shell and browser tools, but it loses its traffic view. That is a recorded
+  // coverage gap, never a silent one.
+  const hitCap = hitTurnCap;
   // Its agent crashed, or its own report says the scan did not complete. With
   // no leads that is a coverage gap, never a clean scan: "unavailable",
   // whatever the exit code. Leads it did report are real and are kept.
   const broke = hitCap ? null : crashLine ?? incomplete;
   const status = broke && !leads.length ? "unavailable"
     : timedOut || hitCap ? "timed-out" : r.code === 0 || r.code === 2 ? "ran" : "unavailable";
+  const gaps = [
+    hitCap ? `stopped at the ${turns}-turn-per-agent cap; leads found before that are kept` : null,
+    proxyDown ? "Caido proxy did not start in its sandbox, so its recorded-traffic tools were unavailable" : null,
+  ].filter(Boolean);
   const reason = broke
     ? (leads.length ? `strix did not finish; the ${leads.length} leads it reported are kept: ${broke}` : `strix did not finish and reported nothing: ${broke}`)
     : status === "unavailable" ? tail.slice(-3).join(" | ")
-    : hitCap ? `stopped at the ${turns}-turn cap; leads found before that are kept` : undefined;
+    : gaps.length ? gaps.join("; ") : undefined;
   emit({ ev: "web-strix-done", status, leads: leads.length, costUsd: Number(costUsd.toFixed(4)), ...(reason ? { reason } : {}) });
   return { status, leads, reason, timedOut, costUsd, coverage: { engine: "strix", status, leads: leads.length, ...(reason ? { reason } : {}), ...(costUsd ? { costUsd: Number(costUsd.toFixed(4)) } : {}) } };
 }

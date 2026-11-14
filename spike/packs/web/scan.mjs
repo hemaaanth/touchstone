@@ -129,6 +129,60 @@ export function docQueryUrls(text, baseUrl) {
   return [...out];
 }
 
+// Last resort before dalfox is declared inputless. A modern SPA puts no query
+// string in its HTML or its sitemap, so a spider-only list leaves XSS untested —
+// and reflected XSS is one of the few harms a live run can prove. Harvest what
+// the target itself names (links, sitemap, canonical) and, when that is empty
+// too, ask the conventional parameter names on the base path.
+//
+// A guess costs a request, never accuracy: dalfox reports a lead only when the
+// value really comes back, and the oracle still has to prove it.
+const PROBE_PARAMS = ["q", "search", "query", "s", "redirect", "redirect_uri", "returnUrl", "next", "url", "ref", "lang"];
+const sameOrigin = (u, origin) => { try { const x = new URL(u, origin); return x.origin === origin ? x.href : null; } catch { return null; } };
+const queryless = (u) => !u.includes("?");
+
+export function probeUrls(baseUrl, html = "", sitemap = "", { limit = 5 } = {}) {
+  let origin;
+  try { origin = new URL(baseUrl).origin; } catch { return []; }
+  const found = new Set();
+  for (const m of `${html}\n${sitemap}`.matchAll(/(?:href|loc|content)\s*=\s*["']([^"']+)["']|<loc>([^<]+)<\/loc>/gi)) {
+    const raw = m[1] ?? m[2];
+    if (!raw || !raw.includes("?")) continue;
+    const abs = sameOrigin(raw.replace(/&amp;/g, "&"), origin);
+    if (abs) found.add(abs);
+    if (found.size >= limit) return [...found];
+  }
+  if (found.size) return [...found];
+  const at = new URL(baseUrl);
+  return PROBE_PARAMS.slice(0, limit).map((name) => {
+    const u = new URL(at.pathname + (queryless(at.href) ? "" : at.search), origin);
+    u.searchParams.set(name, "touchstone1");
+    return u.href;
+  });
+}
+
+// The two captures probeUrls reads, best effort. A dead page or sitemap is not
+// an error: the caller still gets the conventional names.
+export async function harvestQueryUrls(baseUrl, { fetchText = hostFetch, limit = 5 } = {}) {
+  let origin;
+  try { origin = new URL(baseUrl).origin; } catch { return []; }
+  const grab = async (u) => { try { return await fetchText(u); } catch { return ""; } };
+  const [html, sitemap] = await Promise.all([grab(baseUrl), grab(new URL("/sitemap.xml", origin).href)]);
+  return probeUrls(baseUrl, html, sitemap, { limit });
+}
+
+async function hostFetch(url) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 15_000);
+  try {
+    const res = await fetch(url, { signal: ctl.signal, redirect: "follow", headers: { "user-agent": "touchstone-scan", accept: "text/html,application/xml,*/*" } });
+    if (!res.ok) return "";
+    return (await res.text()).slice(0, 500_000);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // One list, worst first. A path that two tools flag gets corroborated=true.
 export function mergeLeads(all) {
   const byKey = new Map();
@@ -157,7 +211,8 @@ const read = (p) => (existsSync(p) ? readFileSync(p, "utf8") : "");
 // fails is reported as unavailable with its exit code: it never aborts the scan.
 //   urls    extra URLs with a query string for dalfox (the spider cannot guess forms)
 //   only    run just these engines, e.g. ["nuclei"]
-export async function scanWeb({ net, baseUrl, urls = [], only, run = runTool, timeoutMs = 240_000 } = {}) {
+//   harvest last-resort query URLs for dalfox when nothing else supplies any
+export async function scanWeb({ net, baseUrl, urls = [], only, run = runTool, timeoutMs = 240_000, harvest = harvestQueryUrls } = {}) {
   const scratch = mkdtempSync(join(tmpdir(), "web-scan-"));
   // ZAP runs as its own image user (uid 1000), so the scratch dir must be writable by it.
   chmodSync(scratch, 0o777);
@@ -176,7 +231,11 @@ export async function scanWeb({ net, baseUrl, urls = [], only, run = runTool, ti
     dalfox: async () => {
       // dalfox waits for ZAP: the spider finds the URLs that take input.
       if (zapRun) await zapRun.catch(() => {});
-      const dalfoxUrls = [...new Set([...urls, ...zapQueryUrls(read(join(scratch, "zap.json")))])].slice(0, 5);
+      let dalfoxUrls = [...new Set([...urls, ...zapQueryUrls(read(join(scratch, "zap.json")))])].slice(0, 5);
+      // A SPA's spider finds no query URL at all. Harvest the target's own
+      // links first, then the conventional parameter names: without this, the
+      // XSS engine silently never runs on exactly the targets that need it.
+      if (dalfoxUrls.length === 0) dalfoxUrls = await harvest(baseUrl).catch(() => []);
       const all = [];
       let last = { code: 0, timedOut: false };
       // dalfox only tests URLs that take input. With none, it did not run: that
