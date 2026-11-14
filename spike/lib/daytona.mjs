@@ -265,9 +265,11 @@ function client(c) {
       name, imageName: SNAPSHOT_IMAGE, sandboxClass: "linux-vm", cpu: 2, memory: 4, disk: 10, regionId: c.target,
     }),
     // Create can block for minutes when the region is busy.
-    create: (labels) => call("POST", `${API}/sandbox`, {
-      snapshot: c.snapshot, target: c.target, user: "root", labels,
-      autoStopInterval: IDLE_STOP_MIN, autoDeleteInterval: 0,
+    // The defaults are for a confined tool machine: it holds no state, so it
+    // stops after 15 idle minutes and is deleted when it stops.
+    create: (labels, { snapshot = c.snapshot, stopMin = IDLE_STOP_MIN, deleteMin = 0 } = {}) => call("POST", `${API}/sandbox`, {
+      snapshot, target: c.target, user: "root", labels,
+      autoStopInterval: stopMin, autoDeleteInterval: deleteMin,
     }, { timeoutMs: 300_000 }),
     byLabel: (labels) => call("GET", `${API}/sandbox?labels=${encodeURIComponent(JSON.stringify(labels))}`),
     get: (id) => call("GET", `${API}/sandbox/${id}`),
@@ -818,4 +820,129 @@ export function warmScript(v) {
     `rc=0; docker run --rm -v foundry-svm:/home/foundry/.svm -v "$D:/work" -w /work ${img} "forge build --use $V" >"$D.log" 2>&1 || rc=$?`,
     `rm -rf "$D"; [ $rc -eq 0 ] || tail -c 400 "$D.log"; rm -f "$D.log"; exit $rc`,
   ].join("\n");
+}
+
+// ---- Free-roam machine (Wave 4, I1)
+//
+// One container machine per free-roam child, kept for the whole run. It is
+// not the confined tool machine: no Docker, no workspace copy, open network.
+// - Sidecar key `roam:<agent>`, so closeRun deletes it like every other machine.
+// - It never runs on this computer. Without Daytona, roamMachine throws.
+// - It stops after 60 idle minutes and is deleted 240 minutes after that. This
+//   is only the backstop for a leak; closeRun is the normal delete. Never 0
+//   here: 0 deletes the child's files at the first stop.
+// - A machine that stopped or is gone is replaced by an empty one, and the
+//   caller is told (`replaced`). Nothing starts a stopped machine again.
+// - The snapshot is a Daytona default. This code never creates a snapshot.
+export const ROAM_SNAPSHOT = process.env.TOUCHSTONE_ROAM_SNAPSHOT ?? "daytona-medium";
+const ROAM_STOP_MIN = 60;
+const ROAM_DELETE_MIN = 240;
+
+// The machine of one free-roam child, opened on first use.
+//   -> { id, fresh, replaced, exec(command, seconds) -> { exitCode, result }, upload(path, bytes) }
+//   fresh     this call created or replaced the machine
+//   replaced  an older machine of this agent was lost (stopped, destroyed or 404)
+// `exec` sends one command string to the machine. Nothing else from this host
+// goes there: no environment, no file, no key.
+export async function roamMachine(ws, agent) {
+  const c = execConfig();
+  if (!(c.backend === "daytona" && c.apiKey)) throw new Error("Free-roam needs the Daytona backend and its key. It never runs on this computer.");
+  if (!agent) throw new Error("A free-roam machine belongs to one child agent. No agent was given.");
+  const root = resolve(ws);
+  const key = `${root}|roam:${agent}`;
+  let opened = false;
+  let lost = false;
+  let m;
+  for (;;) {
+    let p = machines.get(key);
+    if (!p) {
+      opened = true;
+      p = openRoam(c, root, agent, key, lost);
+      machines.set(key, p);
+      const mine = p;
+      p.catch(() => machines.get(key) === mine && machines.delete(key));
+    }
+    m = await p;
+    if (opened || Date.now() - m.used <= staleMs() || (await alive(m))) break;
+    // It stopped by itself or it is gone. Open a new one, and say so.
+    if (machines.get(key) === p) retire(m);
+    lost = true;
+  }
+  return {
+    id: m.id,
+    fresh: opened && m.created,
+    replaced: opened && m.replaced,
+    exec: async (command, seconds) => {
+      try {
+        const r = await m.api.exec(m, command, seconds);
+        m.used = Date.now();
+        return { exitCode: r?.exitCode, result: String(r?.result ?? "") };
+      } catch (e) {
+        m.used = 0; // the next call checks the machine's state first
+        throw e;
+      }
+    },
+    upload: (path, bytes) => m.api.upload(m, path, bytes),
+  };
+}
+
+async function openRoam(c, root, agent, key, lost) {
+  const api = client(c);
+  const tag = `roam:${agent}`;
+  const known = readSidecar(root)[tag];
+  if (known) {
+    // An earlier worker of this run made it. It has no cache key, so retire
+    // does not drop the entry of this very call.
+    const old = { id: known.id, toolbox: known.toolbox, api, root, agent: tag, used: Date.now(), created: false, replaced: false };
+    if (await alive(old)) {
+      await roamReady(old);
+      old.key = key;
+      return old;
+    }
+    retire(old);
+    lost = true;
+  }
+  // The nonce finds the machine again if create times out after Daytona made it.
+  const nonce = randomBytes(6).toString("hex");
+  const run = createHash("sha256").update(root).digest("hex").slice(0, 12);
+  const labels = { touchstone: "1", agent: String(agent).slice(0, 60), nonce, run, loadout: "free-roam" };
+  let sb;
+  try {
+    sb = await api.create(labels, { snapshot: ROAM_SNAPSHOT, stopMin: ROAM_STOP_MIN, deleteMin: ROAM_DELETE_MIN });
+  } catch (e) {
+    api.byLabel({ touchstone: "1", nonce }).then((r) => {
+      for (const x of r?.items ?? r ?? []) {
+        if (x?.labels?.nonce === nonce) deleteMachine(api, x.id).then((ok) => ok || writePending([...readPending(), x.id]));
+      }
+    }).catch(() => {});
+    if (e.status === 404 || /snapshot/i.test(String(e.message))) {
+      throw new Error(`Daytona could not make a free-roam machine from the snapshot "${ROAM_SNAPSHOT}". Touchstone never creates this snapshot. Set TOUCHSTONE_ROAM_SNAPSHOT to a container snapshot that your Daytona organisation has. (${e.message})`, { cause: e });
+    }
+    throw e;
+  }
+  const m = { id: sb.id, toolbox: `${sb.toolboxProxyUrl}/${sb.id}`, api, root, agent: tag, key, used: Date.now(), created: true, replaced: lost };
+  const all = readSidecar(root);
+  all[tag] = { id: m.id, toolbox: m.toolbox };
+  writeFileSync(sidecar(root), JSON.stringify(all, null, 2));
+  event("exec-machine", { backend: "daytona", sandbox: m.id, run, loadout: "free-roam", ...(lost ? { replaced: true } : {}) });
+  await roamReady(m);
+  return m;
+}
+
+// The toolbox answers once the machine is up. A container machine has no
+// dockerd, so the check is `true`, not START_DOCKER.
+async function roamReady(m) {
+  let last;
+  for (let i = 0; i < 60; i++) {
+    try {
+      const r = await m.api.exec(m, "true", 30);
+      if (r?.exitCode === 0) return;
+      last = new Error(`the free-roam machine is not ready: ${String(r?.result).slice(-200)}`);
+    } catch (e) {
+      last = e;
+      if (e.status === 404) throw e;
+    }
+    await new Promise((r) => setTimeout(r, Number(process.env.DAYTONA_RETRY_MS) || 2000));
+  }
+  throw last;
 }
