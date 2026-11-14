@@ -48,6 +48,8 @@ import { isMeasured } from "../../spike/lib/candidate.mjs"
 import { recordProven } from "./findings.mjs"
 import { agentFindingsOf, candidateEvents, candidatesOf, createSessionArtifactsApi, dropMeasuredSubmitted, measuredAtLoad, priorCandidatesEnv, recordCandidates, recordMeasured, supersedeProven, trackCandidate, writeCandidates } from "./candidates.mjs"
 import { createRoamControlApi, roamSelection } from "./roam-control.mjs"
+import { DEMO, DEMO_ENDPOINT, DEMO_MODEL, DEMO_TARGETS } from "./demo-config.mjs"
+import { armDemoDeadline, closeDemoRun, demoFence, demoProve, stopDemoWorker } from "./demo-lifecycle.mjs"
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(HERE, "../..")
@@ -79,7 +81,7 @@ function loadEnvLocal() {
   }
   return loaded
 }
-const loadedKeys = loadEnvLocal()
+const loadedKeys = process.env.TOUCHSTONE_DEMO === "1" ? 0 : loadEnvLocal()
 if (loadedKeys > 0) console.log(`[runs] loaded ${loadedKeys} key(s) from spike/.env.local`)
 const ENGINE = path.join(SPIKE, "agent-run.mjs")
 // TOUCHSTONE_RESULTS_DIR lets a test use a throwaway folder.
@@ -331,7 +333,7 @@ function savePhase(run, phase) {
   run.phase = phase
   if (!run.stateFile) return
   const next = `${run.stateFile}.tmp`
-  writeFileSync(next, JSON.stringify({ requestId: run.requestId, requestHash: run.requestHash, ws: run.ws, target: run.target, ...(run.packs ? { packs: run.packs } : {}), grantIds: run.grantIds, phase, mode: modeOf(run) ?? run.mode, ...roamSelectionOf(run), modules: run.modules, budget: run.budget, provider: run.provider, model: run.model, leads: run.leads ?? {}, prepass: run.prepass ?? null, settled: run.settled ?? null }), { mode: 0o600 })
+  writeFileSync(next, JSON.stringify({ ownerHash: run.ownerHash, deadlineAt: run.deadlineAt, requestId: run.requestId, requestHash: run.requestHash, ws: run.ws, target: run.target, ...(run.packs ? { packs: run.packs } : {}), grantIds: run.grantIds, phase, mode: modeOf(run) ?? run.mode, ...roamSelectionOf(run), modules: run.modules, budget: run.budget, provider: run.provider, model: run.model, leads: run.leads ?? {}, prepass: run.prepass ?? null, settled: run.settled ?? null }), { mode: 0o600 })
   renameSync(next, run.stateFile)
 }
 
@@ -352,6 +354,7 @@ function monotonicId(alias) {
 }
 
 function broadcast(run, event) {
+  if (event.ev === "closed" && run.demoCleanupFailed) { failDemoCleanup(run); return }
   run.events.push(event)
   if (run.streamFile) {
     try {
@@ -368,10 +371,14 @@ function broadcast(run, event) {
     }
   }
   if (event.ev === "closed") {
+    if (process.env.TOUCHSTONE_DEMO === "1" || run.ownerHash) {
+      if (run.ownerHash) savePhase(run, "complete")
+      closeDemoRun(run)
+    }
     release(run)
     if (registry.pruneOwed) pruneReplays(run)
     if (TERMINAL.includes(run.status) && !run.replying) {
-      if (run.stateFile) rmSync(run.stateFile, { force: true })
+      if (run.stateFile && !run.ownerHash) rmSync(run.stateFile, { force: true })
       if (run.db) rmSync(`${run.db}.audit.json`, { force: true })
     }
   }
@@ -470,6 +477,27 @@ export function getRun(id) {
   return run ? view(run) : null
 }
 
+export function runOwnedBy(id, ownerHash) {
+  return /^[a-f0-9]{64}$/.test(ownerHash ?? "") && runs.get(id)?.ownerHash === ownerHash
+}
+
+export function demoBusy() {
+  return [...runs.values()].some((run) => !run.demoClosed && (process.env.TOUCHSTONE_DEMO === "1" || run.ownerHash || !idle(run)))
+}
+
+export function demoCatalog() {
+  const provider = allProviders().near
+  const model = provider?.models?.[DEMO_MODEL]
+  if (provider?.baseUrl !== DEMO_ENDPOINT || model?.id !== "deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated" || !Number.isFinite(model.input) || !Number.isFinite(model.output) || model.input < 0 || model.output < 0 || providerSetupError(provider, DEMO_MODEL)) throw new Error("Demo provider configuration is unavailable.")
+  const spend = spendState()
+  if (spend.ledgerError) throw new Error("Demo spend ledger is unavailable.")
+  return { demo: DEMO, models: [{ alias: DEMO_MODEL, id: model.id, abliterated: true }],
+    targets: availableTargets().filter((target) => DEMO_TARGETS.includes(target.id)),
+    packs: availablePacks().filter((pack) => pack.id === "contracts"),
+    provider: { id: "near", label: "NEAR AI Cloud", setupError: null },
+    spend: { usd: spend.usd, capUsd: spend.capUsd, budgetUsd: DEMO.budgetUsd, ledgerError: null } }
+}
+
 function runForRequest(requestId) {
   if (!requestId) return null
   for (const run of runs.values()) if (run.requestId === requestId) return run
@@ -537,7 +565,7 @@ export async function createRun(options) {
   return view(run)
 }
 
-function registerRun({ alias, targetId, modules, budgetUsd, pack, packs, mode = "fleet", freeRoam, options = [], requestId } = {}) {
+function registerRun({ alias, targetId, modules, budgetUsd, pack, packs, mode = "fleet", freeRoam, options = [], requestId, ownerHash, deadlineAt } = {}) {
   if (requestId != null && (typeof requestId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(requestId))) {
     throw new Error("The run request ID is invalid. Reload the console before starting a run.")
   }
@@ -549,6 +577,11 @@ function registerRun({ alias, targetId, modules, budgetUsd, pack, packs, mode = 
       return { run: accepted, setup: Promise.resolve() }
     }
   }
+  if (process.env.TOUCHSTONE_DEMO === "1") {
+    demoCatalog()
+    if (!/^[a-f0-9]{64}$/.test(ownerHash ?? "") || !Number.isFinite(deadlineAt) || deadlineAt <= Date.now() || deadlineAt > Date.now() + DEMO.maxMinutes * 60000 || alias !== DEMO_MODEL || !DEMO_TARGETS.includes(targetId) || budgetUsd !== DEMO.budgetUsd || mode !== "fleet" || freeRoam !== false || options.length || pack !== "contracts" || packs !== undefined || !Array.isArray(modules) || modules.length) throw new Error("Invalid demo run configuration.")
+    if (demoBusy()) throw new Error("The demo is busy.")
+  } else if (ownerHash !== undefined || deadlineAt !== undefined) throw new Error("Demo ownership requires demo mode.")
   const roam = roamSelection(freeRoam, options, mode)
   const cfg = readConfig()
   // The total spend cap comes first: at or above it, or with a ledger that
@@ -628,6 +661,8 @@ function registerRun({ alias, targetId, modules, budgetUsd, pack, packs, mode = 
   const run = {
     requestId,
     requestHash,
+    ownerHash,
+    deadlineAt,
     reach: null,
     id,
     alias,
@@ -667,6 +702,7 @@ function registerRun({ alias, targetId, modules, budgetUsd, pack, packs, mode = 
     throw err
   }
   runs.set(id, run)
+  armDemoDeadline(run, (id) => { try { stopRun(id) } catch { /* already closed */ } })
 
   // The first event names the scope under evaluation. RunView only sees the
   // event stream, not the run object, so without this it cannot show which
@@ -698,7 +734,9 @@ async function prepareNewRun(run) {
   const picked = run.packs
   const multi = picked?.length > 1
   try {
+    if (demoFence(run)) { endStopped(run); return view(run) }
     run.reach = await openReach(target, { mode: target.kind === "live" ? "confine" : "proxy", grantIds: run.grantIds })
+    if (demoFence(run)) { await run.reach?.stop?.(); endStopped(run); return view(run) }
     run.ws = multi ? await prepareMultiWorkspace(target, { packs: picked, modules: plan }) : await prepareRunWorkspace(target, { modules: plan })
     savePhase(run, "prepass")
   } catch (err) {
@@ -710,7 +748,7 @@ async function prepareNewRun(run) {
     broadcast(run, { ev: "closed" })
     throw err
   }
-  if (run.stopping) {
+  if (demoFence(run)) {
     await endWorkspace(run)
     endStopped(run)
     return view(run)
@@ -784,6 +822,7 @@ function endFoundNothing(run, s, { code = null, signal = null } = {}) {
 
 // Run the pack's pre-pass before starting the agent with its leads.
 async function startEngine(run) {
+  if (run.ownerHash && demoFence(run)) { await endWorkspace(run); endStopped(run); return }
   let leads = {}
   try {
     const money = budgetEnv(run)
@@ -811,7 +850,7 @@ async function startEngine(run) {
   // The run may have been torn down while scanning (e.g. process restart); only
   // start the agent if it is still live.
   if (run.status !== "running") return
-  if (run.stopping) {
+  if (demoFence(run)) {
     await endWorkspace(run)
     endStopped(run)
     return
@@ -1079,7 +1118,7 @@ function spawnAgent(run, leads) {
   // A Stop that was taken before this point starts no worker. Every start of
   // an audit worker comes through here (a new run, and a run the boot resumes),
   // so no caller can miss the check.
-  if (run.stopping) {
+  if (demoFence(run)) {
     endWorkspace(run).catch(() => {}).finally(() => endStopped(run))
     return
   }
@@ -1113,6 +1152,7 @@ function spawnAgent(run, leads) {
     await roamControl.invalidate(run, child, epoch).catch(() => {})
     if (run.child !== child || run.roamEpoch !== epoch) return
     if (run.status !== "running" && run.status !== "starting") return
+    demoFence(run)
     if (!run.stopping) recoverSettled(run, since)
     const s = run.settled
     if (run.stopping) {
@@ -1179,10 +1219,12 @@ async function recordRun(run, found, exit = {}) {
   run.status = "deciding"
   broadcast(run, { ev: "status", status: run.status, pending: run.pending })
   try {
-    const proven = withProven(await packFor(readTouchstone(run.ws)).prove?.(run.ws, found, run.events, (m) => {
+    const prove = (findings) => packFor(readTouchstone(run.ws)).prove?.(run.ws, findings, run.events, (m) => {
       run.stderr += `[proof-delta] ${m}\n`
-    }))
-  const findings = recordMeasured(run, proven, (e) => broadcast(run, e))
+    })
+    const proven = withProven(run.ownerHash ? await demoProve(run, found, prove) : await prove(found))
+    if (run.ownerHash && demoFence(run)) return
+    const findings = recordMeasured(run, proven, (e) => broadcast(run, e))
     supersedeProven(run, findings, (e) => broadcast(run, e))
     if (!findings.length && proven.length) {
       // Only measured candidates: the run ends as a run with nothing found
@@ -1206,8 +1248,10 @@ async function recordRun(run, found, exit = {}) {
     broadcast(run, { ev: "status", status: run.status, error: run.error })
     finalize(run)
   } finally {
+    if (run.demoReplay) await run.demoReplay
     await endWorkspace(run)
-    broadcast(run, { ev: "closed" })
+    if (run.ownerHash && !["recorded", "error"].includes(run.status) && demoFence(run)) endStopped(run)
+    else broadcast(run, { ev: "closed" })
   }
 }
 
@@ -1636,6 +1680,23 @@ function pruneWorkspaces() {
 // left running there (the web lab's container), or that would outlive the run.
 // The files stay when the run can take a follow-up; otherwise they are deleted.
 async function endWorkspace(run) {
+  try { return await cleanWorkspace(run) }
+  catch (error) {
+    if (!run?.ownerHash) throw error
+    run.demoCleanupFailed = true
+    failDemoCleanup(run)
+  }
+}
+
+function failDemoCleanup(run) {
+  run.error = "Demo cleanup failed. New sponsored runs are paused until the operator repairs it."
+  run.errorInfo = { kind: "cleanup", reason: "cleanup", retryable: false, title: "Cleanup needs attention", message: run.error }
+  setRunStatus(run, "error")
+  finalize(run)
+}
+
+async function cleanWorkspace(run) {
+  if (run?.ownerHash && !run.ws) { await run.reach?.stop?.(); return }
   await roamControl.invalidate(run).catch(() => {})
   const ws = run?.ws ?? run
   try {
@@ -1651,12 +1712,20 @@ async function endWorkspace(run) {
   } catch {
     // already closed
   }
-  if (keepWorkspace(run, ws)) {
+  if (!run?.ownerHash && keepWorkspace(run, ws)) {
     // The files stay. The run's Daytona machines do not: they open again on demand.
     await closeRun(ws).catch(() => {})
     return
   }
   await cleanupWorkspace(ws)
+}
+
+// A timed-out proof is not a clean scan, even if its late replay passed.
+function endStoppedAfterCleanup(run) {
+  run.error = "The demo work limit was reached. No late proof was recorded."
+  run.errorInfo = { kind: "timeout", reason: "deadline", retryable: false, title: "The demo stopped", message: run.error }
+  setRunStatus(run, "error")
+  finalize(run)
 }
 
 // Message a run. While a worker is running, the message is written to its
@@ -1698,6 +1767,12 @@ export function stopRun(id) {
   if (!run) throw new Error("no such run")
   if (idle(run)) throw new Error("the run is not working")
   if (!run.owner) throw new Error("another server owns this run; stop it there")
+  if (run.ownerHash) {
+    run.stopping = true
+    broadcast(run, { t: Date.now(), ev: "stop-requested" })
+    stopDemoWorker(run)
+    return { ok: true }
+  }
   const child = run.child
   const alive = child && child.exitCode == null && child.signalCode == null
   // A follow-up that still prepares its workspace has no worker yet. It can be
@@ -1716,6 +1791,12 @@ export function stopRun(id) {
 // unless part of the scope was never read; then it ends as a coverage error.
 function endStopped(run) {
   run.stopping = false
+  if (run.ownerHash && Date.now() >= run.deadlineAt) {
+    endStoppedAfterCleanup(run)
+    broadcast(run, { t: Date.now(), ev: "stopped" })
+    broadcast(run, { ev: "closed" })
+    return
+  }
   run.error = null
   run.errorInfo = null
   broadcast(run, { t: Date.now(), ev: "stopped" })
@@ -2234,6 +2315,8 @@ function persistRun(run, findings) {
     alias: run.alias,
     requestId: run.requestId,
     requestHash: run.requestHash,
+    ownerHash: run.ownerHash,
+    deadlineAt: run.deadlineAt,
     provider: runProvider(run),
     // The scope this run was pointed at, from the target library, so history and
     // the findings ledger can show which resource was under evaluation.
@@ -2298,7 +2381,13 @@ function persistRun(run, findings) {
   // After the record is on disk: re-run each proven Foundry proof from its
   // bundle files, offline, in the background. It writes side files only
   // (replay/rerun/<hash>.json); it never rewrites this record.
-  if (findings.length) void checkRecordedReplays(findings, { storeDir: path.join(RESULTS_DIR, "replay") }).catch(() => {})
+  if (findings.length && !run.ownerHash) void checkRecordedReplays(findings, { storeDir: path.join(RESULTS_DIR, "replay") }).catch(() => {})
+  else if (findings.length) run.demoReplay = (async () => {
+    for (const finding of findings) {
+      if (demoFence(run)) break
+      await checkRecordedReplays([finding], { storeDir: path.join(RESULTS_DIR, "replay") })
+    }
+  })().catch(() => {})
 }
 
 // Write the record of a run that ends with no finding to record: a clean
@@ -2561,7 +2650,7 @@ function savedRun(id, events, mtime) {
   const mode = events.findLast((e) => e.ev === "mode")?.mode ?? (saved || {}).mode
   // A fleet cut off while its agents worked: the agents stay stopped, but the
   // proof check of what they had submitted is free, so it runs (resumeRun).
-  if (interrupted && saved && mode !== "solo" && saved.phase === "agent" && !stopPending && existsSync(path.join(String(saved.ws), ".touchstone.json"))) {
+  if (process.env.TOUCHSTONE_DEMO !== "1" && interrupted && saved && mode !== "solo" && saved.phase === "agent" && !stopPending && existsSync(path.join(String(saved.ws), ".touchstone.json"))) {
     const found = submittedFindings(id)
     if (found.length) saved = { ...saved, phase: "proof", settled: { status: "interrupted", reason: "interrupted", findings: found } }
   }
@@ -2577,7 +2666,7 @@ function savedRun(id, events, mtime) {
   let errorInfo = null
   // Only a solo run starts its agent again. A fleet goes on by itself only from
   // its proof phase, where every agent has already ended.
-  if (interrupted && (!saved || (mode !== "solo" && saved.phase !== "proof" && !stopPending))) {
+  if (interrupted && (process.env.TOUCHSTONE_DEMO === "1" || !saved || (mode !== "solo" && saved.phase !== "proof" && !stopPending))) {
     status = "error"
     // Every restart ending is a cut-off (kind "cutoff"), not a failure.
     const session = saved !== false && existsSync(path.join(RESULTS_DIR, `run-${id}.sqlite`))
@@ -2607,6 +2696,9 @@ function savedRun(id, events, mtime) {
     id,
     requestId: request.requestId,
     requestHash: request.requestHash,
+    ownerHash: /^[a-f0-9]{64}$/.test(saved?.ownerHash ?? "") ? saved.ownerHash : null,
+    deadlineAt: saved?.deadlineAt,
+    demoClosed: !interrupted && events.some((event) => event.ev === "closed"),
     alias,
     target: null,
     scope,

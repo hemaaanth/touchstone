@@ -380,7 +380,7 @@ export function recordProven(raw, runId) {
   return out
 }
 
-async function readRuns() {
+async function readRuns(allowRun = () => true) {
   let entries = []
   try {
     entries = await readdir(resultsDir())
@@ -391,8 +391,9 @@ async function readRuns() {
   const out = []
   for (const file of files) {
     try {
-      const raw = JSON.parse(await readFile(path.join(resultsDir(), file), "utf8"))
       const runId = file.replace(/^run-/, "").replace(/\.json$/, "")
+      if (!allowRun(runId)) continue
+      const raw = JSON.parse(await readFile(path.join(resultsDir(), file), "utf8"))
       for (const item of splitRun(raw, runId)) {
         out.push({ ...normalize(raw, item), _index: item.index })
       }
@@ -456,7 +457,7 @@ const moduleOf = (pack) => (pack === "contracts" ? "Contracts" : pack ? (PACKS[p
 
 // Every candidate of every stored run, with the fields a list row needs. A
 // candidate is never proven and has no report or bundle in this pass.
-export async function listCandidates() {
+export async function listCandidates({ allowRun = () => true } = {}) {
   let entries = []
   try {
     entries = await readdir(resultsDir())
@@ -466,8 +467,9 @@ export async function listCandidates() {
   const out = []
   for (const file of entries.filter((f) => f.startsWith("run-") && f.endsWith(".json")).sort()) {
     try {
-      const raw = JSON.parse(await readFile(path.join(resultsDir(), file), "utf8"))
       const runId = file.replace(/^run-/, "").replace(/\.json$/, "")
+      if (!allowRun(runId)) continue
+      const raw = JSON.parse(await readFile(path.join(resultsDir(), file), "utf8"))
       const r = raw.result || {}
       const at = await runStartedAt(runId)
       for (const c of runCandidates(raw, runId)) {
@@ -499,14 +501,16 @@ export async function listCandidates() {
 
 // Agent reports are findings with a separate verification method. They never
 // enter the oracle replay/export path or acquire a proven badge.
-export async function listAgentFindings() {
+export async function listAgentFindings({ allowRun = () => true } = {}) {
   let files
   try { files = await readdir(resultsDir()) } catch { return [] }
   const out = []
   for (const file of files.filter((f) => f.startsWith("run-") && f.endsWith(".json"))) {
     try {
+      const runId = file.slice(4, -5)
+      if (!allowRun(runId)) continue
       const raw = JSON.parse(await readFile(path.join(resultsDir(), file), "utf8"))
-      const r = raw.result ?? {}, runId = file.slice(4, -5)
+      const r = raw.result ?? {}
       const at = await runStartedAt(runId)
       for (const value of r.agentFindings ?? []) {
         const f = makeAgentFinding(value)
@@ -522,12 +526,12 @@ export async function listAgentFindings() {
   return out
 }
 
-export async function listFindings() {
-  const all = await readRuns()
+export async function listFindings({ allowRun = () => true } = {}) {
+  const all = await readRuns(allowRun)
   const started = new Map()
   for (const f of all) if (!started.has(f.runId)) started.set(f.runId, await runStartedAt(f.runId))
   // The list shows only the few fields a row needs.
-  return [...await listAgentFindings(), ...all.map((f) => ({
+  return [...await listAgentFindings({ allowRun }), ...all.map((f) => ({
     id: f.id,
     runId: f.runId,
     title: f.title,
@@ -572,8 +576,8 @@ async function readEvents(id) {
 // `events: false` leaves the run's transcript out (events: []). The Findings
 // page's sheet shows only the finding and its proof, and a run's events can
 // be tens of MB.
-export async function getFinding(id, { events: withEvents = true } = {}) {
-  const all = await readRuns()
+export async function getFinding(id, { events: withEvents = true, allowRun = () => true } = {}) {
+  const all = await readRuns(allowRun)
   const found = all.find((f) => f.id === id) || null
   if (!found) return null
   const { _index, ...rest } = found
@@ -627,10 +631,11 @@ export async function dismissFinding(id, dismissed) {
 // and the candidate's id. Null for any other id. Used by the 404 answers, so
 // an old link reads "This item is now a candidate" instead of a bare not found.
 export const NOW_CANDIDATE = "This item is now a candidate: its replay only repeated a measurement, so it is not proven. It has no report."
-export async function nowCandidate(id) {
+export async function nowCandidate(id, { allowRun = () => true } = {}) {
   const m = /^([\w.-]+?)(?:\.(\d+))?$/.exec(String(id ?? ""))
   if (!m) return null
   for (const runId of m[2] ? [m[1]] : [m[1], String(id)]) {
+    if (!allowRun(runId)) continue
     let raw
     try {
       raw = JSON.parse(await readFile(path.join(resultsDir(), `run-${runId}.json`), "utf8"))

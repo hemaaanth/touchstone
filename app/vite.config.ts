@@ -8,6 +8,8 @@ import { handleApi } from './server/api.mjs'
 import { handleRuns, handleModels, handleFindings, handleScopes, handleSettings, handleGrants } from './server/runs-http.mjs'
 // @ts-expect-error — plain .mjs module, no types needed
 import { consoleToken, consoleWriteRefusal, foreignOrigin, handleConsoleToken } from './server/settings.mjs'
+// @ts-expect-error — plain .mjs module
+import { demoConfig } from './server/demo-config.mjs'
 
 // The whole backend, in-process inside Vite's dev server. The Vite dev server
 // is a real long-lived Node process, so it can spawn the agent engine, hold an
@@ -29,6 +31,7 @@ function touchstoneApi(): Plugin {
     // gets the new one.
     transformIndexHtml: (_html, ctx) => (ctx.server ? [{ tag: 'meta', attrs: { name: 'touchstone-console-token', content: consoleToken() }, injectTo: 'head' }] : []),
     configureServer(server) {
+      if (demoConfig()) throw new Error('Public demo uses node server/start.mjs and built assets, never Vite.')
       server.middlewares.use((req, res, next) => {
         const refuse = (status: number, error: string) => {
           res.statusCode = status

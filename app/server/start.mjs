@@ -2,6 +2,7 @@
 // Remote access still requires an authenticated tunnel; the console token is not login.
 import { isAbsolute, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { demoConfig } from "./demo-config.mjs";
 
 const noWatch = {
   name: "touchstone-release-no-watch",
@@ -32,6 +33,8 @@ export function releaseConfig(env = process.env) {
 }
 
 export async function startServer(env = process.env, createServer) {
+  const demo = demoConfig(env);
+  if (demo) return (await import("./demo-server.mjs")).startDemoServer(demo, env);
   const config = releaseConfig(env);
   createServer ??= (await import("vite")).createServer;
   const server = await createServer(config);

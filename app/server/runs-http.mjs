@@ -222,7 +222,7 @@ export async function handleRuns(req, res) {
 
 // POST /api/findings/:id/dismiss — mark a recorded finding dismissed / restored.
 // A (req,res) handler because it takes a body; the findings reader is URL-only.
-export async function handleFindings(req, res) {
+export async function handleFindings(req, res, { allowRun = () => true } = {}) {
   const url = new URL(req.url, "http://localhost")
   const parts = url.pathname.split("/").filter(Boolean) // ["api","findings",id,"dismiss"]
   if (parts[0] !== "api" || parts[1] !== "findings") return false
@@ -257,9 +257,9 @@ export async function handleFindings(req, res) {
       return true
     }
     try {
-      const finding = await getFinding(id)
+      const finding = await getFinding(id, { allowRun })
       if (!finding) {
-        send(res, 404, (await nowCandidate(id)) ?? { error: "no such finding" })
+        send(res, 404, (await nowCandidate(id, { allowRun })) ?? { error: "no such finding" })
         return true
       }
       const slug = String(id).replace(/[^\w.-]+/g, "-")
