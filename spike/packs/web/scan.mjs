@@ -161,6 +161,8 @@ export async function scanWeb({ net, baseUrl, urls = [], only, run = runTool, ti
   // ZAP runs as its own image user (uid 1000), so the scratch dir must be writable by it.
   chmodSync(scratch, 0o777);
   cpSync(TEMPLATES, join(scratch, "templates"), { recursive: true });
+  // Sealed source directories are 0500; only the disposable copy needs write access for cleanup.
+  chmodSync(join(scratch, "templates"), 0o700);
   const want = (e) => !only || only.includes(e);
 
   const jobs = {
