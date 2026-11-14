@@ -27,7 +27,7 @@
 // exchange to a file the parent reads after the container exits. The script
 // shares the process, so this is weaker than the lab's out-of-band recorder;
 // the helper never calls global fetch, so monkeypatching fetch cannot fake it.
-import { requestWithRedirects } from "./redirect-request.mjs";
+import { requestWithRedirects, retrySend } from "./redirect-request.mjs";
 import { execFile } from "node:child_process";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -69,7 +69,7 @@ export function bindLive(ws, { net, gate, baseUrl, image }) {
 // The request helpers, injected into the script before it runs. `request` goes
 // through the gate on the client network; each redirect uses the same checked
 // route. Every response, including intermediate redirects, is recorded.
-export const HARNESS = `const requestWithRedirects = ${requestWithRedirects.toString()};\n` + String.raw`
+export const HARNESS = `const requestWithRedirects = ${requestWithRedirects.toString()};\nconst retrySend = ${retrySend.toString()};\n` + String.raw`
 import http from "node:http";
 import https from "node:https";
 import net from "node:net";
@@ -151,12 +151,14 @@ async function send(url, method, headers, body) {
   });
 }
 
+const sendRetrying = retrySend(send);
+
 globalThis.request = async function request(method, path, o = {}) {
   const url = new URL(path, BASE);
   const headers = { "content-type": "application/json", "accept-encoding": "identity", ...(o.headers || {}) };
   const hasBody = o.body !== undefined;
   const body = hasBody ? (typeof o.body === "string" ? o.body : JSON.stringify(o.body)) : undefined;
-  return requestWithRedirects(send, record, method, url, headers, body, o);
+  return requestWithRedirects(sendRetrying, record, method, url, headers, body, o);
 };
 
 globalThis.signPersonal = async function signPersonal(privateKey, message) {
@@ -194,7 +196,15 @@ function serialize(key, fn) {
   return next;
 }
 
-export async function runLiveScript(ws, script, { timeoutMs = 30_000 } = {}) {
+// LIVE_SCRIPT_TIMEOUT_MS is the wall clock one script gets. A real target needs
+// pacing: 429 backoff inside request() plus the agent's own wait between waves.
+// 30 s killed any script that slept once before its first request, and the
+// transcript then read "(no requests recorded)" even though nothing was wrong.
+// 90 s leaves room for the internal retries without holding the workspace queue
+// long enough to look hung.
+export const LIVE_SCRIPT_TIMEOUT_MS = 90_000;
+
+export async function runLiveScript(ws, script, { timeoutMs = LIVE_SCRIPT_TIMEOUT_MS } = {}) {
   return serialize(ws, async () => {
     const t = liveTarget(ws);
     await requireImage(t.image, t.image.includes("ai-mcp") ? "ai-mcp" : "web");

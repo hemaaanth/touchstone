@@ -590,7 +590,7 @@ function nudge(state) {
 function tools(ws, state) {
   const runScript = defineTool({
     name: "run_request_script",
-    description: "Run a short JS script against the live lab and read what happened. Inside the script, await request(method, path, { headers, body }) makes one real HTTP call and returns { status, resBody, resHeaders }. Every request and response is recorded in an independent transcript the script cannot edit. After the script runs, this tool reports whether that transcript tripped one of the engine's own harm checks. Give each attempt a short, unique label (e.g. \"replay-1\"). If it trips a pattern, call submit_finding with that same label.",
+    description: "Run a short JS script against the live lab and read what happened. Inside the script, await request(method, path, { headers, body }) makes one real HTTP call and returns { status, resBody, resHeaders }. Every request and response is recorded in an independent transcript the script cannot edit. After the script runs, this tool reports whether that transcript tripped one of the engine's own harm checks. Give each attempt a short, unique label (e.g. \"replay-1\"). If it trips a pattern, call submit_finding with that same label. console.log() in the script comes back with the transcript.",
     parameters: obj({
       label: str({ description: "a short, unique name for this attempt, e.g. \"replay-1\" (pass this same label to submit_finding on a match)" }),
       script: str({ description: "JS source using request(), e.g.: const r = await request(\"POST\", \"/mcp\", { headers: { authorization: \"Bearer ...\" }, body: { jsonrpc: \"2.0\", id: 1, method: \"tools/list\" } }); console.log(JSON.stringify(r.resBody));" }),
@@ -612,7 +612,7 @@ function tools(ws, state) {
       let run;
       try {
         run = await (live
-          ? runLiveScript(ws, String(args.script), { timeoutMs: 30_000 })
+          ? runLiveScript(ws, String(args.script))
           : runRequestScript(readLabHandle(ws), String(args.script), { timeoutMs: 20_000 }));
       } catch (err) {
         event("run_request_script-done", { label: args.label, ok: false });
@@ -629,8 +629,12 @@ function tools(ws, state) {
       const verdictText = match
         ? `\n\nMATCH: ${match.oracle.name} — ${match.verdict.detail}\nThis is a real proof. Call submit_finding now with label "${args.label}", unless this same root cause is already recorded.`
         : `\n\nNo known harm pattern matched this transcript. Keep investigating, or try a different request sequence. ${CANDIDATE_HINT}${oracleLeads(run.transcript, run).map((l) => `\n${l}`).join("")}`;
+      // The script's own console output is part of the evidence: it is how the
+      // agent reports a computed summary without smuggling it through a request
+      // to the target.
+      const outNote = run.stdout ? `\n\nscript output:\n${run.stdout.slice(-2000)}` : "";
       const stderrNote = run.stderr ? `\n\nstderr: ${run.stderr.slice(0, 500)}` : "";
-      return { output: [{ type: "text", text: `${lines.join("\n") || "(no requests recorded)"}${verdictText}${stderrNote}\n\n(${leftText(MAX_SCRIPT_RUNS, attempt, "script")})` }] };
+      return { output: [{ type: "text", text: `${lines.join("\n") || "(no requests recorded)"}${outNote}${verdictText}${stderrNote}\n\n(${leftText(MAX_SCRIPT_RUNS, attempt, "script")})` }] };
     },
   });
 

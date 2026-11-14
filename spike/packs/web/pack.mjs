@@ -37,7 +37,7 @@ import {
 
 import { scanWeb, docQueryUrls } from "./scan.mjs";
 import { extraScans, foldScan } from "./discovery.mjs";
-import { isLive, liveProof, runLiveScript } from "../../lib/live.mjs";
+import { isLive, liveProof, runLiveScript, LIVE_SCRIPT_TIMEOUT_MS } from "../../lib/live.mjs";
 import { livePrepass } from "./live.mjs";
 import { fp, scrubBody, scrubProof, scrubText } from "./redact.mjs";
 import { CANDIDATE_HINT, SCRIPT_POC, candidateTool, withCandidateLine, recordScript, scriptLookup } from "../../lib/candidate.mjs";
@@ -374,7 +374,153 @@ function xssOracle() {
   };
 }
 
-export const ORACLES = [nonceReplayOracle(), bolaOracle(), debugLeakOracle(), xssOracle()];
+// ---- Generic harms: the four checks above are lab- and dApp-shaped. Most real
+// sites are neither, and then a run could only ever prove reflected XSS. These
+// five match harm that needs no account, is visible in one recorded exchange,
+// and replays byte-identically against the same site. Each one demands its
+// exact precondition, so a clean site still stays clean.
+
+const hostOf = (u) => { try { return new URL(u).host; } catch { return null; } };
+const originOf = (u) => { try { return new URL(u).origin; } catch { return null; } };
+// Registrable-ish domain, for "is this really another site?" without a PSL.
+const siteOf = (host) => String(host ?? "").toLowerCase().split(".").slice(-2).join(".");
+
+// Harm: any website can read the authenticated response with the victim's cookie.
+// Proof: the response echoed back a foreign Origin the script chose, with
+// `access-control-allow-credentials: true`. A bare `*` is NOT enough (it cannot
+// be used with credentials), so it never fires on a public JSON API by itself.
+function corsCredentialOracle() {
+  return {
+    name: "cors-credentialed-reflection",
+    check(transcript) {
+      for (const e of transcript) {
+        const h = e.resHeaders || {};
+        const allow = String(h["access-control-allow-origin"] ?? h["Access-Control-Allow-Origin"] ?? "").trim();
+        const creds = String(h["access-control-allow-credentials"] ?? h["Access-Control-Allow-Credentials"] ?? "").trim();
+        if (!allow || !/^true$/i.test(creds)) continue;
+        const sent = String(e.reqHeaders?.origin ?? e.reqHeaders?.Origin ?? "").trim();
+        if (!sent || allow !== sent) continue;
+        const sentSite = siteOf(hostOf(sent));
+        const targetSite = siteOf(hostOf(e.url ?? ""));
+        if (!sentSite || sentSite === targetSite) continue;
+        return { pass: true, detail: `${e.method} ${e.path} answered a request from ${sent} with access-control-allow-origin: ${allow} AND access-control-allow-credentials: true, so any page on that origin can read the response with the visitor's cookies attached.` };
+      }
+      return { pass: false, detail: "no response reflected a foreign Origin together with access-control-allow-credentials: true" };
+    },
+  };
+}
+
+// Harm: a link on the real site sends the visitor to an attacker's host, so a
+// trustworthy URL can be mailed or posted (phishing, wallet-drain hops).
+// Proof: the 30x Location host is a host the request itself supplied in its
+// query, and it is a different site from the target. The value comes from the
+// URL, never from the script's claim, so the redirect really follows input.
+const REDIRECT_STATUS = new Set([301, 302, 303, 307, 308]);
+function openRedirectOracle() {
+  return {
+    name: "open-redirect",
+    check(transcript) {
+      for (const e of transcript) {
+        if (!REDIRECT_STATUS.has(e.status)) continue;
+        let query;
+        try { query = new URL(e.url ?? `http://x${e.path}`).searchParams; } catch { continue; }
+        const target = String(e.resHeaders?.location ?? e.resHeaders?.Location ?? "");
+        const landing = hostOf(target);
+        if (!landing) continue;
+        if (siteOf(landing) === siteOf(hostOf(e.url ?? ""))) continue;
+        for (const [name, value] of query) {
+          const supplied = hostOf(/^[a-z][a-z0-9+.-]*:\/\//i.test(value) ? value : `https://${value}`);
+          if (!supplied || siteOf(supplied) !== siteOf(landing)) continue;
+          return { pass: true, detail: `${e.method} ${e.path} answered ${e.status} and sent the visitor to ${target}. The destination host came from the query value "${name}" (${value.slice(0, 120)}), so it is not pinned.` };
+        }
+      }
+      return { pass: false, detail: "no redirect left the target's own site to a host the request itself supplied in its query" };
+    },
+  };
+}
+
+// Harm: build output or repo files are served, so the full unminified source,
+// the deploy config or the repo history is public. The SPA fallback answers 200
+// with HTML for every path, so a bare 200 proves nothing: the body itself has to
+// be the artifact.
+const BUILD_MARKERS = [
+  { path: /\.map$/i, what: "a source map", test: (b) => /"mappings"\s*:/.test(b) },
+  { path: /\.git\/HEAD$|\.git\/config$/i, what: "the git directory", test: (b) => /^ref:\s+refs\//m.test(b) || /\[core\]/m.test(b) },
+  { path: /(^|\/)\.env(\.\w+)?$/i, what: "the environment file", test: (b) => /^[A-Z0-9_]{3,}=/m.test(b) },
+  { path: /\.(sql|bak|old|swp)$/i, what: "a backup file", test: (b) => b.length > 40 },
+];
+function buildArtifactOracle() {
+  return {
+    name: "exposed-build-artifact",
+    check(transcript) {
+      for (const e of transcript) {
+        if (e.status !== 200 || typeof e.resBody !== "string") continue;
+        const marker = BUILD_MARKERS.find((m) => m.path.test(e.path));
+        if (!marker) continue;
+        const body = e.resBody;
+        if (/^\s*<!doctype html/i.test(body) && !/^\s*[[{]/.test(body)) continue; // the SPA shell
+        if (!marker.test(body)) continue;
+        return { pass: true, detail: `GET ${e.path} returned ${marker.what} unauthenticated (${body.length} bytes), not the app shell. Agents and humans can read it directly.` };
+      }
+      return { pass: false, detail: "no source map, git file, env file or backup file came back as itself" };
+    },
+  };
+}
+
+// Harm: a secret-shaped value on an unauthenticated JSON route, readable by
+// anyone. Bounded so it stays honest: the key must say key/secret/token, the
+// value must be a long string, and placeholders are skipped.
+const SECRET_KEY = /(api[_-]?key|secret|private[_-]?key|access[_-]?token|client[_-]?secret|passw(or)?d)/i;
+const PLACEHOLDER = /^(x{4,}|your([-_ ]|$)|changeme|todo|example|placeholder|none$|null$|undefined$|0x$)/i;
+function unauthSecretOracle() {
+  return {
+    name: "unauth-secret-in-response",
+    check(transcript) {
+      for (const e of transcript) {
+        if (e.status !== 200 || !e.resBody || typeof e.resBody !== "object") continue;
+        const h = e.reqHeaders || {};
+        if (Object.keys(h).some((k) => /^(authorization|cookie|x-api-key)$/i.test(k))) continue;
+        const flat = [];
+        const walk = (v, at) => {
+          if (v && typeof v === "object" && !Array.isArray(v)) for (const [k, x] of Object.entries(v)) walk(x, at ? `${at}.${k}` : k);
+          else if (at) flat.push([at, v]);
+        };
+        walk(e.resBody, "");
+        const hit = flat.find(([k, v]) => SECRET_KEY.test(k.split(".").at(-1)) && typeof v === "string" && v.length >= 12 && !PLACEHOLDER.test(v));
+        if (!hit) continue;
+        return { pass: true, detail: `${e.method} ${e.path} answered ${e.status} with no credential header at all and returned ${hit[0]} = ${fp(hit[1])}.` };
+      }
+      return { pass: false, detail: "no unauthenticated 200 JSON body carried a secret-shaped field with a real value" };
+    },
+  };
+}
+
+// Harm: an error page hands the attacker the stack, the framework and often the
+// file layout, which is the map for the next step. Proof: a 5xx whose body is a
+// trace rather than the app shell.
+function stackTraceOracle() {
+  return {
+    name: "verbose-error-trace",
+    check(transcript) {
+      for (const e of transcript) {
+        if (e.status < 500 || typeof e.resBody !== "string") continue;
+        const body = e.resBody;
+        if (/^\s*<!doctype html/i.test(body) && !/traceback|stack/i.test(body)) continue;
+        const mark = /(Traceback \(most recent call last\)|^\s+at [\w$.]+ \(|SQLSTATE\[|ORA-\d{5}|Error: .+\n\s+at )/m.exec(body);
+        if (!mark) continue;
+        const file = /([\w./-]+\.(?:js|mjs|py|rb|php|java|go|ts)):(\d+)/.exec(body);
+        return { pass: true, detail: `${e.method} ${e.path} answered ${e.status} with a stack trace (${mark[0].trim().slice(0, 60)})${file ? `, naming ${file[1]}:${file[2]}` : ""}.` };
+      }
+      return { pass: false, detail: "no 5xx response carried a stack trace" };
+    },
+  };
+}
+
+export const ORACLES = [
+  nonceReplayOracle(), bolaOracle(), debugLeakOracle(), xssOracle(),
+  // Generic ones last: when a dApp-specific pattern fits, it is the better claim.
+  corsCredentialOracle(), openRedirectOracle(), buildArtifactOracle(), unauthSecretOracle(), stackTraceOracle(),
+];
 
 export function matchOracle(transcript, run) {
   for (const oracle of ORACLES) {
@@ -424,6 +570,8 @@ Rules of the environment:
 - The prepass already ran three scanners (zap, nuclei, dalfox). Their leads are in
   your first message and in web_leads. Treat them as hints. They cannot sign in,
   so they miss authorization and session bugs. Do not stop at them.
+- console.log() in a script is returned to you with the transcript. Print what
+  you computed instead of encoding it into a request to the target.
 - A lead is only a lead. After a script runs, the tool tells you whether the
   transcript tripped one of the engine's own harm checks. It counts as a finding ONLY
   when it does. When it does, call submit_finding right away with the same label.
@@ -508,11 +656,7 @@ function nudge(state) {
 function tools(ws, state) {
   const runScript = defineTool({
     name: "run_request_script",
-    description: "Run a short JS script against the target and read what happened. `path` is resolved against the run's base URL (the lab, or the live site). Inside the script, three globals are already defined: await request(method, path, { headers, body }) makes one real HTTP call and returns { status, resBody, resHeaders }; buildSiwe({ domain, address, uri, version, chainId, nonce, issuedAt }) returns the EIP-4361 message text for those fields; await signPersonal(privateKeyHex, message) returns an EIP-191 personal_sign signature. Every request/response is recorded in an independent transcript the script cannot edit; after the script runs, this tool reports whether that transcript tripped one of the engine's own harm checks. Give each attempt a short, unique label (e.g. \"replay-1\"); if it trips a pattern, call submit_finding with that same label.",
-    parameters: obj({
-      label: str({ description: "a short, unique name for this attempt, e.g. \"replay-1\" (pass this same label to submit_finding on a match)" }),
-      script: str({ description: "JS source using request()/buildSiwe()/signPersonal(), e.g.: const n = await request(\"GET\", \"/siwe/nonce\"); const msg = buildSiwe({...}); ..." }),
-    }),
+    description: "Run a short JS script against the target and read what happened. `path` is resolved against the run's base URL (the lab, or the live site). Inside the script, three globals are already defined: await request(method, path, { headers, body }) makes one real HTTP call and returns { status, resBody, resHeaders }; buildSiwe({ domain, address, uri, version, chainId, nonce, issuedAt }) returns the EIP-4361 message text for those fields; await signPersonal(privateKeyHex, message) returns an EIP-191 personal_sign signature. Every request/response is recorded in an independent transcript the script cannot edit; after the script runs, this tool reports whether that transcript tripped one of the engine's own harm checks. Give each attempt a short, unique label (e.g. \"replay-1\"); if it trips a pattern, call submit_finding with that same label. console.log() in the script comes back with the transcript, so print the summary you want to read." + (isLive(ws) ? ` On a live site one script has ${Math.round(LIVE_SCRIPT_TIMEOUT_MS / 1000)} s of wall clock, and request() already retries a 429 or 503 by itself (bounded, honouring Retry-After), so keep each script short and do not sleep() for the whole allowance.` : ""),
     replay: "unsafe",
     execute: async (args) => {
       const attempt = ++state.poc;
@@ -532,7 +676,7 @@ function tools(ws, state) {
       let run;
       try {
         run = await (live
-          ? runLiveScript(ws, String(args.script), { timeoutMs: 30_000 })
+          ? runLiveScript(ws, String(args.script))
           : runRequestScript(readLabHandle(ws), String(args.script), { timeoutMs: 20_000 }));
       } catch (err) {
         event("run_request_script-done", { label: args.label, ok: false });
@@ -541,16 +685,28 @@ function tools(ws, state) {
       const match = matchOracle(run.transcript, run);
       if (match) state.passed.set(String(args.label), { script: String(args.script), oracleName: match.oracle.name });
       recordScript(state, args.label, args.script, run.transcript, match);
-      event("run_request_script-done", { label: args.label, calls: run.transcript.length, matched: match?.oracle.name ?? null });
+      event("run_request_script-done", { label: args.label, calls: run.transcript.length, matched: match?.oracle.name ?? null, ...(run.timedOut ? { timedOut: true } : {}) });
       const lines = run.transcript.map((e, i) => {
         const body = typeof e.resBody === "string" ? e.resBody : JSON.stringify(e.resBody);
         return `${i + 1}. ${e.method} ${e.path} -> ${e.status} ${(body ?? "").slice(0, 300)}`;
       });
+      // A killed script is not an empty one. Say which happened: with nothing
+      // recorded the next attempt must be shorter or pace itself; with entries
+      // recorded the work stands and only the tail was lost.
+      const clock = run.timedOut
+        ? run.transcript.length
+          ? `\n\nThe script hit the ${Math.round(LIVE_SCRIPT_TIMEOUT_MS / 1000)} s wall clock after ${run.transcript.length} recorded call${run.transcript.length === 1 ? "" : "s"}; the rest of it never ran. The calls above are real evidence. Split the work into a shorter script.`
+          : `\n\nThe script hit the ${Math.round(LIVE_SCRIPT_TIMEOUT_MS / 1000)} s wall clock before its first call came back. Its waits are too long: request() already backs off on a 429 by itself, so drop a long sleep() and retry.`
+        : "";
       const verdictText = match
         ? `\n\nMATCH: ${match.oracle.name} — ${match.verdict.detail}\nThis is a real proof. Call submit_finding now with label "${args.label}", unless this same root cause is already recorded.`
         : "\n\nNo known harm pattern matched this transcript. Keep investigating, or try a different request sequence. " + CANDIDATE_HINT;
+      // The script's own console output is part of the evidence: it is how the
+      // agent reports a computed summary without smuggling it back through a
+      // request to the target (the scratch-route trick every live agent invents).
+      const outNote = run.stdout ? `\n\nscript output:\n${run.stdout.slice(-2000)}` : "";
       const stderrNote = run.stderr ? `\n\nstderr: ${run.stderr.slice(0, 500)}` : "";
-      return { output: [{ type: "text", text: `${lines.join("\n") || "(no requests recorded)"}${verdictText}${stderrNote}\n\n(${leftText(MAX_SCRIPT_RUNS, attempt, "script")})` }] };
+      return { output: [{ type: "text", text: `${lines.join("\n") || "(no requests recorded)"}${outNote}${clock}${verdictText}${stderrNote}\n\n(${leftText(MAX_SCRIPT_RUNS, attempt, "script")})` }] };
     },
   });
 
@@ -714,6 +870,12 @@ How requests work:
   unless this is an explicitly configured private lab. Strict scopes restrict hosts.
 - request follows up to 10 redirects and records every hop. Pass followRedirects: false
   to inspect a redirect response itself. Credentials are stripped across origins.
+- One script has 90 s of wall clock, then it is killed. A script killed after
+  its calls still returns them as evidence; one killed during a sleep returns
+  nothing. Keep each script to a handful of calls.
+- Real sites rate-limit. request() retries a 429 or 503 by itself, honouring
+  Retry-After, for a bounded time and then hands you the 429 unchanged. When you
+  see 429s, send fewer calls per script instead of adding long sleep() calls.
 
 The checks this module can prove (a match is the ONLY thing that makes a finding):
 1. SIWE nonce replay: the same signed message and signature posted to the sign-in
@@ -725,8 +887,27 @@ The checks this module can prove (a match is the ONLY thing that makes a finding
    at all; a junk-token call is support only.
 4. Reflected XSS: a page reflects a query value unescaped as executable markup, in a
    live position, with no CSP that blocks it.
-If the site is not a SIWE dApp, checks 1-3 may never fire; check 4 still can. Say that
-plainly in the coverage summary instead of forcing a lab-shaped claim.
+
+Checks 5 to 9 need no account and fit any website. Most real sites are proved
+with one of these, not with 1-3:
+5. CORS with credentials: send an \`origin\` header for a foreign site you invent
+   (e.g. \`https://touchstone.test\`). The reply echoes that exact origin AND sets
+   \`access-control-allow-credentials: true\`, so that page can read the response
+   with the visitor's cookies.
+6. Open redirect: a parameter that takes a URL or host, sent as a link target.
+   The reply is a 30x whose Location is that supplied host and a different site
+   from the target. Try the usual names: redirect, redirect_uri, returnUrl, next,
+   url, continue, goto, callback.
+7. Exposed build artifact: request a \`.js.map\`, \`/.git/HEAD\`, \`/.env\`,
+   \`/package.json\`, a \`.bak\`. The body must come back as the artifact, not as
+   the app's HTML shell (a 200 alone proves nothing on a single-page app).
+8. Secret in an unauthenticated reply: a 200 JSON route called with NO
+   credential header returns a key/secret/token/password field holding a real
+   value.
+9. Verbose error: a request that makes the server answer 5xx returns a stack
+   trace rather than the shell.
+If the site is not a SIWE dApp, checks 1-3 may never fire; 4 to 9 still can. Say
+that plainly in the coverage summary instead of forcing a lab-shaped claim.
 
 Wallets: if the site signs in with Ethereum, first read the domain, uri and chainId it
 expects. The two well-known test key pairs are available when the site accepts them:
@@ -753,9 +934,11 @@ Rules:
 - Not findings: a correct 401/403, or a route returning only the caller's own data.
 
 Severity: critical = a private key or equivalent secret leaks with no further step;
-high = one session can read or act on another account, or a sign-in artifact mints
-sessions again; medium = reflected script injection, or a flaw needing an unusual
-precondition; low = a note with no path to harm.
+high = one session can read or act on another account, a sign-in artifact mints sessions
+again, or a deployment key/secret is public; medium = reflected script injection, CORS
+that lets a foreign page read credentialed responses, an open redirect, or a flaw needing
+an unusual precondition; low = a note with no path to harm, such as unminified source maps
+on their own.
 
 Write each explanation so a smart 15-year-old follows it. Simplified Technical English,
 short sentences, one idea per sentence. Put identifiers in \`backticks\`. End with a line
