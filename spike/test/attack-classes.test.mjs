@@ -256,3 +256,20 @@ test("merging source checks preserves analyzer names and checks", async () => {
   assert.equal(merged[0].corroborated, true);
   assert.deepEqual(mergeStatic(existing), existing);
 });
+
+
+test("source file cap is reported in the agent brief and tool row", async () => {
+  const ws = mkdtempSync(join(tmpdir(), "class-cap-"));
+  try {
+    writeTouchstone(ws, {});
+    mkdirSync(join(ws, "src"), { recursive: true });
+    for (let i = 0; i < 401; i++) writeFileSync(join(ws, "src", `${String(i).padStart(3, "0")}.sol`), "contract Empty {}\n");
+    nextScan = { ...cleanScan, files: 401, analysed: 401 };
+    const prep = await contracts.prepass(ws, { emit: () => {} });
+    assert.match(prep.env.STATIC_GAP, /Touchstone source checks stopped at the 400-file limit/);
+    assert.match(contracts.kickoff(ws, prep.env), /additional source files were not checked/);
+    const view = prepassView(prep.record);
+    assert.equal(view.tools[0].status, "unavailable");
+    assert.match(view.tools[0].reason, /400-file limit/);
+  } finally { rmSync(ws, { recursive: true, force: true }); }
+});

@@ -31,20 +31,27 @@ const OUR_SOURCE_CAP = 400;
 const OUR_SKIP = new Set(["node_modules", "out", "cache", ".git", "broadcast", "artifacts"]);
 function oursSourceFiles(ws) {
   const out = [];
+  let capped = false, unreadable = false;
   const walk = (rel) => {
     let entries = [];
-    try { entries = readdirSync(join(ws, rel), { withFileTypes: true }); } catch { return; }
+    try { entries = readdirSync(join(ws, rel), { withFileTypes: true }); } catch (e) {
+      if (e.code !== "ENOENT") unreadable = true;
+      return;
+    }
     for (const e of entries) {
-      if (out.length >= OUR_SOURCE_CAP) return;
+      if (out.length >= OUR_SOURCE_CAP) { capped = true; return; }
       if (OUR_SKIP.has(e.name)) continue;
       const child = rel ? join(rel, e.name) : e.name;
       if (e.isDirectory()) { walk(child); continue; }
       if (!e.isFile() || !e.name.endsWith(".sol")) continue;
-      try { out.push({ path: child.split(sep).join("/"), content: readFileSync(join(ws, child), "utf8") }); } catch { /* unreadable: skipped, never silently "clean" */ }
+      try { out.push({ path: child.split(sep).join("/"), content: readFileSync(join(ws, child), "utf8") }); } catch { unreadable = true; }
     }
   };
   for (const root of ["src", "vendor"]) walk(root);
-  return out;
+  const gaps = [];
+  if (capped) gaps.push(`Touchstone source checks stopped at the ${OUR_SOURCE_CAP}-file limit; additional source files were not checked.`);
+  if (unreadable) gaps.push("Touchstone source checks could not read some source files or folders.");
+  return { files: out, gap: gaps.join(" ") };
 }
 
 // Our own crypto source checks over this workspace's Solidity, as lead-shaped
@@ -52,7 +59,8 @@ function oursSourceFiles(ws) {
 // three packs, so a rule fixed there is fixed everywhere.
 function sourceCheckLeads(ws) {
   try {
-    return scanSources(oursSourceFiles(ws)).map((l) => ({
+    const { files, gap } = oursSourceFiles(ws);
+    const leads = scanSources(files).map((l) => ({
       engine: "Touchstone",
       check: l.check,
       impact: l.impact,
@@ -61,8 +69,9 @@ function sourceCheckLeads(ws) {
       lines: l.lines,
       description: l.description,
     }));
+    return { leads, gap };
   } catch {
-    return [];
+    return { leads: [], gap: "Touchstone source checks did not complete. This is a coverage gap, not a clean result." };
   }
 }
 
@@ -70,6 +79,8 @@ function sourceCheckLeads(ws) {
 function mergeOurs(findings, ours) {
   return mergeStatic([...findings, ...ours]);
 }
+
+const scanGap = (scan) => [staticGap(scan), scan.sourceGap].filter(Boolean).join("\n");
 
 // The `static-scan` event shape, built once so the CLI and the app agree to the
 // byte. `scan` is the staticScan result.
@@ -84,7 +95,7 @@ export function staticScanEvent(scan) {
     })),
     // Why this scan's row is not evidence: it read no file, or it read some and
     // failed the rest. Absent when the scan really read what it was given.
-    ...(staticGap(scan) ? { gap: staticGap(scan) } : {}),
+    ...(scanGap(scan) ? { gap: scanGap(scan) } : {}),
   };
 }
 
@@ -127,9 +138,9 @@ export async function runPrepass(ws, { onStaticStart, onStatic, onFuzzStart, onF
     // Our own crypto rules are candidates on the same board, so a rule that only
     // we know about can outrank a generic analyzer's guess.
     const ours = sourceCheckLeads(ws);
-    if (ours.length) scan = { ...scan, findings: mergeOurs(scan.findings, ours) };
+    scan = { ...scan, findings: ours.leads.length ? mergeOurs(scan.findings, ours.leads) : scan.findings, sourceGap: ours.gap };
     brief = staticBrief(scan);
-    staticGapText = staticGap(scan);
+    staticGapText = scanGap(scan);
     scanEvent = staticScanEvent(scan);
     onStatic?.(scanEvent, scan, brief);
   }

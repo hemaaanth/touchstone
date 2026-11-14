@@ -15,6 +15,7 @@ test("fuzz gaps distinguish no template, unavailable engines and a completed pas
   assert.match(fuzzGap({ applicable: false, engines: [] }), /does not match/);
   assert.match(fuzzGap({ applicable: true, engines: [] }), /neither Echidna nor Medusa was available/);
   assert.equal(fuzzGap({ applicable: true, engines: ["Echidna"] }), "");
+  assert.match(fuzzGap({ applicable: true, engines: ["Echidna"], timedOut: true }), /time limit.*Keep any leads/);
 });
 
 

@@ -169,6 +169,7 @@ export function fuzzBrief(scan) {
 export function fuzzGap(scan) {
   if (!scan) return "";
   if (scan.applicable !== false) {
+    if (scan.timedOut) return "Property fuzzing reached its time limit. Keep any leads it found; zero broken invariants is not a completed pass.";
     return scan.engines?.length ? "" : "Property fuzzing did not run on this target: neither Echidna nor Medusa was available. Zero broken invariants is not a clean result.";
   }
   return `Property fuzzing did not run on this target: the only invariant template we ship is a deposit/withdraw vault (a payable constructor plus a public total), and this code does not match it. Zero broken invariants here says nothing about this code. Do not read it as "solvent" or "safe". Reason about the accounting invariants yourself and prove any break with run_poc.`;
