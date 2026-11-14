@@ -5,7 +5,7 @@
 // Part 2 uses the real roamMachine against a fake Daytona API. No machine, no
 // network, no key, no cost.
 import "./helpers/isolated-env.mjs";
-import { test } from "node:test";
+import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -13,7 +13,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ROAM_SNAPSHOT, closeRun, remoteDocker, roamMachine, shq } from "../lib/daytona.mjs";
 import { withAgent } from "../lib/event.mjs";
-import { REPLACED_NOTICE, roamTools } from "../lib/roam.mjs";
+let REPLACED_NOTICE, roamTools;
+let moduleId = 0;
+beforeEach(async () => {
+  // Each fake machine set represents a fresh worker registry, not reused ids.
+  ({ REPLACED_NOTICE, roamTools } = await import(`../lib/roam.mjs?test=${++moduleId}`));
+});
+const supervisorAnswer = (q, exitCode = 0) => ({ exitCode: 0, result: JSON.stringify({
+  ok: true, id: q.id, generation: "fake-supervisor", epoch: 0,
+  ...(q.op === "run" ? { exitCode, result: RAW } : { ack: true, state: "active", scope: "managed-shell" }),
+}) });
 
 // The value lane B's EGRESS_ENV has.
 const ENV = "export HTTP_PROXY=http://127.0.0.1:8899 HTTPS_PROXY=http://127.0.0.1:8899 http_proxy=http://127.0.0.1:8899 https_proxy=http://127.0.0.1:8899; ";
@@ -28,12 +37,16 @@ function fakes({ id = "m-1", fresh = true, replaced = false, exitCode = 0, start
   const m = {
     id, fresh, replaced,
     exec: async (command, seconds) => {
-      steps.push("exec");
-      m.calls.push({ command, seconds });
-      return { exitCode, result: RAW };
+      assert.match(command, /^node \/tmp\/touchstone-shell-control\.mjs [a-f0-9-]{36}$/);
+      const q = m.uploads.get(command.split(" ").at(-1));
+      if (q.op === "run") {
+        steps.push("exec");
+        m.calls.push({ command: q.command, seconds: q.seconds });
+      }
+      return supervisorAnswer(q, exitCode);
     },
-    upload: async () => {},
-    calls: [],
+    upload: async (path, bytes) => { if (path.endsWith(".json")) { const q = JSON.parse(bytes); m.uploads.set(q.id, q); } },
+    uploads: new Map(), calls: [],
   };
   return {
     steps, entries, m,
@@ -74,8 +87,8 @@ test("shell runs its six steps in order and returns only what record() returned"
   const res = await as("a-1", shell, { command: "echo 'hi' && id" });
 
   assert.deepEqual(f.steps, ["machine a-1", "start m-1", "exec", "record shell", "pull m-1", "record egress", "record egress"]);
-  // The command goes to the machine as one string, inside sh -c, after the proxy variables.
-  assert.deepEqual(f.m.calls, [{ command: `sh -c ${shq(`${ENV}echo 'hi' && id`)}`, seconds: 120 }]);
+  // The command goes in the uploaded supervisor payload, after the proxy variables.
+  assert.deepEqual(f.m.calls, [{ command: `${ENV}echo 'hi' && id`, seconds: 120 }]);
   const [s, e1, e2] = f.entries;
   assert.ok(s.t >= before && s.t <= Date.now());
   assert.deepEqual({ ...s, t: 0 }, { agent: "a-1", kind: "shell", t: 0, sandbox: "m-1", command: "echo 'hi' && id", exit_code: 3, output: RAW });
@@ -141,7 +154,7 @@ test("shell: two calls of one child run one after the other", async () => {
   const [a, b] = await Promise.all([as("a-1", shell, { command: "one" }), as("a-1", shell, { command: "two" })]);
   // The second call waits. So the log is up before any command runs.
   assert.deepEqual(f.steps, ["machine a-1", "start m-1", "exec", "record shell", "pull m-1", "machine a-1", "exec", "record shell", "pull m-1"]);
-  assert.deepEqual(f.m.calls.map((c) => c.command), [`sh -c ${shq(`${ENV}one`)}`, `sh -c ${shq(`${ENV}two`)}`]);
+  assert.deepEqual(f.m.calls.map((c) => c.command), [`${ENV}one`, `${ENV}two`]);
   assert.match(textOf(a), /^session session:a-1:1\n/);
   assert.match(textOf(b), /^session session:a-1:2\n/);
 });
@@ -189,7 +202,8 @@ test("shell: the description does not say that the session line is first", () =>
 
 test("roam.mjs starts no host process and reads no host environment", () => {
   const src = readFileSync(new URL("../lib/roam.mjs", import.meta.url), "utf8");
-  assert.ok(!/child_process|process\.env|node:fs|runTool/.test(src));
+  assert.ok(!/child_process|process\.env|runTool/.test(src));
+  assert.match(src, /readFileSync\(new URL\("\.\.\/roam\/shell-control\.mjs"/);
   const local = [...src.matchAll(/from "(\.[^"]+)"/g)].map((x) => x[1]).sort();
   assert.deepEqual(local, ["./daytona.mjs", "./event.mjs"]);
 });
@@ -206,7 +220,7 @@ function fakeDaytona(dir) {
   writeFileSync(join(tarDir, "meta", "out"), "hi");
   const resTar = execFileSync("tar", ["-cf", "-", "-C", tarDir, "."]);
   // onExec(body) may return a Response for one toolbox exec call.
-  const fake = { calls: [], creates: [], deletes: [], execs: [], state: {}, createStatus: 200, n: 0, onExec: null };
+  const fake = { calls: [], creates: [], deletes: [], execs: [], uploads: new Map(), state: {}, createStatus: 200, n: 0, onExec: null };
   const json = (o) => new Response(JSON.stringify(o), { status: 200 });
   fake.fetch = async (url, init = {}) => {
     const u = String(url);
@@ -229,14 +243,23 @@ function fakeDaytona(dir) {
     if (u.includes("/api/sandbox?labels=")) return json({ items: [] });
     const got = u.match(/\/api\/sandbox\/([^/?]+)$/);
     if (got) return fake.state[got[1]] ? json({ id: got[1], state: fake.state[got[1]] }) : new Response("not found", { status: 404 });
-    if (u.includes("/files/upload")) return new Response("", { status: 200 });
+    if (u.includes("/files/upload")) {
+      const path = new URL(u).searchParams.get("path");
+      if (path.endsWith(".json")) {
+        const q = JSON.parse(await init.body.get("file").text());
+        fake.uploads.set(q.id, q);
+      }
+      return new Response("", { status: 200 });
+    }
     if (u.includes("/files/download")) return new Response(resTar, { status: 200 });
     if (u.includes("/process/execute")) {
       const body = JSON.parse(init.body);
-      fake.execs.push({ id: u.split("/process/")[0].split("/").pop(), ...body });
+      const id = u.split("/process/")[0].split("/").pop();
+      const q = fake.uploads.get(body.command.split(" ").at(-1));
+      if (!q || q.op === "run") fake.execs.push({ id, ...(q ? { command: q.command, timeout: q.seconds } : body) });
       const own = fake.onExec?.(body);
       if (own) return own;
-      return json({ exitCode: 0, result: body.command === "true" ? "" : RAW });
+      return json(q ? supervisorAnswer(q) : { exitCode: 0, result: body.command === "true" ? "" : RAW });
     }
     return new Response("unexpected", { status: 500 });
   };
@@ -301,11 +324,11 @@ test("one machine per free-roam child, kept between calls, deleted at run end", 
     ]);
     assert.equal(events[0].run, labels.run);
 
-    // The command is in the request body of the toolbox call, with the time limit.
+    // The fake decodes the uploaded supervisor payload, including its own deadline.
     assert.deepEqual(fake.execs.filter((x) => x.command !== "true"), [
-      { id: "m-1", command: `sh -c ${shq(`${ENV}touch /root/x`)}`, timeout: 7 },
-      { id: "m-1", command: `sh -c ${shq(`${ENV}ls /root`)}`, timeout: 120 },
-      { id: "m-2", command: `sh -c ${shq(`${ENV}id`)}`, timeout: 120 },
+      { id: "m-1", command: `${ENV}touch /root/x`, timeout: 7 },
+      { id: "m-1", command: `${ENV}ls /root`, timeout: 120 },
+      { id: "m-2", command: `${ENV}id`, timeout: 120 },
     ]);
     // It never asks for a snapshot, and nothing from the host goes along.
     assert.ok(!fake.calls.some((c) => c.u.includes("/snapshots")));
@@ -446,7 +469,7 @@ test("the ready check fails once: the next call still starts the log before the 
     assert.equal(fake.creates.length, 1);
     assert.deepEqual(f.steps, ["start m-1", "record shell", "pull m-1"]);
     assert.deepEqual(f.ranBeforeStart, [[]]);
-    assert.deepEqual(fake.execs.map((x) => x.command), ["true", "true", `sh -c ${shq(`${ENV}id`)}`]);
+    assert.deepEqual(fake.execs.map((x) => x.command), ["true", "true", `${ENV}id`]);
   });
 });
 
@@ -555,7 +578,7 @@ for (const failure of ["upload", "startup JSON"]) {
       assert.equal(starts, 2);
       assert.equal(f.entries.length, 1);
       assert.equal(fake.execs.at(-2).command, "start-log");
-      assert.equal(fake.execs.at(-1).command, `sh -c ${shq(`${ENV}user-command`)}`);
+      assert.equal(fake.execs.at(-1).command, `${ENV}user-command`);
       await as("a-1", shell, { command: "user-command" });
       assert.equal(starts, 2);
     });
