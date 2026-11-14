@@ -66,7 +66,7 @@ export function DataTable<Row>({
     <div className={cn(card, "overflow-auto", className)} style={{ maxHeight }}>
       <table className="w-full border-collapse text-left text-xs">
         <thead className="sticky top-0 z-10 bg-background dark:bg-popover">
-          <tr className="border-b border-border/60">
+          <tr className="border-b border-border/60 bg-foreground/[0.02]">
             {columns.map((c) => {
               const active = sort?.key === c.key
               const sortable = c.sortable !== false
@@ -76,7 +76,7 @@ export function DataTable<Row>({
                   scope="col"
                   aria-sort={active ? (sort.dir === "asc" ? "ascending" : "descending") : undefined}
                   className={cn(
-                    "px-3 py-2 font-medium whitespace-nowrap text-muted-foreground",
+                    "px-3 py-2 text-[11px] font-medium whitespace-nowrap text-muted-foreground",
                     c.align === "right" && "text-right",
                   )}
                 >
@@ -108,9 +108,12 @@ export function DataTable<Row>({
         </thead>
         <tbody>
           {sorted.map((row, i) => (
-            <tr key={rowKey(row, i)} className="border-b border-border/40 align-top last:border-b-0">
+            <tr
+              key={rowKey(row, i)}
+              className="border-b border-border/40 align-top transition-colors last:border-b-0 hover:bg-foreground/[0.025]"
+            >
               {columns.map((c) => (
-                <td key={c.key} className={cn("px-3 py-2", c.align === "right" && "text-right", c.className)}>
+                <td key={c.key} className={cn("px-3 py-2.5", c.align === "right" && "text-right", c.className)}>
                   {c.cell ? c.cell(row) : String(valueAt(row, c.key) ?? "")}
                 </td>
               ))}

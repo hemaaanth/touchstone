@@ -14,17 +14,36 @@ const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? o
 const RANK: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3, informational: 4, info: 4 }
 const rank = (impact: string) => RANK[impact.toLowerCase()] ?? 5
 
+// Severity reads by weight, not colour: a dot that is darker the worse it is.
+const DOT = ["bg-foreground", "bg-foreground/80", "bg-foreground/55", "bg-foreground/35", "bg-foreground/20", "bg-foreground/20"]
+
+// A scanner path arrives as "/a/b.js (+6 more)". Split the count off, so the
+// path can truncate and the count still shows.
+const splitWhere = (where: string) => {
+  const m = /^(.*?)\s*\(\+(\d+) more\)$/.exec(where)
+  return m ? { path: m[1], more: Number(m[2]) } : { path: where, more: 0 }
+}
+
+// "10038 · CWE-693" shows as the CWE on top and the rule id under it.
+const splitRule = (rule: string) => {
+  const parts = rule.split(" · ")
+  const cwe = parts.find((p) => /^CWE-/i.test(p))
+  return { cwe, ids: parts.filter((p) => p !== cwe) }
+}
+
+const chip = cn(mono, "inline-flex items-center rounded-md bg-foreground/[0.05] px-1.5 py-0.5 text-[11px] text-muted-foreground dark:bg-foreground/[0.07]")
+
 // One row per lead: the finding, its severity, where it is, the scanner's
 // rule id and CWE, and the tool that reported it.
 const LEAD_COLUMNS: DataColumn<PrepassLead>[] = [
   {
     key: "check",
     label: "Finding",
-    className: "min-w-[12rem]",
+    className: "w-full min-w-[14rem]",
     cell: (l) => (
       <div className="flex flex-col gap-0.5">
-        <span className="font-medium text-foreground">{l.check || "Lead"}</span>
-        {l.detail ? <span className="break-words text-muted-foreground">{l.detail}</span> : null}
+        <span className="font-medium leading-snug text-foreground">{l.check || "Lead"}</span>
+        {l.detail ? <span className="break-words leading-snug text-muted-foreground">{l.detail}</span> : null}
       </div>
     ),
   },
@@ -32,32 +51,58 @@ const LEAD_COLUMNS: DataColumn<PrepassLead>[] = [
     key: "impact",
     label: "Severity",
     sortValue: (l) => rank(l.impact),
-    className: "whitespace-nowrap text-muted-foreground",
-    cell: (l) => l.impact || "—",
+    className: "whitespace-nowrap",
+    cell: (l) =>
+      l.impact ? (
+        <span className="inline-flex items-center gap-1.5 rounded-full border border-border/60 py-0.5 pr-2 pl-1.5 text-[11px] text-foreground/80">
+          <span aria-hidden className={cn("size-1.5 rounded-full", DOT[rank(l.impact)])} />
+          {l.impact}
+        </span>
+      ) : (
+        <span className="text-muted-foreground">—</span>
+      ),
   },
   {
     key: "where",
     label: "Path",
-    className: `${mono} break-all text-muted-foreground`,
-    cell: (l) => l.where || "—",
+    className: "whitespace-nowrap",
+    cell: (l) => {
+      if (!l.where) return <span className="text-muted-foreground">—</span>
+      const { path, more } = splitWhere(l.where)
+      return (
+        <div className="flex max-w-[16rem] items-center gap-1.5" title={l.where}>
+          <span className={cn(mono, "min-w-0 truncate text-foreground/80")}>{path}</span>
+          {more > 0 ? <span className="shrink-0 text-[11px] text-muted-foreground">+{more}</span> : null}
+        </div>
+      )
+    },
   },
   {
     key: "rule",
-    label: "Rule / CWE",
+    label: "Rule",
     sortValue: (l) => l.rule ?? "",
-    className: `${mono} whitespace-nowrap text-muted-foreground`,
-    cell: (l) => l.rule || "—",
+    className: "whitespace-nowrap",
+    cell: (l) => {
+      if (!l.rule) return <span className="text-muted-foreground">—</span>
+      const { cwe, ids } = splitRule(l.rule)
+      return (
+        <div className={cn(mono, "flex flex-col gap-0.5 text-[11px] leading-snug")}>
+          {cwe ? <span className="text-foreground/80">{cwe}</span> : null}
+          {ids.length ? <span className="text-muted-foreground">{ids.join(" · ")}</span> : null}
+        </div>
+      )
+    },
   },
   {
     key: "tools",
     label: "Tool",
     sortValue: (l) => l.tools.join(" + "),
-    className: "whitespace-nowrap text-muted-foreground",
+    className: "whitespace-nowrap",
     cell: (l) => (
-      <span>
-        {l.tools.join(" + ") || "—"}
-        {l.corroborated ? <span className="text-muted-foreground/70"> · corroborated</span> : null}
-      </span>
+      <div className="flex flex-wrap items-center gap-1">
+        {l.tools.length ? l.tools.map((t) => <span key={t} className={chip}>{t}</span>) : <span className="text-muted-foreground">—</span>}
+        {l.corroborated ? <span className="text-[11px] text-muted-foreground">corroborated</span> : null}
+      </div>
     ),
   },
 ]

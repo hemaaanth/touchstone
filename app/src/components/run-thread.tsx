@@ -251,15 +251,20 @@ export function Thread({
           ) : null}
         </div>
 
-        <ThreadPrimitive.ScrollToBottom asChild>
-          <Button
-            size="icon"
-            variant="outline"
-            className="absolute bottom-4 left-1/2 size-8 -translate-x-1/2 rounded-full disabled:invisible"
-          >
-            <ArrowDown className="size-4" />
-          </Button>
-        </ThreadPrimitive.ScrollToBottom>
+        {/* Sticky, not absolute: an absolute child of a scrolling viewport
+            scrolls away with the content. The zero-height row keeps it out of
+            the layout, and the button sits just above the viewport's bottom. */}
+        <div className="pointer-events-none sticky bottom-4 z-20 flex h-0 justify-center">
+          <ThreadPrimitive.ScrollToBottom asChild>
+            <Button
+              size="icon"
+              variant="outline"
+              className="pointer-events-auto size-8 -translate-y-full rounded-full shadow-sm disabled:invisible"
+            >
+              <ArrowDown className="size-4" />
+            </Button>
+          </ThreadPrimitive.ScrollToBottom>
+        </div>
       </ThreadPrimitive.Viewport>
 
       {readOnly ? null : <Composer to={to} archived={archived} notice={notice} sending={sending} context={context} />}
