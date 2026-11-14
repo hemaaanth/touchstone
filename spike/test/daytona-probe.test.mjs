@@ -20,9 +20,9 @@ function fakeMachine(failure) {
       }
     },
     async exec(command) {
-      if (command.includes("touchstone-prerequisites-ready")) return { exitCode: failure === "prerequisites" ? 1 : 0, result: "touchstone-prerequisites-ready" };
+      if (command.includes("touchstone-prerequisites-ready")) return { exitCode: Number.isInteger(failure) ? failure : failure === "prerequisites" ? 1 : 0, result: "touchstone-prerequisites-ready" + (failure === "framing" ? "\r\n" : "") };
       if (command.includes("nohup node")) return { exitCode: failure === "logger" ? 1 : 0, result: "" };
-      if (command.includes("touchstone-egress-ready")) return { exitCode: 0, result: "touchstone-egress-ready" };
+      if (command.includes("touchstone-egress-ready")) return { exitCode: 0, result: "touchstone-egress-ready" + (failure === "framing" ? "\r\n" : "") };
       if (command.includes("tail -c")) return { exitCode: 0, result: Buffer.from(JSON.stringify({ t: 1, host: "127.0.0.1", method: "GET", url: "http://127.0.0.1:12345/touchstone-probe", status: failure === "egress" ? 502 : 200, decision: "allow", reason: "free-roam" }) + "\n").toString("base64") };
       const q = requests.get(command.split(" ").at(-1));
       assert.ok(q, "only the trusted supervisor exchange may execute");
@@ -55,4 +55,11 @@ test("the shell probe exercises the actual supervisor protocol and only loopback
 for (const stage of ["prerequisites", "logger", "egress", "ack"]) test(`failed ${stage} cannot become shell readiness`, async () => {
   const fake = fakeMachine(stage);
   await assert.rejects(probeDaytonaShell(fake.machine), (e) => e.code === ({ prerequisites: "daytona_shell_prerequisites_failed", logger: "daytona_shell_egress_start_failed", egress: "daytona_shell_egress_record_failed", ack: "daytona_shell_supervisor_failed" })[stage] && e.cause === undefined);
+});
+
+test("provider line framing does not turn successful fixed markers into a capability failure", async () => {
+  await probeDaytonaShell(fakeMachine("framing").machine);
+});
+for (const [status, code] of [[71,"commands_missing"],[72,"http_client_missing"],[73,"package_manager_missing"],[74,"node_required"],[75,"linux_required"],[76,"root_required"],[77,"tls_missing"],[78,"proc_unavailable"],[79,"tmp_unwritable"],[80,"log_unwritable"]]) test(`prerequisite status ${status} becomes a fixed ${code} diagnostic`, async () => {
+  await assert.rejects(probeDaytonaShell(fakeMachine(status).machine), (e) => e.code === `daytona_shell_${code}` && e.cause === undefined);
 });
