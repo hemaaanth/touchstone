@@ -874,7 +874,7 @@ How requests work:
   unless this is an explicitly configured private lab. Strict scopes restrict hosts.
 - request follows up to 10 redirects and records every hop. Pass followRedirects: false
   to inspect a redirect response itself. Credentials are stripped across origins.
-- One script has 90 s of wall clock, then it is killed. A script killed after
+- One script has 180 s of wall clock, then it is killed. A script killed after
   its calls still returns them as evidence; one killed during a sleep returns
   nothing. Keep each script to a handful of calls.
 - Real sites rate-limit. request() retries a 429 or 503 by itself, honouring

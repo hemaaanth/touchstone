@@ -200,9 +200,10 @@ function serialize(key, fn) {
 // pacing: 429 backoff inside request() plus the agent's own wait between waves.
 // 30 s killed any script that slept once before its first request, and the
 // transcript then read "(no requests recorded)" even though nothing was wrong.
-// 90 s leaves room for the internal retries without holding the workspace queue
-// long enough to look hung.
-export const LIVE_SCRIPT_TIMEOUT_MS = 90_000;
+// 180 s: agents keep sleeping 30 to 50 s to pace a rate-limited host even when
+// told not to, and 90 s killed those before their first call. The cost is only
+// a runaway script holding the queue; the internal retries are bounded anyway.
+export const LIVE_SCRIPT_TIMEOUT_MS = 180_000;
 
 export async function runLiveScript(ws, script, { timeoutMs = LIVE_SCRIPT_TIMEOUT_MS } = {}) {
   return serialize(ws, async () => {
