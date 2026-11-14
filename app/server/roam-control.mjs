@@ -157,7 +157,10 @@ export function createRoamControlApi({ getRun, emit, machine, timeoutMs = 15000,
       const expireAt = (expires) => {
         unschedule(d.timer)
         d.expires = expires
-        d.timer = schedule(() => { if (s.desktops.get(agent) === d) void closeOwned(run, s, agent, scope).catch(() => {}) }, Math.max(0, expires - now()))
+        d.timer = schedule(async () => {
+          try { if (s.desktops.get(agent) === d) await closeOwned(run, s, agent, scope) }
+          catch { /* Invalidation may retire the worker before this timer runs. */ }
+        }, Math.max(0, expires - now()))
         d.timer?.unref?.()
       }
       try {

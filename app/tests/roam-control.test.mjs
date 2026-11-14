@@ -693,3 +693,124 @@ test("unowned Watch cannot replace another session and a genuine delayed capabil
     expect(f.events.at(-1).viewOnly).toBe(false)
   } finally { held.release(); await setup; await f.end() }
 })
+
+test("real host expiry during another agent's invalidation cannot crash or release a newer session", async () => {
+  const source = String.raw`
+    import assert from "node:assert/strict";
+    import {setTimeout as sleep} from "node:timers/promises";
+    import {createRoamControlApi} from ${JSON.stringify(new URL("../server/roam-control.mjs", import.meta.url).href)};
+    const stage = process.argv[1];
+    const entered = Promise.withResolvers(), released = Promise.withResolvers();
+    const live = new Map(), revoked = new Map(), closed = new Map(), actions = [], events = [];
+    let api, boot = 1, finished = false, pending, invalidating;
+    const run = {id:"r1",owner:{},ws:"/synthetic",status:"running",roamEpoch:"epoch-1",events:["a-1","a-2"].map(id=>({ev:"subagent-spawned",id,loadout:"free-roam",t:1}))};
+    function child(epoch) {
+      const worker = {stdin:{writable:true,write(raw,callback) {
+        callback?.();const q = JSON.parse(raw).roamControl;
+        if(q) {
+          actions.push(q.op);
+          queueMicrotask(()=>api.consume(run,worker,epoch,{ev:"roam-control",...q,ok:true,state:q.op==="pause"?"paused":q.op==="cancel"?"closed":"running"}));
+        }
+      }}};
+      return worker;
+    }
+    function machine(agent) {
+      let expires, token = null, sequence = 0, state = "closed";
+      return {
+        id:agent+"-machine",
+        async request(bytes) {
+          const q=JSON.parse(bytes);actions.push(agent+":"+q.action);
+          if(q.action==="configure") {
+            assert.equal(state,"closed");state="configured";token=null;
+            expires=Date.now()+(boot===1&&agent==="a-1"?2000:20000);
+            return {kind:"configured",port:9876,expires};
+          }
+          if(q.action==="open") {
+            assert.equal(state,"configured");state="open";
+            return {kind:"open",port:9876,expires,viewOnly:q.viewOnly};
+          }
+          assert.equal(q.action,"close");state="closed";
+          if(token) closed.set(token,(closed.get(token)??0)+1);
+          return {kind:"closed"};
+        },
+        async previewGrant() {
+          token=boot+"-"+agent+"-"+(++sequence);live.set(token,agent);actions.push(agent+":grant");
+          const grant={url:"https://synthetic.invalid/",expires,revokeToken:token};
+          if(boot===1&&agent==="a-2"&&stage==="grant") {entered.resolve();await released.promise}
+          return grant;
+        },
+        async expirePreview(port,value) {
+          assert.equal(port,9876);assert.equal(live.get(value),agent);
+          live.delete(value);revoked.set(value,(revoked.get(value)??0)+1);actions.push(agent+":revoke");
+        },
+      };
+    }
+    const a=machine("a-1"), b=machine("a-2");
+    api=createRoamControlApi({
+      getRun:id=>id===run.id?run:null,emit:(_,event)=>events.push(event),
+      machine:async(_,agent)=>{
+        if(boot===1&&agent==="a-2"&&stage==="lookup") {entered.resolve();await released.promise}
+        return agent==="a-1"?a:b;
+      },
+    }); // Real Date.now, setTimeout and clearTimeout; no timer or exception interception.
+    run.child=child(run.roamEpoch);api.begin(run,run.child,run.roamEpoch);
+    try {
+      const watched=await api.desktop("r1","a-1",true,"https://console.invalid",{id:"old-watch"});
+      pending=api.desktop("r1","a-2",true,"https://console.invalid",{id:"pending-watch"}).then(value=>({value}),error=>({error}));
+      await entered.promise;
+      const oldTokens=[...live.keys()], before=actions.length;
+      invalidating=api.invalidate(run,run.child,run.roamEpoch).then(()=>{finished=true});
+      await sleep(Math.max(0,watched.expires-Date.now())+60);
+      assert(Date.now()>=watched.expires);
+      assert.equal(finished,false);assert.deepEqual(actions.slice(before),[]);
+      assert.deepEqual([...live.keys()],oldTokens);
+      released.resolve();
+      assert((await pending).error);await invalidating;
+      assert.equal(finished,true);assert.equal(live.size,0);
+      assert.equal(oldTokens.length,stage==="grant"?2:1);
+      for(const token of oldTokens) {assert.equal(revoked.get(token),1);assert.equal(closed.get(token),1)}
+      assert(!actions.includes("resume"));
+      boot=2;run.roamEpoch="epoch-2";run.child=child(run.roamEpoch);api.begin(run,run.child,run.roamEpoch);
+      const newer=await api.desktop("r1","a-1",true,"https://console.invalid",{id:"new-watch"});
+      await api.desktop("r1","a-1",false,"https://console.invalid",newer.desktop);
+      const marker=actions.length;
+      await api.close("r1","a-1",watched.desktop);
+      await sleep(20);
+      assert.deepEqual(actions.slice(marker),[]);assert.equal(live.size,1);
+      assert.equal(events.at(-1).viewOnly,false);
+      await api.invalidate(run,run.child,run.roamEpoch);
+      assert.equal(live.size,0);assert(!actions.includes("resume"));
+      for(const count of revoked.values()) assert.equal(count,1);
+      for(const count of closed.values()) assert.equal(count,1);
+      console.log(JSON.stringify({stage,expiredWhileRetired:true,oldGrantsCleaned:oldTokens.length,newControlUntouched:true,unexpectedResume:false}));
+    } finally {
+      released.resolve();
+      await pending;
+      await invalidating;
+      await api.invalidate(run);
+    }
+  `
+  const node = Bun.which("node")
+  expect(node).toBeTruthy()
+  const checks = []
+  for (const runtime of [process.execPath, node]) {
+    for (const stage of ["lookup", "grant"]) {
+      const dir = mkdtempSync(`${TEST_STORE_DIR}/real-expiry-`)
+      const flags = runtime === process.execPath ? ["--no-env-file"] : ["--input-type=module"]
+      const child = Bun.spawn([runtime, ...flags, "--eval", source, stage], {
+        cwd: dir,
+        env: { PATH: process.env.PATH, HOME: dir, TMPDIR: dir, SPEND_LEDGER: `${dir}/spend.jsonl`, TOUCHSTONE_GRANT_TOKEN: "test-grant-token", TOUCHSTONE_GRANT_TOKEN_FILE: `${dir}/console-token`, TOUCHSTONE_GRANTS_FILE: `${dir}/grants.json`, TOUCHSTONE_SCOPES_FILE: `${dir}/scopes.json`, TOUCHSTONE_PROVIDERS_FILE: `${dir}/providers.json`, TOUCHSTONE_RESULTS_DIR: `${dir}/results` },
+        stdout: "pipe", stderr: "pipe",
+      })
+      checks.push((async () => {
+        try {
+          const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
+          expect(err).toBe("")
+          expect(code).toBe(0)
+          expect(JSON.parse(out)).toEqual({ stage, expiredWhileRetired: true, oldGrantsCleaned: stage === "grant" ? 2 : 1, newControlUntouched: true, unexpectedResume: false })
+        } finally { rmSync(dir, { recursive: true, force: true }) }
+      })())
+    }
+  }
+  await Promise.all(checks)
+}, 15000)
