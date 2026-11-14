@@ -10,10 +10,13 @@ import { fauxAssistantMessage as answer, fauxProvider, fauxToolCall as call } fr
 import { createRegistry, Harness, MemoryStorage } from "@earendil-works/pi-durable";
 import { createFleet } from "../lib/fleet.mjs";
 import { currentAgent } from "../lib/event.mjs";
-import { closeRun, roamMachine } from "../lib/daytona.mjs";
+import { closeRun, roamMachine, execConfig } from "../lib/daytona.mjs";
 import { roamTools, pauseRoamShell, resumeRoamShell, closeRoamShell } from "../lib/roam.mjs";
 import { createRoamControl } from "../lib/roam-control.mjs";
 import { recordSession } from "../lib/candidate.mjs";
+import { checkRoamSelection, SHELL_PROBE_VERSION } from "../lib/daytona-setup.mjs";
+import { roamBinding, setRoamSelectionState } from "../lib/daytona-state.mjs";
+import { unwrapRootCommand } from "./helpers/daytona-fixture.mjs";
 
 const text = (m) => typeof m?.content === "string" ? m.content : (m?.content ?? []).filter((b) => b.type === "text").map((b) => b.text).join("");
 const result = (...blocks) => answer(blocks, { stopReason: "toolUse" });
@@ -23,9 +26,10 @@ const deferred = () => { let resolve; const promise = new Promise((yes) => { res
 // Only the provider, egress and HTTP transport are fakes. No remote commands run.
 test("free-roam children enter distinct machines concurrently; closing A leaves B and another run independent", { timeout: 15000 }, async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "fleet-concurrency-"));
-  const env = { FREE_ROAM: "1", FLEET: "1", ROAM_OPTIONS: "[]", TOUCHSTONE_EXEC: "daytona", DAYTONA_API_KEY: "synthetic-fleet-key", DAYTONA_API_URL: "https://daytona.invalid", DAYTONA_PENDING: join(dir, "pending.json"), DAYTONA_RETRY_MS: "1" };
+  const env = { FREE_ROAM: "1", FLEET: "1", ROAM_OPTIONS: "[]", TOUCHSTONE_EXEC: "daytona", DAYTONA_API_KEY: "synthetic-fleet-key", DAYTONA_API_URL: "https://daytona.invalid/api", DAYTONA_PENDING: join(dir, "pending.json"), DAYTONA_RETRY_MS: "1", TOUCHSTONE_ROAM_SNAPSHOT: "selected-shell", TOUCHSTONE_DAYTONA_STATE_FILE: join(dir, "setup.json"), DAYTONA_TARGET: "fixture-region" };
   const saved = Object.fromEntries(Object.keys(env).map((key) => [key, process.env[key]]));
   Object.assign(process.env, env);
+  const calls = [];
   const runs = [], events = [], machines = new Map(), requests = new Map(), held = new Map(), operations = [], deleted = [];
   const entered = deferred();
   let hold = true, next = 0;
@@ -43,8 +47,10 @@ test("free-roam children enter distinct machines concurrently; closing A leaves 
   t.mock.method(console, "log", (line) => { if (line.startsWith("EVENT ")) events.push(JSON.parse(line.slice(6))); });
   t.mock.method(globalThis, "fetch", async (url, init = {}) => {
     const u = new URL(url), method = init.method ?? "GET";
+    calls.push(`${method} ${u.pathname}`);
     assert.ok(["daytona.invalid", "toolbox.invalid"].includes(u.hostname), "all transport is intercepted");
-    if (u.pathname.includes("/snapshots")) return json({ state: "active" });
+    if (u.pathname.endsWith("/regions")) return json([{ id: "fixture-region-id", name: "fixture-region" }]);
+    if (u.pathname.includes("/snapshots")) return json({ id: "selected-shell", name: "selected-shell", state: "active", regionIds: ["fixture-region-id"], sandboxClass: "container", ref: "fixture-ref" });
     if (method === "POST" && u.pathname === "/api/sandbox") {
       const id = `m-fleet50-${++next}`, body = JSON.parse(init.body);
       machines.set(id, { id, state: "started", labels: body.labels });
@@ -54,7 +60,7 @@ test("free-roam children enter distinct machines concurrently; closing A leaves 
     if (sandbox && method === "DELETE") { deleted.push(sandbox); machines.delete(sandbox); return json({}); }
     if (sandbox && method === "GET") return machines.has(sandbox) ? json(machines.get(sandbox)) : new Response("missing", { status: 404 });
     if (u.pathname === "/api/sandbox" && method === "GET") return json({ items: [] });
-    if (u.pathname.endsWith("/files/upload")) {
+    if (u.pathname.includes("/files/upload")) {
       if (u.searchParams.get("path").endsWith(".json")) {
         const q = JSON.parse(await init.body.get("file").text());
         requests.set(q.id, q);
@@ -63,7 +69,7 @@ test("free-roam children enter distinct machines concurrently; closing A leaves 
     }
     if (u.pathname.endsWith("/process/execute")) {
       const id = u.pathname.split("/process/")[0].split("/").at(-1);
-      const { command } = JSON.parse(init.body);
+      const command = unwrapRootCommand(JSON.parse(init.body).command);
       if (command === "true") return json({ exitCode: 0, result: "" });
       const requestId = /^node \/tmp\/touchstone-shell-control\.mjs ([a-f0-9-]{36})$/.exec(command)?.[1];
       assert.ok(requestId && requests.has(requestId), "only the fixed supervisor consumes uploaded JSON");
@@ -77,13 +83,19 @@ test("free-roam children enter distinct machines concurrently; closing A leaves 
         if (held.size === 2) entered.resolve();
         await release.promise;
       }
-      return json({ exitCode: 0, result: JSON.stringify({ ok: true, id: q.id, generation: `generation-${id}`, epoch: q.epoch,
+      return json({ exitCode: 0, result: JSON.stringify({ ok: true, id: q.id, generation: `generation-${id}`, epoch: q.epoch ?? 0,
         ...(q.op === "run" ? { exitCode: 0, result: "Synthetic unproven observation" }
           : { ack: true, scope: "managed-shell", state: q.op === "pause" ? "paused" : q.op === "close" ? "closed" : "active" }),
       }) });
     }
     assert.fail(`Unexpected fake transport: ${method} ${u.pathname}`);
   });
+
+  // This test targets concurrency after setup; the setup producer has its own
+  // roundtrip regression. Seed only the verified selection after real metadata parsing.
+  const config = execConfig();
+  const selected = await checkRoamSelection(config);
+  setRoamSelectionState(roamBinding(config), "verified", { ...selected, probeVersion: SHELL_PROBE_VERSION, verificationId: "synthetic-fleet-proof" });
 
   async function open(name) {
     const ws = join(dir, name), entries = [], state = { found: [], passed: new Map() };
@@ -131,7 +143,7 @@ test("free-roam children enter distinct machines concurrently; closing A leaves 
 
   const first = await open("first"), running = first.run("start");
   let timer;
-  try { await Promise.race([entered.promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("Both machines must enter before either is released")), 3000); })]); }
+  try { await Promise.race([entered.promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`Both machines must enter before either is released: ${JSON.stringify({ calls, events: events.filter((e) => /error|failed|roam/.test(e.ev)).slice(-8) })}`)), 3000); })]); }
   finally { clearTimeout(timer); }
   hold = false;
   const firstSidecar = JSON.parse(readFileSync(`${first.ws}.daytona.json`));
