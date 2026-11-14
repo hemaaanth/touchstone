@@ -123,7 +123,8 @@ They require no inference key and make no paid model calls. They verify the
 listed software boundaries; they do not establish model-driven discovery quality.
 
 ```sh
-node --test app/tests/demo-policy.test.mjs app/tests/demo-backend.test.mjs
+node --test app/tests/demo-policy.test.mjs app/tests/demo-backend.test.mjs \
+  app/tests/demo-resources.test.mjs
 
 node --experimental-test-module-mocks --import ./spike/test/helpers/isolated-env.mjs --test --test-concurrency=1 \
   spike/test/fleet-loadout.test.mjs spike/test/fleet-concurrency.test.mjs \
@@ -135,7 +136,8 @@ bun --no-env-file test app/tests/demo.test.ts app/tests/demo-client.test.ts \
 
 The harm-gate suite includes real offline Foundry cases when Docker and its
 pinned image are available; otherwise those cases are skipped. The remaining
-fixtures use controlled execution results.
+fixtures use controlled execution results. The resource tests use Linux processes
+and Python 3 pidfds, with a simulated Docker daemon.
 
 | Claim to inspect | Implementation | Focused evidence |
 | --- | --- | --- |
@@ -143,6 +145,7 @@ fixtures use controlled execution results.
 | Agent delegation and shared coordination | [`fleet.mjs`](spike/lib/fleet.mjs), [`agent-run.mjs`](spike/agent-run.mjs) | [`fleet-concurrency.test.mjs`](spike/test/fleet-concurrency.test.mjs), [`agent-run-startup.test.mjs`](spike/test/agent-run-startup.test.mjs) |
 | A passing attempt is still subject to a harm gate | [`proof.mjs`](spike/lib/proof.mjs), [`control-trace.mjs`](spike/lib/control-trace.mjs), [`candidate.mjs`](spike/lib/candidate.mjs) | [`harm-gate.test.mjs`](spike/test/harm-gate.test.mjs), [`candidate-harm.test.mjs`](spike/test/candidate-harm.test.mjs) |
 | Public visitors cannot change execution policy or read another visitor's run | [`demo-http.mjs`](app/server/demo-http.mjs), [`runs.mjs`](app/server/runs.mjs), [`findings.mjs`](app/server/findings.mjs) | [`demo-policy.test.mjs`](app/tests/demo-policy.test.mjs), [`demo-backend.test.mjs`](app/tests/demo-backend.test.mjs) |
+| Run-owned cleanup and restart recovery | [`demo-resources.mjs`](spike/lib/demo-resources.mjs), [`demo-lifecycle.mjs`](app/server/demo-lifecycle.mjs) | [`demo-resources.test.mjs`](app/tests/demo-resources.test.mjs) |
 | Reports and replay exports come from recorded results | [`report.mjs`](app/server/report.mjs), [`replay-bundle.mjs`](app/server/replay-bundle.mjs) | [`replay-evidence.test.ts`](app/tests/replay-evidence.test.ts), [`replay-store.test.mjs`](spike/test/replay-store.test.mjs) |
 
 The application is in [`app/`](app). The reusable engine and modules are in
