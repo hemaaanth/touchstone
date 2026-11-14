@@ -223,11 +223,11 @@ test("a host is a host shape of at most 253 characters; the evidence keeps its s
   const state = newState();
   const { poc } = shell(state, "a-1", "scan", "found 61 open hosts\n");
   const long = (i, n) => `${String(i).padStart(2, "0")}${"a".repeat(n - 14)}.example.org`;
-  for (let i = 0; i < 60; i++) egress(state, "a-1", "CONNECT", `${long(i, 253)}:443`, null);
   // No host shape: too long, or characters a host does not have.
   egress(state, "a-1", "CONNECT", `${long(60, 254)}:443`, null);
   egress(state, "a-1", "GET", `http://${long(61, 1_900)}/x`, 200);
   egress(state, "a-1", "CONNECT", "host.example/<b>:443", null);
+  for (let i = 0; i < 60; i++) egress(state, "a-1", "CONNECT", `${long(i, 253)}:443`, null);
   const { evidence } = await lookupAs(state, "a-1", poc);
   assert.equal(evidence.egress.requests, 63);
   assert.equal(evidence.egress.hosts.length, 60);
