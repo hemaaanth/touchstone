@@ -294,6 +294,79 @@ if (process.env.ASK_CRASH_DB) {
     });
   }
 
+  async function installedAsk(t, e, input) {
+    t.mock.method(console, "log", (line) => {
+      if (!line.startsWith("EVENT ")) return;
+      const event = JSON.parse(line.slice(6));
+      e.events.push(event);
+      // Also release unexpected asks on the broken baseline.
+      if (event.ev === "ask-human") queueMicrotask(() => e.answerAsk({ ask: event.id, done: false }));
+    });
+    const { harness, root } = await open(new MemoryStorage(), e, input);
+    t.after(() => harness.close(ctx));
+    const sub = await root.submit({ type: "input", content: "Ask." }, ctx);
+    assert.equal((await sub.wait(ctx)).status, "done");
+    return (await root.context(ctx)).messages.find((m) => m.role === "toolResult" && m.toolName === "ask_human");
+  }
+
+  const invalidRawChoices = [
+    ["numeric-string bound", { options, select: "multiple", min: "2" }],
+    ["null options", { options: null }],
+    ["null select without options", { select: null }],
+    ["null single minimum", { options, min: null }],
+    ["null maximum", { options, select: "multiple", max: null }],
+    ["null description", { options: [{ id: "a", label: "A", description: null }, options[1]] }],
+    ["number id", { options: [{ id: 7, label: "A" }, options[1]] }],
+    ["number label", { options: [{ id: "a", label: 7 }, options[1]] }],
+    ["null minimum without options", { min: null }],
+    ["unknown input field", { options, unexpected: true }],
+    ["unknown option field", { options: [{ ...options[0], approval: true }, options[1]] }],
+    ["model-only detail", { detail: { approval: true } }],
+  ];
+  for (const [name, extra] of invalidRawChoices) {
+    test(`installed Harness rejects raw choice metadata: ${name}`, { timeout: 10000 }, async (t) => {
+      const e = await engine(t);
+      const input = { ...request, ...extra };
+      await assert.rejects(e.askHumanTool.execute(input, { conversationId: 2 }, ctx));
+      assert.deepEqual(e.events, []);
+      const result = await installedAsk(t, e, input);
+      assert.deepEqual(e.events, [], "Raw invalid metadata must never emit an ask.");
+      assert.equal(result.isError, true);
+      assert.match(result.content.find((p) => p.type === "text").text, /Ask [^\n]+\./);
+    });
+  }
+
+  for (const [field, counts, limit] of [
+    ["label", [150, 200, 201], 200],
+    ["description", [300, 500, 501], 500],
+  ]) {
+    for (const count of counts) {
+      test(`installed Harness counts astral ${field} as ${count} Unicode code points`, { timeout: 10000 }, async (t) => {
+        const e = await engine(t);
+        const text = "😀".repeat(count);
+        const option = { id: "a", label: "A", [field]: field === "label" ? `  ${text}  ` : text };
+        const input = { ...request, options: [option, options[1]] };
+        const result = await installedAsk(t, e, input);
+        if (count > limit) {
+          assert.equal(result.isError, true);
+          assert.deepEqual(e.events, []);
+          await assert.rejects(e.askHuman(input), field === "label" ? /1 to 200 characters/ : /at most 500 characters/);
+        } else {
+          assert.equal(result.isError ?? false, false, JSON.stringify(result.content));
+          const ask = e.events.find((event) => event.ev === "ask-human");
+          assert.deepEqual(ask.presentation, {
+            options: [{ ...option, [field]: text }, options[1]], select: "single",
+          });
+          assert.equal(ask.agent, "coordinator");
+          assert.deepEqual(Object.keys(e.events.at(-1)).sort(), ["agent", "answer", "ev", "id", "t"]);
+          const wait = e.askHuman(input);
+          e.answerAsk({ ask: e.events.at(-1).id, done: false });
+          assert.deepEqual(await wait, { done: false });
+        }
+      });
+    }
+  }
+
   test("presentation accepts exactly 16384 UTF-8 bytes and rejects the next byte", async (t) => {
     const e = await engine(t);
     const choices = Array.from({ length: 12 }, (_, i) => ({

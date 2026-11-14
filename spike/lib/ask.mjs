@@ -17,6 +17,21 @@ let disposed = false;
 const askFields = ["kind", "question", "options", "select", "min", "max"];
 const optionFields = ["id", "label", "description"];
 
+function validateFields(input, allowDetail = false) {
+  if (!input || typeof input !== "object" || Array.isArray(input) ||
+    Object.keys(input).some((key) => !askFields.includes(key) && !(allowDetail && key === "detail"))) {
+    throw new Error("Ask input contains unsupported fields.");
+  }
+}
+
+function exceedsCharacters(text, limit) {
+  let count = 0;
+  for (const character of text) {
+    if (++count > limit) return true;
+  }
+  return false;
+}
+
 // Presentation is display metadata only; selections still use the Reply channel.
 function presentationFor(input) {
   if (!Object.hasOwn(input, "options")) {
@@ -40,14 +55,15 @@ function presentationFor(input) {
     if (typeof id !== "string" || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(id) || id !== id.trim() || ids.has(id)) {
       throw new Error("Ask option ids must be unique lowercase identifiers of 1 to 64 characters.");
     }
-    if (typeof label !== "string" || !label.trim() || label.trim().length > 200) {
+    const trimmedLabel = typeof label === "string" ? label.trim() : "";
+    if (!trimmedLabel || exceedsCharacters(trimmedLabel, 200)) {
       throw new Error("Ask option labels must contain 1 to 200 characters after trimming.");
     }
-    if (Object.hasOwn(option, "description") && (typeof description !== "string" || description.length > 500)) {
+    if (Object.hasOwn(option, "description") && (typeof description !== "string" || exceedsCharacters(description, 500))) {
       throw new Error("Ask option descriptions must be strings of at most 500 characters.");
     }
     ids.add(id);
-    options.push({ id, label: label.trim(), ...(Object.hasOwn(option, "description") ? { description } : {}) });
+    options.push({ id, label: trimmedLabel, ...(Object.hasOwn(option, "description") ? { description } : {}) });
   }
   const select = Object.hasOwn(input, "select") ? input.select : "single";
   if (select !== "single" && select !== "multiple") throw new Error("Ask select must be single or multiple.");
@@ -73,10 +89,7 @@ function presentationFor(input) {
 // Process-local only. pi-durable 1.5.0 replays interrupted safe tools, but marks
 // unsafe tools interrupted (dist/harness/tool.js:114-140). Never restore approval.
 export async function askHuman(input, { signal } = {}) {
-  if (!input || typeof input !== "object" || Array.isArray(input) ||
-    Object.keys(input).some((key) => !askFields.includes(key) && key !== "detail")) {
-    throw new Error("Ask input contains unsupported fields.");
-  }
+  validateFields(input, true);
   const { kind, question, detail } = input;
   if (!kinds.includes(kind) || typeof question !== "string" || !question.trim() || question.length > 4000) {
     throw new Error("Ask needs a supported kind and a question of 1 to 4000 characters.");
@@ -163,6 +176,12 @@ export const askHumanTool = defineTool({
     max: opt(int({ minimum: 1, maximum: 12 })),
   }),
   replay: "unsafe",
+  prepareArguments: (input) => {
+    // The Harness coerces schema values next; reject raw metadata before that.
+    validateFields(input);
+    presentationFor(input);
+    return input;
+  },
   execute: async (input, api, ctx) => {
     if (input && Object.hasOwn(input, "detail")) throw new Error("Ask tool input contains unsupported fields.");
     if (!Number.isSafeInteger(api.conversationId) || api.conversationId < ROOT_CONVERSATION_ID) {
