@@ -157,12 +157,13 @@ test("expiry closes and revokes even when no browser remains", async () => {
   } finally { await api.invalidate(f.run); await f.end() }
 })
 
-test("artifact candidate/run/agent/id/hash authorization and pending screenshots", async () => {
+test("canonical reviewed transcript MIME lists and downloads with exact result agreement; screenshots stay withheld", async () => {
   const hash = "a".repeat(64)
-  const manifest = { version: 1, run: "r1", agent: "a-1", sequence: 1, files: [{ id: "f1", kind: "screenshot", sha256: hash, bytes: 3, mime: "image/png", approval: "pending" }, { id: "t1", kind: "transcript", sha256: hash, bytes: 3, mime: "text/plain", approval: "not-required" }] }
+  const manifest = { version: 1, run: "r1", agent: "a-1", sequence: 1, files: [{ id: "f1", kind: "screenshot", sha256: hash, bytes: 3, mime: "image/png", approval: "pending" }, { id: "t1", kind: "transcript", sha256: hash, bytes: 3, mime: "text/plain; charset=utf-8", approval: "not-required" }] }
   const run = { owner: {}, candidates: [{ poc: "session:a-1:1", proven: false, evidence: { kind: "session", agent: "a-1", artifacts: { version: 1, run: "r1", agent: "a-1", poc: "session:a-1:1", manifest: "m-1" } } }] }
   const calls = []
-  const api = createSessionArtifactsApi({ getRun: (id) => id === "r1" ? run : null, rootOf: () => "/private/r1", store: async () => ({ listSessionArtifacts: () => manifest, readSessionArtifact: (_root, selectors) => { calls.push(selectors); return { data: Buffer.from("log"), mime: "text/plain" } }, releaseSessionScreenshot: (_root, selectors) => { calls.push(selectors) } }) })
+  let readMime = "text/plain; charset=utf-8"
+  const api = createSessionArtifactsApi({ getRun: (id) => id === "r1" ? run : null, rootOf: () => "/private/r1", store: async () => ({ listSessionArtifacts: () => manifest, readSessionArtifact: (_root, selectors) => { calls.push(selectors); return { data: Buffer.from("log"), mime: readMime } }, releaseSessionScreenshot: (_root, selectors) => { calls.push(selectors) } }) })
   const body = { candidate: "session:a-1:1" }
   await expect(api("r2", body)).rejects.toThrow()
   await expect(api("r1", { candidate: "session:a-2:1" })).rejects.toThrow()
@@ -176,7 +177,13 @@ test("artifact candidate/run/agent/id/hash authorization and pending screenshots
   expect(calls).toHaveLength(0)
   const data = await api("r1", body, "read", "t1")
   expect(data.data.toString()).toBe("log")
+  expect(data.mime).toBe("text/plain; charset=utf-8")
   expect(calls[0]).toEqual({ run: "r1", agent: "a-1", poc: body.candidate, id: "t1" })
+  readMime = "text/plain"
+  await expect(api("r1", body, "read", "t1")).rejects.toThrow()
+  manifest.files[1].mime = "text/html"
+  await expect(api("r1", body)).rejects.toThrow()
+  manifest.files[1].mime = "text/plain; charset=utf-8"
   run.candidates[0].evidence.artifacts.agent = "a-2"
   await expect(api("r1", body)).rejects.toThrow()
 })

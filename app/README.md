@@ -58,6 +58,8 @@ Private routes use authenticated same-origin JSON POSTs, except desktop close:
 
 Session files are bound to the run, agent, candidate sequence, and artifact ID.
 Downloads are bounded attachments with `no-store` and `nosniff`.
+Transcript manifests and downloads use `text/plain; charset=utf-8`; the read
+response MIME must match its manifest exactly.
 Screenshots stay withheld in this release. There is no pending-image read exception.
 Exact-image review and release require separate proof before they can be enabled.
 Session evidence remains unproven. Secret masking is not complete.

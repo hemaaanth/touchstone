@@ -220,7 +220,7 @@ export function createSessionArtifactsApi({ getRun, rootOf, store }) {
     let manifest
     try { manifest = await adapter.listSessionArtifacts(root, selectors) } catch { throw refused() }
     if (manifest?.version !== 1 || manifest.run !== runId || manifest.agent !== b.agent || manifest.sequence !== Number(sequence[2]) || !Array.isArray(manifest.files) || manifest.files.length > 14) throw refused()
-    const validFile = (f) => /^[A-Za-z0-9_-]{1,128}$/.test(f?.id ?? "") && /^[a-f0-9]{64}$/.test(f?.sha256 ?? "") && ["har", "transcript", "screenshot"].includes(f?.kind) && ["not-required", "pending", "released"].includes(f?.approval) && Number.isSafeInteger(f?.bytes) && f.bytes >= 0 && f.bytes <= (f.kind === "screenshot" ? 5 : 2) * 1024 * 1024 && f.mime === ({ har: "application/json", transcript: "text/plain", screenshot: "image/png" })[f.kind]
+    const validFile = (f) => /^[A-Za-z0-9_-]{1,128}$/.test(f?.id ?? "") && /^[a-f0-9]{64}$/.test(f?.sha256 ?? "") && ["har", "transcript", "screenshot"].includes(f?.kind) && ["not-required", "pending", "released"].includes(f?.approval) && Number.isSafeInteger(f?.bytes) && f.bytes >= 0 && f.bytes <= (f.kind === "screenshot" ? 5 : 2) * 1024 * 1024 && f.mime === ({ har: "application/json", transcript: "text/plain; charset=utf-8", screenshot: "image/png" })[f.kind]
     if (!manifest.files.every(validFile)) throw refused()
     // Rebuild, rather than serializing unexpected store metadata.
     const safe = { version: 1, run: runId, agent: b.agent, sequence: manifest.sequence, files: manifest.files.map(({ id, kind, sha256, bytes, mime, approval }) => ({ id, kind, sha256, bytes, mime, approval })) }
