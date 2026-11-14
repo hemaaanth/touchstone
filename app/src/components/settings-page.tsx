@@ -954,8 +954,13 @@ function DaytonaEditor({ ex, use, onSaved, onCancel }: { ex: ExecutionSetting; u
     const timer = setInterval(() => {
       fetchShellSetup().then((state) => {
         if (!live) return
-        setShell(state)
-        if (state.state !== "pending" && state.state !== "unknown") fetchSettings().then((s) => { if (live) onSaved(s) }).catch(() => {})
+        if (state.state === "pending" || state.state === "unknown") setShell(state)
+        else fetchSettings().then((s) => {
+          if (!live) return
+          // Keep polling mounted until Settings and the run dialog can refresh.
+          setShell(state)
+          onSaved(s)
+        }).catch(() => {})
       }).catch(() => {})
     }, 2000)
     return () => { live = false; clearInterval(timer) }
