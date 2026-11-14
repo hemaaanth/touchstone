@@ -265,3 +265,30 @@ test("option list owns the custom reply while receipts stay read-only", () => {
   expect(receipt).not.toContain("Custom answer")
   expect(receipt).not.toContain("Run tests")
 })
+
+
+test("a refused choice cannot replace a later accepted custom reply", async () => {
+  const { readFileSync } = await import("node:fs")
+  const { runInNewContext } = await import("node:vm")
+  const source = readFileSync(new URL("../src/components/ask-human.tsx", import.meta.url), "utf8")
+  const start = source.indexOf("  const [drafts,", source.indexOf("export function AskHumanProvider"))
+  const body = source.slice(start, source.indexOf("  return <AskContext.Provider", start))
+  const runtime = globalThis as unknown as { Bun: { Transpiler: new (options: { loader: "tsx" }) => { transformSync(source: string): string } } }
+  const js = new runtime.Bun.Transpiler({ loader: "tsx" }).transformSync(`function provider({runId,state,live}) {${body}; return {submit,current};}`)
+  let calls = 0
+  const provider = runInNewContext(js + ";provider", {
+    useState: () => [{}, () => {}], useRef: (value: unknown) => ({ current: value }), useEffect: () => {},
+    AskAnswerError,
+    answerRunAsk: async () => {
+      if (++calls === 1) throw new AskAnswerError("Not sent", false)
+      return { ok: true, receipt: { id: "q", agent: "coordinator", answer: "reply", text: "Custom accepted answer" } }
+    },
+    fetchRun: () => { throw Error("A definite pre-send refusal must not reconcile") }, reloadRun: () => {},
+  })
+  const ask = { id: "q", agent: "coordinator" }
+  const context = provider({ runId: "fixture", state: { humanAsks: [ask] }, live: true })
+  await expect(context.submit(ask, { ask: "q", reply: "Selected option: scan (Scan source)" }, ["scan"])).rejects.toThrow("Not sent")
+  await context.submit(ask, { ask: "q", reply: "Custom accepted answer" })
+  expect(context.current.current.drafts.q.choices).toBeUndefined()
+  expect(context.current.current.drafts.q.accepted.text).toBe("Custom accepted answer")
+})

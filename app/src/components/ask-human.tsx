@@ -44,7 +44,7 @@ export function AskHumanProvider({ runId, state, live, children }: { runId: stri
     if ("reply" in body && (!body.reply.trim() || body.reply.length > 4000)) throw new Error("Enter a reply of 1 to 4,000 characters.")
     if (draft.uncertain && JSON.stringify(draft.candidate) !== JSON.stringify(body)) throw new Error("Delivery is uncertain. Retry the original answer or refresh its status.")
     sending.current.add(ask.id)
-    patch(ask.id, { pending: true, error: undefined, candidate: body, ...(choices ? { choices } : {}) })
+    patch(ask.id, { pending: true, error: undefined, candidate: body, choices })
     try {
       const result = await answerRunAsk(runId, body)
       const expected = "reply" in body ? "reply" : body.done ? "done" : "cancel"
