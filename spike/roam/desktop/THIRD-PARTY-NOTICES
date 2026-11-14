@@ -1,0 +1,46 @@
+Sandboxes bundles no third-party viewer code. Its desktop viewer is served by
+voxl, which the sandbox image builds from source.
+
+voxl 0.3.3 (MIT)
+Source: https://github.com/tembo/voxl/tree/v0.3.3
+Source package: https://crates.io/crates/voxl-server/0.3.3
+
+The image builds voxl with `cargo install voxl-server --locked`. Its license and
+the Cargo.lock that lists every statically linked Rust crate are installed at
+/usr/share/doc/voxl in the image.
+
+voxl links these Debian bookworm shared libraries at run time:
+
+    libx264-164   x264        GPL-2.0-or-later
+    libyuv0       libyuv      BSD-3-Clause
+    libopus0      Opus        BSD-3-Clause
+    libpulse0     PulseAudio  LGPL-2.1-or-later
+
+Because voxl links x264, the voxl program in the image is distributed under the
+terms of the GNU General Public License, version 2 or later. Its complete
+corresponding source is the voxl source above, the Dockerfile in this package,
+and the Debian source packages, which `apt-get source x264 libyuv opus
+pulseaudio` retrieves on bookworm. Each library's Debian copyright file is in
+/usr/share/doc/<package>/copyright in the image.
+
+MIT License
+
+Copyright (c) 2026 Tembo
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
