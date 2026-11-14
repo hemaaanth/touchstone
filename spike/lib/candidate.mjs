@@ -466,9 +466,10 @@ const text = (value, isError = false) => ({ output: [{ type: "text", text: value
 export async function checkCandidate({ pack, state, lookup, args, scrub = scrubValue, scrubLine = scrubText, packText = false }) {
   state.candidates ??= [];
   const poc = String(args.poc ?? "").trim();
+  const known = (value) => state.sessionSecrets?.length ? scrubSessionValue(value, state.sessionSecrets) : value;
   const refuse = (reason, message) => {
-    event("candidate-rejected", { poc, reason });
-    return { refused: message, reason };
+    event("candidate-rejected", { poc: known(poc), reason });
+    return { refused: known(message), reason };
   };
   // The cap is the agent's: a measured candidate (made by the engine) never counts.
   if (state.candidates.filter((c) => c.origin !== "measured").length >= CANDIDATE_CAP) {
@@ -517,14 +518,14 @@ export async function checkCandidate({ pack, state, lookup, args, scrub = scrubV
   // Max + 1, so a number is never reused after a candidate is superseded.
   const n = Math.max(0, ...state.candidates.map((c) => c.n)) + 1;
   // The pack's own scrub first (it knows its secret shapes), then the shared one.
-  const line = (t) => scrubText(scrubLine(String(t ?? "")));
+  const line = (t) => scrubText(scrubLine(known(String(t ?? ""))));
   const candidate = makeCandidate({
     n, pack, poc: recordPoc, severity, rootCause, evidenceHash,
     title: line(own ? own.title : args.title),
     explanation: line(explanation),
     // Scrubbed as one text, so a seed split over several cites is caught too.
     cites: line(cites.join("\n")).split("\n"),
-    evidence: scrubValue(scrub(attempt.evidence)),
+    evidence: scrubValue(scrub(known(attempt.evidence))),
   });
   state.candidates.push(candidate);
   event("candidate-submitted", { candidate });
@@ -654,8 +655,8 @@ export const EVIDENCE_POC = "the id of a lead whose evidence replay ran in this 
 // A free-roam child (Wave 4). It has no pack tool and no proof model. Its
 // attempt is its session: each shell command it ran on its own machine, and
 // each request the machine's proxy log reported. The entries are kept per
-// agent, in memory only (state.session: agent -> entries; audit-state.mjs
-// does not save them, so a follow-up worker starts with an empty session).
+// agent, in memory only (state.session: agent -> entries). audit-state.mjs
+// persists action counters, not cite text. A restart needs a new action.
 //
 // Nothing a free-roam child ran is a proof. sessionLookup has no `proved`
 // path, and makeCandidate sets `proven: false`.
@@ -665,14 +666,37 @@ export const SESSION_POC = "the session id from the line that starts with \"sess
 
 // The description of submit_session_candidate. A free-roam child has no
 // submit_finding, so the text does not name it.
-export const SESSION_DESCRIPTION = `Record a CANDIDATE from your shell session: a serious problem your own commands showed. It is stored as unproven and agent-asserted, and queued for human review. It never counts as a finding: nothing in a free-roam session is a proof. Cite exact lines from your shell results. A second candidate needs a new shell command first. At most ${CANDIDATE_CAP} per run.`;
+export const SESSION_DESCRIPTION = `Record a CANDIDATE from your shell session: a serious problem your own commands showed. It is stored as unproven and agent-asserted, and queued for human review. It never counts as a finding: nothing in a free-roam session is a proof. Cite exact lines from your shell results. A second candidate needs a new shell, browser or ask action first. At most ${CANDIDATE_CAP} per run.`;
 
 const SESSION_OUTPUT = 16_000;
 const SESSION_HOSTS = 60;
 const EGRESS_NOTE = "proxy log; a request that does not use the proxy is not listed";
 
 const shellsOf = (list) => list.filter((e) => e.kind === "shell");
-const sessionId = (agent, list) => `session:${agent}:${shellsOf(list).length}`;
+const sessionId = (agent, state) => `session:${agent}:${state.sessionSequence?.get(agent) ?? 0}`;
+
+// Known values supplement the shared scrub; they do not replace its shape rules.
+// Include encoded and case-folded copies, including hosts normalized by URL.
+export function scrubSessionValue(value, secrets = []) {
+  const forms = new Set();
+  for (const secret of secrets) {
+    if (!secret) continue;
+    const text = String(secret);
+    forms.add(text);
+    forms.add(encodeURIComponent(text));
+    forms.add(Buffer.from(text).toString("base64"));
+    forms.add(Buffer.from(text).toString("base64url"));
+    forms.add(Buffer.from(text).toString("hex"));
+  }
+  const patterns = [...forms].sort((a, b) => b.length - a.length).map((s) => new RegExp(s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"));
+  const known = (v) => {
+    if (typeof v === "string") return patterns.reduce((s, re) => s.replace(re, MARK), v);
+    if (Array.isArray(v)) return v.map(known);
+    if (v && typeof v === "object") return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, known(x)]));
+    return v;
+  };
+  return scrubValue(known(value));
+}
 
 // The last 16 000 characters. A cut can split a secret, and half a secret has
 // no shape a rule knows. So the first line after the cut, a partial one, is
@@ -701,9 +725,11 @@ function hostOf(method, url) {
 const oneLine = (v) => String(v ?? "").replace(/[\u0000-\u001f\u007f]/g, " ");
 
 // Store one entry of a free-roam child's session, scrubbed. Returns the
-// session id after this entry and, for a shell entry, the scrubbed output.
+// session id after this entry and, for shell/browser, the scrubbed output.
 //   entry: { agent, kind: "shell",  t, sandbox, command, exit_code, output }
 //        | { agent, kind: "egress", t, method, url, status }
+//        | { agent, kind: "browser", t, sandbox, action, url, status, output }
+//        | { agent, kind: "ask", t, id, ask_kind, answer: outcomeLabel }
 //
 // THE SCRUB IS A SAFETY RULE, AND IT IS NOT COMPLETE. The server does not
 // scrub a candidate's evidence again (app/server/candidates.mjs), and `shell`
@@ -711,9 +737,9 @@ const oneLine = (v) => String(v ?? "").replace(/[\u0000-\u001f\u007f]/g, " ");
 // leave this function, in the return value or in state.
 //
 // The four-step scrub masks known secret shapes. It is not complete. The
-// engine's own secrets cannot be in a session: nothing from the host goes to
-// the machine (I1). A secret the child finds on the open web can stay if it
-// has no known shape. The record is shown only in the owner's console.
+// caller must supply known granted values in state.sessionSecrets before
+// recording output. An unknown secret can remain if it has no known shape.
+// The record is shown only in the owner's authenticated console.
 //
 // Known to pass unmasked today (test/candidate-session.test.mjs lists each):
 // a value in a header with no secret name, a token in a URL path, a reset
@@ -723,66 +749,88 @@ const oneLine = (v) => String(v ?? "").replace(/[\u0000-\u001f\u007f]/g, " ");
 // egress url loses its userinfo ("user:password@", also in a tunnel's
 // "<host>:<port>"), because a user-only or password-only form has no shape a
 // rule knows. The steps:
-//   1. Known secret values (state.sessionSecrets; empty until I5 fills it).
-//      shortcut: exact copies only. capture.mjs's holdsSecret (parts and
-//      encoded forms) is not used: capture.mjs loads the grant store. Upgrade
-//      when I5 puts a first value in the list.
+//   1. Known values and their encoded/case-folded copies (sessionSecrets).
+//      shortcut: fragments split across entries are not matched; upgrade to
+//      stream-aware checking before accepting split credential output.
 //   2. redactSecrets over the entry as an object, so it masks by name too.
 //   3. Its 64 KB rule: a longer string is masked whole.
 //   4. The candidate's own rules (scrubValue does 2 to 4).
 export function recordSession(state, entry) {
   const agent = String(entry?.agent ?? "");
-  if (!agent) throw new Error("a session entry needs an agent");
-  const known = (state.sessionSecrets ?? []).filter(Boolean).map(String);
-  const clean = (v) => known.reduce((s, secret) => s.split(secret).join(MARK), String(v ?? ""));
-  const t = Number(entry.t) || 0;
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(agent)) throw new Error("a session entry needs an agent");
+  if (currentAgent() && String(currentAgent()) !== agent) throw new Error("session owner mismatch");
+  const clean = (v) => scrubSessionValue(String(v ?? ""), state.sessionSecrets ?? []);
+  const urlOf = (v) => clean(oneLine(v).replace(/^((?:[a-z][a-z0-9+.-]*:)?\/+)?(?:[^\/?#@]*@)+/i, "$1"));
+  const t = Number.isFinite(entry.t) ? entry.t : 0;
   let e;
   if (entry.kind === "shell") {
     const code = Number(entry.exit_code);
     e = { kind: "shell", t, sandbox: clean(entry.sandbox), command: clean(entry.command), exit_code: Number.isFinite(code) ? code : null, output: clean(lastOutput(entry.output)) };
   } else if (entry.kind === "egress") {
     const method = oneLine(entry.method).toUpperCase();
-    const url = oneLine(entry.url).replace(/^((?:[a-z][a-z0-9+.-]*:)?\/\/)?[^\/?#@]*@/i, "$1");
-    e = { kind: "egress", t, method: clean(method), url: clean(url), host: clean(hostOf(method, url)), status: Number.isInteger(entry.status) ? entry.status : null };
+    const url = urlOf(entry.url);
+    e = { kind: "egress", t, method: clean(method), url, host: clean(hostOf(method, url)), status: Number.isInteger(entry.status) ? entry.status : null };
+  } else if (entry.kind === "browser") {
+    if (!["open", "read", "click", "type", "screenshot"].includes(entry.action)) throw new Error("invalid browser action");
+    e = { kind: "browser", t, sandbox: clean(entry.sandbox), action: entry.action, url: urlOf(entry.url), status: Number.isInteger(entry.status) ? entry.status : null, output: clean(lastOutput(entry.output)) };
+    // Screenshot paths/bytes/approval are not session text. Only the artifact
+    // store can quarantine and release pixels through the trusted app route.
+  } else if (entry.kind === "ask") {
+    if (!["done", "reply", "cancel", "timeout", "interrupted"].includes(entry.answer)) throw new Error("invalid ask outcome");
+    e = { kind: "ask", t, id: clean(oneLine(entry.id)), ask_kind: clean(oneLine(entry.ask_kind)), answer: entry.answer };
   } else {
-    throw new Error(`unknown session entry kind: ${String(entry.kind).slice(0, 40)}`);
+    throw new Error("unknown session entry kind");
   }
-  e = scrubValue(e);
+  e = scrubSessionValue(e, state.sessionSecrets ?? []);
   state.session ??= new Map();
+  state.sessionSequence ??= new Map();
+  if (e.kind !== "egress") {
+    const next = (state.sessionSequence.get(agent) ?? 0) + 1;
+    if (!Number.isSafeInteger(next)) throw new Error("session sequence exhausted");
+    // auditState persists this before the entry can be returned or cited.
+    state.sessionSequence.set(agent, next);
+    state.sessionArtifacts?.delete(agent);
+  }
   if (!state.session.has(agent)) state.session.set(agent, []);
   const list = state.session.get(agent);
   list.push(e);
-  return { poc: sessionId(agent, list), output: e.kind === "shell" ? e.output : "" };
+  return { poc: sessionId(agent, state), output: e.kind === "shell" || e.kind === "browser" ? e.output : "" };
 }
 
 // The lines a candidate may cite. They are built from the stored entries, so
 // they are the same scrubbed text `shell` showed the model.
-const sessionLines = (e) => (e.kind === "shell"
-  ? `$ ${e.command}\nexit ${e.exit_code}\n${e.output}`
-  : `> ${e.method} ${e.url} ${e.status ?? (e.method === "CONNECT" ? "tunnel" : "no status")}`);
+const sessionLines = (e) => {
+  if (e.kind === "shell") return `$ ${e.command}\nexit ${e.exit_code}\n${e.output}`;
+  if (e.kind === "browser") return `browser ${e.action} ${e.url} ${e.status ?? "no status"}\n${e.output}`;
+  if (e.kind === "ask") return `ask ${e.id} ${e.ask_kind} ${e.answer}`;
+  return `> ${e.method} ${e.url} ${e.status ?? (e.method === "CONNECT" ? "tunnel" : "no status")}`;
+};
 
 // The lookup of submit_session_candidate. The caller is the fleet's agent tag
 // (currentAgent), never an argument, so an agent reads only its own entries.
-// Only the current id is taken: "session:<agent>:<its shell entries now>".
+// Only the current id is taken: "session:<agent>:<persisted action sequence>".
 // It returns null or { evidence, text }. It never returns { proved: true }.
 export function sessionLookup(state) {
   return (poc) => {
     const agent = currentAgent();
     const list = agent ? state.session?.get(String(agent)) : null;
     const shells = shellsOf(list ?? []);
-    if (!shells.length || poc !== sessionId(agent, list)) return null;
+    if (!list?.some((e) => e.kind !== "egress") || poc !== sessionId(String(agent), state)) return null;
     const requests = list.filter((e) => e.kind === "egress");
+    const capture = state.sessionArtifacts?.get(String(agent));
+    const attached = capture?.artifacts?.agent === String(agent) && capture.artifacts.poc === poc ? capture : null;
     const hosts = [...new Set(requests.map((e) => e.host).filter(Boolean))].slice(0, SESSION_HOSTS);
     return {
       evidence: {
         kind: "session",
         agent: String(agent),
-        sandbox: shells.at(-1).sandbox,
+        sandbox: list.findLast((e) => e.sandbox)?.sandbox ?? "",
         shell: { commands: shells.length, sha256: sha256(shells.map(sessionLines).join("\n")) },
         // "requests" are the requests seen by the log, not all requests.
         egress: { requests: requests.length, hosts, note: EGRESS_NOTE },
-        har: null,
+        har: attached?.har ?? null,
         screenshots: [],
+        ...(attached ? { artifacts: attached.artifacts } : {}),
       },
       text: list.map(sessionLines).join("\n"),
     };

@@ -33,7 +33,7 @@ test("recordSession returns the per-agent session id and the output", () => {
   // Another agent has its own count.
   assert.equal(shell(state, "a-2", "id", "uid=0(root)\n").poc, "session:a-2:1");
   assert.throws(() => recordSession(state, { kind: "shell", command: "id" }), /needs an agent/);
-  assert.throws(() => recordSession(state, { agent: "a-1", kind: "browser" }), /unknown session entry kind/);
+  assert.throws(() => recordSession(state, { agent: "a-1", kind: "unknown" }), /unknown session entry kind/);
 });
 
 test("a session candidate is unproven, with the session evidence and its text lines", async () => {
@@ -390,4 +390,81 @@ test("candidateTool: the name and the description are optional, and the packs' t
   assert.match(tool.description, /unproven/);
   assert.equal(tool.parameters.properties.poc.description, SESSION_POC);
   assert.equal(SESSION_POC, 'the session id from the line that starts with "session" in your last shell result, like session:a-12:3');
+});
+
+test("browser-only evidence has a valid owner-bound session and scrubbed model output", async () => {
+  const state = { ...newState(), sessionSecrets: [VALUE] };
+  const r = recordSession(state, { agent: "a-1", kind: "browser", t: 3, sandbox: "browser-machine", action: "open", url: `https://alice:${VALUE}@example.org/?token=${VALUE}`, status: 200, output: `exported 4120 customer rows\nAPI_KEY=${VALUE}`, screenshot: { path: "/secret.png", approved: true, bytes: VALUE }, proven: true });
+  assert.equal(r.poc, "session:a-1:1");
+  assert.ok(!r.output.includes(VALUE));
+  const own = await lookupAs(state, "a-1", r.poc);
+  assert.equal(own.evidence.shell.commands, 0);
+  assert.equal(own.evidence.sandbox, "browser-machine");
+  assert.deepEqual(own.evidence.screenshots, []);
+  assert.ok(!JSON.stringify(own).includes(VALUE));
+  assert.ok(!kept(state).includes("/secret.png"));
+  assert.equal(await lookupAs(state, "a-11", r.poc), null);
+  assert.equal(own.proved, undefined);
+  assert.match(said(await submit(state, "a-1", args(r.poc, "exported 4120 customer rows"))), /Recorded candidate/);
+  assert.equal(state.candidates[0].proven, false);
+  const next = recordSession(state, { agent: "a-1", kind: "browser", action: "read", output: "new page evidence" });
+  assert.equal(next.poc, "session:a-1:2");
+  assert.equal(await lookupAs(state, "a-1", r.poc), null);
+});
+
+test("ask records outcomes only, advances sequence, and never stores the human reply", async () => {
+  const state = newState();
+  for (const [index, answer] of ["done", "reply", "cancel", "timeout", "interrupted"].entries()) {
+    const r = recordSession(state, { agent: "a-1", kind: "ask", id: `ask-${index}`, ask_kind: "takeover", answer, reply: VALUE, output: VALUE, approved: true });
+    assert.equal(r.poc, `session:a-1:${index + 1}`);
+    assert.equal(r.output, "");
+  }
+  const own = await lookupAs(state, "a-1", "session:a-1:5");
+  assert.match(own.text, /ask ask-1 takeover reply/);
+  assert.ok(!`${own.text}${kept(state)}`.includes(VALUE));
+  assert.throws(() => recordSession(state, { agent: "a-1", kind: "ask", answer: VALUE }), /invalid ask outcome/);
+  assert.equal(state.sessionSequence.get("a-1"), 5);
+});
+
+test("known secret variants and normalized GET hosts stay out of session output and evidence", async () => {
+  const secret = "UpperCaseSecretValue99+/?";
+  const state = { ...newState(), sessionSecrets: [secret, VALUE] };
+  const variants = [secret, secret.toLowerCase(), encodeURIComponent(secret), Buffer.from(secret).toString("base64"), Buffer.from(secret).toString("base64url"), Buffer.from(secret).toString("hex")];
+  const r = shell(state, "a-1", variants.join(" "), variants.join("\n"));
+  egress(state, "a-1", "GET", `http://${VALUE.toLowerCase()}.example.org/`, 200);
+  egress(state, "a-1", "GET", `http://user:p@${VALUE}@example.org/`, 200);
+  const own = await lookupAs(state, "a-1", r.poc);
+  const text = `${r.output}${JSON.stringify(own)}${kept(state)}`;
+  for (const v of [...variants, VALUE, VALUE.toLowerCase()]) assert.ok(!text.includes(v), v);
+});
+
+test("recordSession refuses an agent mismatch before recording or advancing", () => {
+  const state = newState();
+  assert.throws(() => withAgent("a-1", () => shell(state, "a-11", "id", "root")), /owner mismatch/);
+  assert.equal(state.sessionSequence, undefined);
+  assert.equal(state.session, undefined);
+});
+
+test("known secrets stay out of candidate prose, events and rejected tool output", async (t) => {
+  const events = [];
+  t.mock.method(console, "log", (line) => events.push(String(line)));
+  const state = newState();
+  const secret = "Opaque+value/with=Encoding99";
+  state.sessionSecrets = [secret];
+  const { poc } = shell(state, "a-1", "read", "exported 4120 customer rows");
+  const forms = [secret, secret.toLowerCase(), encodeURIComponent(secret), Buffer.from(secret).toString("base64"), Buffer.from(secret).toString("base64url"), Buffer.from(secret).toString("hex")];
+  for (const form of forms) {
+    const bad = await submit(state, "a-1", args(poc, `missing ${form}`));
+    assert.equal(bad.isError, true);
+    assert.ok(!said(bad).includes(form));
+    const missing = await submit(state, "a-1", args(`session:a-1:${form}`, "exported 4120 customer rows"));
+    assert.equal(missing.isError, true);
+    assert.ok(!said(missing).includes(form));
+  }
+  const valid = { ...args(poc, "exported 4120 customer rows"), title: forms.join(" "), explanation: `${forms.join(" ")}\nFix: require login.` };
+  const result = await submit(state, "a-1", valid);
+  assert.ok(!result.isError);
+  assert.ok(events.some((line) => line.includes("candidate-submitted")));
+  assert.ok(events.some((line) => line.includes("candidate-rejected")));
+  for (const form of forms) assert.ok(!`${said(result)}${kept(state)}${events.join("\n")}`.includes(form));
 });
