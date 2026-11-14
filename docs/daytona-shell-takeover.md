@@ -52,6 +52,114 @@ The current Daytona account rejected custom snapshot creation with HTTP 403;
 that optional path has synthetic lifecycle proof, not a successful live build.
 The available built-in snapshot is the verified working path.
 
+## Next few hours — execution plan
+
+This extends the existing delivery slices below. Time ranges are working budgets,
+not a promise to merge code before its checks pass. Finish one accepted slice at
+a time, commit task-owned files, and keep local main and `origin/main` in sync.
+
+### First: review and land the open PR
+
+The owner referred to one open PR. Inspection found two:
+
+- Primary: [PR #9 — incident coverage, fork replay and harm oracles](https://github.com/hemaaanth/touchstone/pull/9),
+  inspected head `77386e0e8c1775f960d544279d0618d0f135645d`.
+- Also assess: [PR #8 — reliable spike tests with/without Docker](https://github.com/hemaaanth/touchstone/pull/8),
+  inspected head `4bc49d3cf28381ea89901db1ca7b9d3601a50cb5`.
+
+Both reported merge conflicts and no status checks at inspection. Earlier author
+results are useful evidence, not a current-main pass. Treat #9 as the requested
+landing target. Review #8 as well; land it only if its remaining change is useful
+and its shared-Docker cleanup is safe. Do not close or merge a stale PR by guess.
+
+**Build/reconcile:** inspect the complete diff, current main and active author
+state; resolve conflicts while retaining the run request recovery, provider
+support, Daytona readiness/journal and release isolation repairs. Use a task
+branch and normal commits. Do not overwrite another writer or force-push history.
+
+**Test:** run isolated focused tests for attack-class/schema propagation,
+failed-scanner reporting, pinned fork configuration, RPC storage/redaction,
+module admission and both new harm oracles. Include negative controls that must
+not produce a proven finding. Check unforked runs retain their existing network
+behavior. Exercise Settings, scope pins and disabled modules with synthetic RPCs
+in the real UI. Keep the existing proven-finding boundary intact.
+
+For #8, inspect cleanup ownership and test with fakes or an isolated daemon.
+Never run its pre-test pruning or host installer against the shared host. Check
+missing-Docker behavior without disguising a failed Docker test as a pass.
+
+**Land/release:** require independent review of the final assembled candidate,
+re-read the PR head and current checks, then use a guarded normal merge when
+ready. Follow the existing immutable 5190 release path. Verify merged revision,
+release revision and changed behavior separately. If a PR is blocked, record the
+specific defect or external dependency and continue the independent slices.
+
+### Working order and checkpoints
+
+1. **Opening checkpoint, roughly 0–30 minutes:** freeze the source/PR heads,
+   inspect conflicts and checks, select focused tests and establish a clean
+   integration branch. Start bounded independent review through a legitimate BB
+   thread. Preserve current main and the running owner release.
+2. **PR block, roughly 30–120 minutes:** reconcile and repair #9, run its focused
+   proof, and land if qualified. Assess #8 without executing broad cleanup.
+   A proof or credential blocker does not hold up unrelated UI/capacity work.
+3. **Setup/capacity block, roughly 2–3 hours:** reconcile `725be18` and `95ee58f`.
+   Deliver the demo distinction, stable form and clear module validation, then
+   the 50-child ceiling and deliberate multiple free-roam children. Test keyboard
+   and narrow-screen behavior, submission payloads, cap/reuse/fallback rules,
+   shared budget and lazy per-child allocation. No 50-machine live burst.
+4. **Ask block, roughly 3–4+ hours:** reconcile the worker/session cleanup repair
+   `42a267a` needed by `d5aef0f`, then deliver inline questions, immediate sending
+   feedback, accepted history and uncertain retry handling. Test real reducer,
+   HTTP and worker-ack paths, late/duplicate/mismatched acknowledgements,
+   stop/restart, child read-only composition and synthetic browser interaction.
+   Keep unverified desktop features disabled until their runtime passes proof.
+5. **Next independent block:** finish browser/Watch/takeover runtime integration,
+   then session evidence in the order below. Use synthetic protocols and local
+   owned fixtures first. Prove pause before input, cleanup before resume,
+   worker/machine identity, expiry and stale responses. Resolve image review
+   before machine deletion; do not add indefinite retention as a shortcut.
+6. **At every accepted delivery:** focused checks and independent review of the
+   exact commit; stage only task-owned files; commit and push. Cut over 5190 only
+   while there are no active runs or unresolved setup operations. Preserve its
+   private state. Observe the changed flow through bb-browser, confirm previous
+   readiness and recorded runs remain intact, and stop temporary test servers.
+
+Do not run a full final suite, upgrade dependencies or add a second persistent
+app. Use the existing skills and one source writer per checkout. After two
+repair/review cycles on one defect, reassess that slice rather than repeating
+unchanged tests or letting it consume every other delivery.
+
+### Owner input and unattended fallback
+
+No owner input is needed for source reconciliation, UI work, synthetic tests,
+local owned fixtures, code review or landing a PR that meets the authorized gates.
+Use reasonable existing defaults and keep all supported product model families.
+DeepSeek-only applies to agent-initiated live inference tests, not the product.
+
+Possible external needs are:
+
+- **Custom Daytona image permission:** the current account returned HTTP 403.
+  The built-in shell snapshot already works. Continue source and local-container
+  browser proof; do not retry unchanged forbidden builds or bypass the account
+  permission through another endpoint. Record any headed-image requirement.
+- **A chain RPC for live fork acceptance:** not needed for offline oracle tests,
+  synthetic RPC/admission checks or UI proof. If an appropriate approved endpoint
+  is unavailable, leave live chain replay explicitly unverified and continue.
+- **A real-model assessment:** use only an already authorized owned target,
+  provider and spending limit. If those are not established for a specific test,
+  continue with fake inference and owned loopback fixtures; do not request secrets
+  in chat, invent credentials or claim paid-assessment acceptance.
+- **Human login, CAPTCHA or secret entry:** record the exact manual step and
+  continue another independent slice. Model-visible Ask Reply is not secret entry.
+- **An active owner run:** continue implementation/review in isolation and defer
+  the release switch until idle. Do not stop the run to meet a time estimate.
+
+The next-few-hours target is a reviewed PR landing plus accepted setup/capacity
+and Ask slices as their checks permit. Browser/evidence work continues afterward
+or while a truly external dependency blocks an earlier slice. Report build,
+review, merge, deployment and live-proof states separately.
+
 ## Remaining delivery slices
 
 This reuses the historical handoff at `b2d391e:docs/HANDOFF-2026-11-14.md`,
