@@ -29,11 +29,11 @@ async function engine(t) {
   return { ...api, events };
 }
 
-async function open(storage, api) {
+async function open(storage, api, input = request) {
   const faux = fauxProvider({ tokensPerSecond: 100000 });
   faux.setResponses(Array.from({ length: 8 }, () => (generation) => {
     const last = generation.messages.findLast((m) => m.role !== "system");
-    return last.role === "user" ? answer([call("ask_human", request)], { stopReason: "toolUse" }) : answer("Finished.");
+    return last.role === "user" ? answer([call("ask_human", input)], { stopReason: "toolUse" }) : answer("Finished.");
   }));
   const models = createModels();
   models.setProvider(faux.provider);
@@ -53,7 +53,7 @@ if (process.env.ASK_CRASH_DB) {
 } else {
   test("matching ID resolves once; answer event keeps the asking identity", async (t) => {
     const e = await engine(t);
-    const pending = withAgent("a-2", () => e.askHuman({ ...request, detail: { task: "review" }, agent: "a-forged" }));
+    const pending = withAgent("a-2", () => e.askHuman({ ...request, detail: { task: "review" } }));
     const ask = e.events[0];
     assert.equal(ask.agent, "a-2");
     assert.deepEqual(ask.detail, { task: "review" });
@@ -179,13 +179,190 @@ if (process.env.ASK_CRASH_DB) {
   test("ordinary tool derives identity from runtime, not model or inherited tags", async (t) => {
     const e = await engine(t);
     for (const conversationId of [ROOT_CONVERSATION_ID, 7]) {
-      const wait = withAgent("a-forged", () => e.askHumanTool.execute({ ...request, agent: "a-model", id: "forged" }, { conversationId }, ctx));
+      const wait = withAgent("a-forged", () => e.askHumanTool.execute(request, { conversationId }, ctx));
       const ask = e.events.at(-1);
       assert.equal(ask.agent, conversationId === ROOT_CONVERSATION_ID ? "coordinator" : "a-7");
       e.answerAsk({ ask: ask.id, reply: "  ordinary reply  " });
       assert.deepEqual(await wait, { output: [{ type: "text", text: "ordinary reply" }] });
     }
     await assert.rejects(e.askHumanTool.execute(request, {}, ctx), /trusted conversation ID/);
+  });
+
+  test("old asks and answer events keep their exact keys", async (t) => {
+    const e = await engine(t);
+    for (const input of [request, { ...request, detail: { task: "review" } }]) {
+      const wait = e.askHuman(input);
+      const ask = e.events.at(-1);
+      assert.deepEqual(Object.keys(ask).sort(), [
+        "agent", ...(input.detail === undefined ? [] : ["detail"]), "ev", "id", "kind", "question", "t",
+      ].sort());
+      assert.equal(e.answerAsk({ ask: ask.id, done: false }), true);
+      assert.deepEqual(await wait, { done: false });
+      assert.deepEqual(Object.keys(e.events.at(-1)).sort(), ["agent", "answer", "ev", "id", "t"]);
+    }
+  });
+
+  const options = [
+    { id: "continue", label: "  Continue  ", description: "Keep the current plan." },
+    { id: "stop", label: "Stop" },
+  ];
+  test("single and multiple options emit normalized detached presentation, never approval", async (t) => {
+    const e = await engine(t);
+    for (const extra of [
+      {}, { select: "single" }, { select: "multiple" },
+      { select: "multiple", min: 2 }, { select: "multiple", max: 1 },
+      { select: "multiple", min: 2, max: 2 },
+    ]) {
+      const input = { ...request, options: structuredClone(options), ...extra };
+      const wait = withAgent("a-forged", () => e.askHumanTool.execute(input, { conversationId: 7 }, ctx));
+      const ask = e.events.at(-1);
+      assert.equal(ask.agent, "a-7");
+      const multiple = extra.select === "multiple";
+      assert.deepEqual(ask.presentation, {
+        options: [{ ...options[0], label: "Continue" }, options[1]],
+        select: multiple ? "multiple" : "single",
+        ...(multiple ? { min: extra.min ?? 1, max: extra.max ?? 2 } : {}),
+      });
+      input.options[0].label = "mutated";
+      assert.equal(ask.presentation.options[0].label, "Continue");
+      assert.equal(e.answerAsk({ ask: ask.id, reply: "Selected option: continue (Continue)" }), true);
+      assert.deepEqual(await wait, { output: [{ type: "text", text: "Selected option: continue (Continue)" }] });
+      assert.deepEqual(Object.keys(e.events.at(-1)).sort(), ["agent", "answer", "ev", "id", "t"]);
+      assert.equal(e.events.at(-1).answer, "reply");
+    }
+    const wait = e.askHuman({ ...request, options });
+    e.answerAsk({ ask: e.events.at(-1).id, reply: "An unlisted answer is still a reply." });
+    assert.deepEqual(await wait, { reply: "An unlisted answer is still a reply." });
+  });
+
+  const invalidChoices = [
+    ["non-question", { kind: "payment", options }],
+    ["empty options", { options: [] }],
+    ["one option", { options: [options[0]] }],
+    ["thirteen options", { options: Array.from({ length: 13 }, (_, i) => ({ id: `id-${i}`, label: "Choice" })) }],
+    ["null options", { options: null }],
+    ["non-array options", { options: "continue" }],
+    ["missing option", { options: new Array(2) }],
+    ["null option", { options: [null, options[1]] }],
+    ["duplicate id", { options: [options[0], options[0]] }],
+    ["missing id", { options: [{ label: "No id" }, options[1]] }],
+    ["non-string id", { options: [{ id: 7, label: "Choice" }, options[1]] }],
+    ["uppercase id", { options: [{ id: "Continue", label: "Choice" }, options[1]] }],
+    ["punctuation id", { options: [{ id: "a.b", label: "Choice" }, options[1]] }],
+    ["leading underscore id", { options: [{ id: "_a", label: "Choice" }, options[1]] }],
+    ["overlong id", { options: [{ id: "a".repeat(65), label: "Choice" }, options[1]] }],
+    ["empty id", { options: [{ id: "", label: "Choice" }, options[1]] }],
+    ["newline id", { options: [{ id: "a\n", label: "Choice" }, options[1]] }],
+    ["empty label", { options: [{ id: "a", label: " " }, options[1]] }],
+    ["missing label", { options: [{ id: "a" }, options[1]] }],
+    ["non-string label", { options: [{ id: "a", label: 7 }, options[1]] }],
+    ["overlong label", { options: [{ id: "a", label: "x".repeat(201) }, options[1]] }],
+    ["overlong description", { options: [{ id: "a", label: "Choice", description: "x".repeat(501) }, options[1]] }],
+    ["non-string description", { options: [{ id: "a", label: "Choice", description: null }, options[1]] }],
+    ["extra option field", { options: [{ ...options[0], approval: true }, options[1]] }],
+    ["selection without options", { select: "single" }],
+    ["minimum without options", { min: 1 }],
+    ["maximum without options", { max: 1 }],
+    ["minimum with default single", { options, min: 1 }],
+    ["maximum with single", { options, select: "single", max: 1 }],
+    ["invalid selection", { options, select: "all" }],
+    ["zero minimum", { options, select: "multiple", min: 0 }],
+    ["negative maximum", { options, select: "multiple", max: -1 }],
+    ["minimum greater than maximum", { options, select: "multiple", min: 2, max: 1 }],
+    ["maximum exceeds option count", { options, select: "multiple", max: 3 }],
+    ["fractional range", { options, select: "multiple", min: 1.5 }],
+    ["non-numeric range", { options, select: "multiple", max: "2" }],
+    ["non-finite range", { options, select: "multiple", max: Infinity }],
+    ["extra input field", { options, unexpected: true }],
+    ["forged identity", { agent: "coordinator" }],
+    ["model detail", { detail: { approval: true } }],
+    ["UTF-8 payload too large", { options: Array.from({ length: 12 }, (_, i) => ({
+      id: `id-${i}`, label: "Choice", description: "界".repeat(500),
+    })) }],
+  ];
+  for (const [name, extra] of invalidChoices) {
+    test(`invalid choice metadata is rejected: ${name}`, async (t) => {
+      const e = await engine(t);
+      const controller = new AbortController();
+      const wait = e.askHumanTool.execute({ ...request, ...extra }, { conversationId: 2 }, { ...ctx, abortSignal: controller.signal });
+      controller.abort();
+      await assert.rejects(wait, (error) => {
+        assert.match(error.message, /^[A-Z][^\n]+\.$/);
+        return true;
+      });
+      assert.deepEqual(e.events, []);
+    });
+  }
+
+  test("presentation accepts exactly 16384 UTF-8 bytes and rejects the next byte", async (t) => {
+    const e = await engine(t);
+    const choices = Array.from({ length: 12 }, (_, i) => ({
+      id: `id-${i}`, label: "x".repeat(200), description: "a".repeat(500),
+    }));
+    let remaining = 16384 - Buffer.byteLength(JSON.stringify({ options: choices, select: "single" }));
+    for (const option of choices) {
+      let text = "";
+      for (let i = 0; i < 500; i++) {
+        const bytes = Math.min(remaining, 2);
+        text += bytes === 2 ? "界" : bytes === 1 ? "é" : "a";
+        remaining -= bytes;
+      }
+      option.description = text;
+    }
+    assert.equal(remaining, 0);
+    const wait = e.askHuman({ ...request, options: choices });
+    const ask = e.events.at(-1);
+    assert.equal(Buffer.byteLength(JSON.stringify(ask.presentation)), 16384);
+    e.answerAsk({ ask: ask.id, done: false });
+    assert.deepEqual(await wait, { done: false });
+    const last = choices.at(-1);
+    last.description = last.description.slice(0, -1) + "é";
+    await assert.rejects(e.askHuman({ ...request, options: choices }), /16384/);
+  });
+
+  test("choice asks keep timeout, abort, disposal and per-agent pending rules", async (t) => {
+    const e = await engine(t);
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const input = { ...request, options };
+    const root = e.askHuman(input);
+    const controller = new AbortController();
+    const child = withAgent("a-2", () => e.askHuman(input, { signal: controller.signal }));
+    await assert.rejects(e.askHuman(input), /already has a pending ask/);
+    controller.abort();
+    assert.deepEqual(await child, { done: false });
+    t.mock.timers.tick(30 * 60_000);
+    assert.deepEqual(await root, { done: false });
+    const stopped = e.askHuman(input);
+    e.disposeAsks();
+    assert.deepEqual(await stopped, { done: false });
+    for (const event of e.events.filter((event) => event.ev === "ask-answered")) {
+      assert.deepEqual(Object.keys(event).sort(), ["agent", "answer", "ev", "id", "t"]);
+      assert.equal(event.answer, "cancel");
+    }
+  });
+
+  test("installed tool schema accepts choices and delivers them through trusted identity", { timeout: 10000 }, async (t) => {
+    const e = await engine(t);
+    let appeared;
+    const ask = new Promise((resolve) => { appeared = resolve; });
+    t.mock.method(console, "log", (line) => {
+      if (!line.startsWith("EVENT ")) return;
+      const event = JSON.parse(line.slice(6));
+      e.events.push(event);
+      if (event.ev === "ask-human") appeared(event);
+    });
+    const { harness, root } = await open(new MemoryStorage(), e, { ...request, options, select: "multiple" });
+    t.after(() => harness.close(ctx));
+    const sub = await root.submit({ type: "input", requestId: "choice-1", content: "Choose." }, ctx);
+    const event = await ask;
+    assert.equal(event.agent, "coordinator");
+    assert.equal(event.presentation.select, "multiple");
+    assert.deepEqual([event.presentation.min, event.presentation.max], [1, 2]);
+    const reply = "Selected options:\n- continue (Continue)";
+    assert.equal(e.answerAsk({ ask: event.id, reply }), true);
+    assert.equal((await sub.wait(ctx)).status, "done");
+    const view = await root.context(ctx);
+    assert.ok(view.messages.some((m) => m.role === "toolResult" && m.toolName === "ask_human" && m.content.some((p) => p.text === reply)));
   });
 
   test("installed runtime waits for an answer and closes without stranding asks", { timeout: 10000 }, async (t) => {
