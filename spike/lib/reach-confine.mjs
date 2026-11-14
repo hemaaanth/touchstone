@@ -142,10 +142,12 @@ export async function confineReach({ allowedHosts = [], allowPrivate = false, eg
 
   // Start the proxy on the egress network, then connect it to the client network
   // as the gate alias. It is the only container on both; the only bridge.
+  // Sealed releases are owner-readable only; capability-dropped root cannot read them.
   const proxyArgs = [
     "run", "-d", "--pull=never", "--name", proxyName,
     "--network", egress,
     ...HARDEN,
+    "--user", `${process.getuid()}:${process.getgid()}`,
     "-v", `${LIB_DIR}:/app/lib:ro`,
     "-e", `SCOPE_ALLOW=${allowedHosts.join(",")}`,
     "-e", `SCOPE_PORT=${proxyPort}`,
