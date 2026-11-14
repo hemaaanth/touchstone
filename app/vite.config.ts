@@ -76,7 +76,7 @@ export default defineConfig({
   plugins: [react(), tailwindcss(), touchstoneApi()],
   resolve: {
     alias: {
-      '@': path.resolve(__dirname, './src'),
+      '@': path.resolve(import.meta.dirname, './src'),
     },
   },
   // Bind IPv4 loopback so the bb Connect tunnel (which dials 127.0.0.1) can
