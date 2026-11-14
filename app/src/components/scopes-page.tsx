@@ -97,7 +97,8 @@ export function ScopesPage({
   return (
     <ListPage
       title="Scopes"
-      description="Combine repositories, websites, folders and contract deployments in one scope. A run picks one scope and some of its modules."
+      descriptionClassName="min-h-[3lh]"
+      description="One scope is one unit a run tests: repositories, websites, folders and deployments together. A run picks one scope and some of its modules."
       action={catalog === "loading" || (catalog === "error" && targets.length === 0) ? null : add}
     >
       {storeErrors.length ? (

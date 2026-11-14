@@ -100,12 +100,16 @@ export function Label({ children }: { children: React.ReactNode }) {
 export function ListPage({
   title,
   description,
+  descriptionClassName,
   action,
   children,
 }: {
   title: string
   // One muted line under the title.
   description?: React.ReactNode
+  // Extra classes for the description. A page whose line wraps at narrow widths
+  // reserves its height here, so the header never jumps as it re-wraps.
+  descriptionClassName?: string
   // The primary action, top right. One button: `<Button size="sm"><Plus />Add …</Button>`.
   action?: React.ReactNode
   children: React.ReactNode
@@ -117,7 +121,7 @@ export function ListPage({
           <SidebarTrigger className="-mt-0.5 -ml-1 md:hidden" />
           <div className="flex min-w-0 flex-1 flex-col gap-1">
             <h1 className="text-lg leading-7 font-semibold tracking-tight">{title}</h1>
-            {description ? <p className="text-sm leading-relaxed text-muted-foreground">{description}</p> : null}
+            {description ? <p className={cn("text-sm leading-relaxed text-muted-foreground", descriptionClassName)}>{description}</p> : null}
           </div>
           {action ? <div className="flex shrink-0 items-center gap-2">{action}</div> : null}
         </header>

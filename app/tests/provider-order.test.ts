@@ -12,16 +12,17 @@ const groups = (defaultId: string | null, list = providers) => providerGroups({
 }).filter((group) => group.providers.length)
 const ids = (defaultId: string | null, list = providers) => groups(defaultId, list).flatMap((group) => group.providers.map((p) => p.id))
 
-test("the default provider and its section come first without mutating saved order", () => {
-  expect(ids("lyber")).toEqual(["lyber", "boundless", "near"])
+test("the private section stays first; only the rows inside a section follow the default", () => {
+  // A non-NEAR default must not move the NEAR box off the top.
+  expect(ids("lyber")).toEqual(["near", "lyber", "boundless"])
   expect(ids("near")).toEqual(["near", "boundless", "lyber"])
   expect(providers.map((p) => p.id)).toEqual(["near", "boundless", "lyber"])
 })
 
 test("order follows a replacement default after providers are removed or added", () => {
   const remaining = providers.filter((p) => p.id !== "lyber")
-  expect(ids("boundless", remaining)).toEqual(["boundless", "near"])
-  expect(ids("new", [...remaining, provider("new")])).toEqual(["new", "boundless", "near"])
+  expect(ids("boundless", remaining)).toEqual(["near", "boundless"])
+  expect(ids("new", [...remaining, provider("new")])).toEqual(["near", "new", "boundless"])
   expect(ids(null)).toEqual(["near", "boundless", "lyber"])
   expect(groups(null, [])).toEqual([])
 })
