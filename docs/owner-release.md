@@ -1,5 +1,7 @@
 # Fixed owner-test release
 
+> **Stopped handoff, 2026-11-14.** The last verified Frozen revision is `985522f3b5535eb067305d7238346c28e90b792c` on port 5190. It was not rechecked during shutdown or handoff. No new package, restart or cutover is authorized by this document. Read [the takeover record](HANDOFF-2026-11-14.md) for the source/state locations, unresolved Daytona and Strix parity issues, and renewed-authorization requirements. The procedures below are reference material, not instructions to execute now.
+
 This package runs the existing Vite console and backend from one fixed source export.
 It is not `vite preview` or a second HTTP server. There is no `app/dist` requirement.
 The launcher is `app/server/start.mjs`. It disables HMR, file watching and browser opening.
