@@ -8,7 +8,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage as answer, fauxProvider, fauxToolCall as call } from "@earendil-works/pi-ai/providers/faux";
-import { createRegistry, defineDoc, defineExtension, defineTool, Harness, MemoryStorage, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
+import { createRegistry, defineDoc, defineExtension, defineTool, Harness, LiveDoc, MemoryStorage, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { obj } from "@earendil-works/pi-schema";
 import { createFleet, FREE_ROAM_INSTRUCTIONS } from "../lib/fleet.mjs";
 import { currentAgent } from "../lib/event.mjs";
@@ -18,7 +18,7 @@ import { candidateTool, recordSession, sessionLookup, SESSION_DESCRIPTION, SESSI
 
 // Per-agent loadouts (I7a). Fake tools or a fake machine: no Daytona call, no
 // network, no real key. "Daytona on" is two env values with a made-up key.
-const ON = { FLEET: undefined, FREE_ROAM: "1", TOUCHSTONE_EXEC: "daytona", DAYTONA_API_KEY: "made-up-test-key", DAYTONA_API_URL: undefined };
+const ON = { FLEET: undefined, ROAM_OPTIONS: undefined, FREE_ROAM: "1", TOUCHSTONE_EXEC: "daytona", DAYTONA_API_KEY: "made-up-test-key", DAYTONA_API_URL: undefined };
 const PACK = ["read_source", "submit_finding_web", "submit_finding_contracts"]; // a joined run of two modules
 const ROAM = ["shell", "submit_session_candidate"];
 const ORIGINAL = Object.fromEntries(Object.keys(ON).map((k) => [k, process.env[k]]));
@@ -44,7 +44,7 @@ function seen(request) {
 
 // One worker of a run. `storage` and `pack` let a case open a second worker on
 // the same run, with another environment or another pack tool list.
-async function runtime(t, route, { env = ON, required = false, survey, hooks = {}, storage = new MemoryStorage(), pack = PACK, offered } = {}) {
+async function runtime(t, route, { env = ON, required = false, survey, hooks = {}, storage = new MemoryStorage(), pack = PACK, offered, max = 4, defaultRoute = () => answer("Default child done.") } = {}) {
   const set = (values) => { for (const [k, v] of Object.entries(values)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; } };
   set(env);
   t.after(() => set(ORIGINAL));
@@ -57,10 +57,10 @@ async function runtime(t, route, { env = ON, required = false, survey, hooks = {
   });
   const packTools = pack.map(fake), roamTools = offered ?? ROAM.map(fake);
   const faux = fauxProvider({ tokensPerSecond: 100000 });
-  faux.setResponses(Array.from({ length: 150 }, () => (request) => { const s = seen(request); lists[s.who] = s.tools; return route(s); }));
+  faux.setResponses(Array.from({ length: 150 }, () => (request) => { const s = seen(request); lists[s.who] = s.tools; return /^FreeRoam_*$/.test(s.who) ? defaultRoute(s) : route(s); }));
   const models = createModels();
   models.setProvider(faux.provider);
-  const fleet = createFleet({ system: "Audit the lab only.", costOf: () => 0, max: 4, required, survey, roamTools });
+  const fleet = createFleet({ system: "Audit the lab only.", costOf: () => 0, max, required, survey, roamTools });
   const registry = createRegistry();
   // The same wiring as agent-run.mjs: the pack extension, then the fleet's own.
   registry.install(defineExtension({ name: "pack", tools: fleet ? fleet.wrapTools(packTools) : packTools }));
@@ -170,8 +170,8 @@ test("a free-roam child has no pack tool, so no submit_finding in any form, and 
   assert.ok(r.fleet.instructions.endsWith(FREE_ROAM_INSTRUCTIONS));
 });
 
-test("free-roam is refused without FREE_ROAM=1, and with it when Daytona is off", { timeout: 15000 }, async (t) => {
-  for (const [label, env] of [["no FREE_ROAM", { ...ON, FREE_ROAM: undefined }], ["FREE_ROAM=0", { ...ON, FREE_ROAM: "0" }], ["Daytona off", { ...ON, TOUCHSTONE_EXEC: undefined }], ["no key", { ...ON, DAYTONA_API_KEY: undefined }]]) {
+test("free-roam is refused without FREE_ROAM=1", { timeout: 15000 }, async (t) => {
+  for (const [label, env] of [["no FREE_ROAM", { ...ON, FREE_ROAM: undefined }], ["FREE_ROAM=0", { ...ON, FREE_ROAM: "0" }]]) {
     await t.test(label, async (t) => {
       const r = await runtime(t, (s) => s.who === "coordinator" ? coordinator(s, [spawnCall("Beta", "free-roam")]) : answer("Done."), { env });
       assert.equal((await r.run("start")).status, "done");
@@ -189,8 +189,8 @@ test("free-roam is refused without FREE_ROAM=1, and with it when Daytona is off"
   }
 });
 
-test("with FLEET=0 and FREE_ROAM=1 the tool list has no shell", { timeout: 15000 }, async (t) => {
-  const r = await runtime(t, (s) => s.last.role === "user" ? result([call("shell", {})]) : answer("Single agent done."), { env: { ...ON, FLEET: "0" } });
+test("with FLEET=0 and FREE_ROAM=0 the tool list has no shell", { timeout: 15000 }, async (t) => {
+  const r = await runtime(t, (s) => s.last.role === "user" ? result([call("shell", {})]) : answer("Single agent done."), { env: { ...ON, FLEET: "0", FREE_ROAM: "0" } });
   assert.equal(r.fleet, undefined);
   assert.equal((await r.run("start")).status, "done");
   assert.deepEqual(r.lists.coordinator, PACK);
@@ -373,4 +373,156 @@ test("slice shell, egress and session candidate work together through the fleet"
   assert.deepEqual(state.found, []);
   assert.ok(!JSON.stringify(c).includes("made-up-token-123456789"));
   assert.ok(r.events.some((e) => e.ev === "egress-log" && e.requests === 1));
+});
+
+test("requested free-roam fails at construction, never falls back to confined", async (t) => {
+  for (const [name, extra] of [
+    ["solo", { env: { ...ON, FLEET: "0" } }],
+    ["Daytona off", { env: { ...ON, TOUCHSTONE_EXEC: undefined } }],
+    ["no key", { env: { ...ON, DAYTONA_API_KEY: undefined } }],
+    ["no offered tools", { offered: [] }],
+  ]) await t.test(name, async (t) => {
+    await assert.rejects(runtime(t, () => assert.fail("no model call"), extra), /No confined fallback/);
+  });
+});
+
+test("invalid or disabled run options are refused before a model runs", async (t) => {
+  for (const value of ["not JSON", "null", "{}", '["unknown"]', '["wallet","wallet"]', '[1]']) {
+    await t.test(value, async (t) => {
+      await assert.rejects(runtime(t, () => assert.fail("no model call"), { env: { ...ON, ROAM_OPTIONS: value } }), /ROAM_OPTIONS/);
+    });
+  }
+  await t.test("disabled", async (t) => {
+    await assert.rejects(runtime(t, () => assert.fail("no model call"), { env: { ...ON, FREE_ROAM: "0", ROAM_OPTIONS: '["wallet"]' } }), /requires FREE_ROAM/);
+  });
+});
+
+test("the reserved slot starts a real default child once across drains and workers", { timeout: 20000 }, async (t) => {
+  const open = await shared(t);
+  let defaults = 0;
+  const defaultRoute = (s) => {
+    if (s.last.role === "user") { defaults++; return result([call("shell", {})]); }
+    return answer("Default complete.");
+  };
+  const env = { ...ON, ROAM_OPTIONS: '["email","wallet"]' };
+  let w = await runtime(t, (s) => s.who === "coordinator" ? coordinator(s, [spawnCall("Alpha"), spawnCall("Overflow")]) : answer("Done."), { max: 2, storage: await open(), env, defaultRoute });
+  await w.run("start");
+  const board = await w.harness.snapshot(Roster, ROOT_CONVERSATION_ID, ctx);
+  assert.deepEqual(board.agents.map((a) => a.loadout), ["confined", "free-roam"]);
+  const automatic = board.agents[1];
+  assert.deepEqual(automatic.options, ["wallet", "email"]);
+  assert.equal(automatic.status, "done");
+  assert.equal(w.spawned("FreeRoam").tier, "T2");
+  assert.deepEqual(w.spawned("FreeRoam").options, ["wallet", "email"]);
+  assert.deepEqual(w.ran, [`${automatic.id}:shell`]);
+  const spawns = await w.results(undefined, "spawn_agent");
+  assert.ok(spawns.some((m) => m.isError && /reserved/.test(text(m))));
+  assert.deepEqual(w.lists.FreeRoam.toSorted(), ["bulletin_post", "bulletin_read", "message_agent", "shell", "submit_session_candidate"]);
+  await w.fleet.drain(ctx);
+  assert.equal(defaults, 1);
+  await w.close();
+  w = await runtime(t, () => answer("Follow-up complete."), { max: 2, storage: await open(), env, defaultRoute });
+  await w.run("follow-up");
+  const restored = await w.harness.snapshot(Roster, ROOT_CONVERSATION_ID, ctx);
+  assert.deepEqual(restored.agents.map((a) => a.id), board.agents.map((a) => a.id));
+  assert.deepEqual(restored.jobs, board.jobs);
+  assert.equal(defaults, 1, "the default task is not rerun by a later worker");
+  assert.equal(w.events.filter((e) => e.ev === "subagent-spawned").length, 0);
+});
+
+test("one-slot fleets reserve it for free-roam; a chosen child prevents an extra default", async (t) => {
+  const r = await runtime(t, (s) => s.who === "coordinator" ? coordinator(s, [spawnCall("Blocked"), spawnCall("Beta", "free-roam")]) : answer("Done."), { max: 1 });
+  await r.run("start");
+  const board = await r.harness.snapshot(Roster, ROOT_CONVERSATION_ID, ctx);
+  assert.deepEqual(board.agents.map((a) => a.name), ["Beta"]);
+  assert.equal(r.spawned("FreeRoam"), undefined);
+  assert.ok((await r.results(undefined, "spawn_agent")).some((m) => m.isError && /reserved/.test(text(m))));
+});
+
+test("an older full confined roster cannot silently omit the requested default", async (t) => {
+  const open = await shared(t);
+  let w = await runtime(t, (s) => s.who === "coordinator" ? coordinator(s, [spawnCall("Alpha")]) : answer("Done."), { max: 1, storage: await open(), env: { ...ON, FREE_ROAM: "0" } });
+  await w.run("start");
+  await w.close();
+  w = await runtime(t, () => answer("Done."), { max: 1, storage: await open() });
+  await assert.rejects(w.run("follow-up"), /Fleet limit reached/);
+  assert.deepEqual((await w.harness.snapshot(Roster, ROOT_CONVERSATION_ID, ctx)).agents.map((a) => a.loadout), ["confined"]);
+});
+
+test("child options are normalized, bounded by the run, and read from the caller's current board row", async (t) => {
+  const r = await runtime(t, (s) => {
+    if (s.who !== "coordinator") return answer("Done.");
+    if (text(s.last) !== "start") return answer("Complete.");
+    return result([
+      call("spawn_agent", { name: "Beta", task: "Investigate", area: "web", loadout: "free-roam", options: ["email", "wallet", "email"] }),
+      spawnCall("Alpha"),
+      call("spawn_agent", { name: "Rejected", task: "Investigate", area: "web", options: ["wallet"] }),
+    ]);
+  }, { env: { ...ON, ROAM_OPTIONS: '["email","wallet"]' } });
+  await r.run("start");
+  const beta = r.spawned("Beta"), alpha = r.spawned("Alpha");
+  const api = (conv) => ({ conversationId: Number(conv), snapshot: (doc, id, c) => r.harness.snapshot(doc, id, c) });
+  assert.deepEqual(await r.fleet.options(beta.id, api(beta.conv), ctx), ["wallet", "email"]);
+  await assert.rejects(r.fleet.options(beta.id, api(alpha.conv), ctx), /calling free-roam child/);
+  await assert.rejects(r.fleet.options(alpha.id, api(alpha.conv), ctx), /calling free-roam child/);
+  await assert.rejects(r.fleet.options("coordinator", api(ROOT_CONVERSATION_ID), ctx), /calling free-roam child/);
+  await assert.rejects(r.fleet.options("a-999999", api(999999), ctx), /calling free-roam child/);
+  assert.equal(r.spawned("Rejected"), undefined);
+  assert.ok((await r.results(undefined, "spawn_agent")).some((m) => m.isError && /Confined children/.test(text(m))));
+  // A fresh read, not a cached model selection or a caller-owned returned array.
+  const options = await r.fleet.options(beta.id, api(beta.conv), ctx);
+  options.length = 0;
+  assert.deepEqual(await r.fleet.options(beta.id, api(beta.conv), ctx), ["wallet", "email"]);
+  await r.harness.commit(async (tx) => { (await tx.doc(Roster, ROOT_CONVERSATION_ID)).agents.find((a) => a.id === beta.id).options = ["email"]; }, ctx);
+  assert.deepEqual(await r.fleet.options(beta.id, api(beta.conv), ctx), ["email"]);
+  await r.harness.commit(async (tx) => { (await tx.doc(Roster, ROOT_CONVERSATION_ID)).agents.find((a) => a.id === beta.id).loadout = "confined"; }, ctx);
+  await assert.rejects(r.fleet.options(beta.id, api(beta.conv), ctx), /calling free-roam child/);
+});
+
+test("a model cannot select an option the run did not enable", async (t) => {
+  const r = await runtime(t, (s) => s.who === "coordinator" && text(s.last) === "start" ? result([
+    call("spawn_agent", { name: "Rejected", task: "Investigate", area: "web", loadout: "free-roam", options: ["wallet"] }),
+  ]) : answer("Done."), { env: { ...ON, ROAM_OPTIONS: '["email"]' } });
+  await r.run("start");
+  assert.equal(r.spawned("Rejected"), undefined);
+  assert.ok((await r.results(undefined, "spawn_agent")).some((m) => m.isError && /did not enable/.test(text(m))));
+  assert.deepEqual(r.spawned("FreeRoam").options, ["email"]);
+});
+
+test("concurrent drains create one default even in a one-slot fleet", async (t) => {
+  let calls = 0;
+  const r = await runtime(t, () => answer("Done."), { max: 1, defaultRoute: () => { calls++; return answer("Done."); } });
+  await Promise.all([r.fleet.drain(ctx), r.fleet.drain(ctx)]);
+  const board = await r.harness.snapshot(Roster, ROOT_CONVERSATION_ID, ctx);
+  assert.equal(board.agents.length, 1);
+  assert.equal(board.agents[0].loadout, "free-roam");
+  assert.equal(calls, 1);
+});
+
+test("the default avoids a confined child's name", async (t) => {
+  const r = await runtime(t, (s) => coordinator(s, [spawnCall("FreeRoam")]), { max: 2 });
+  await r.run("start");
+  const board = await r.harness.snapshot(Roster, ROOT_CONVERSATION_ID, ctx);
+  assert.deepEqual(board.agents.map((a) => [a.name, a.loadout]), [["FreeRoam", "confined"], ["FreeRoam_", "free-roam"]]);
+});
+
+test("a stopped run never starts a default child", async (t) => {
+  const r = await runtime(t, () => assert.fail("no model call"));
+  await r.harness.commit(async (tx) => { (await tx.doc(LiveDoc, ROOT_CONVERSATION_ID)).runFailure = { reason: "stopped", detail: "Stopped for test." }; }, ctx);
+  assert.deepEqual(await r.fleet.drain(ctx), { status: "unanswered", reason: "stopped", detail: "Stopped for test." });
+  assert.equal((await r.harness.snapshot(Roster, ROOT_CONVERSATION_ID, ctx))?.agents.length ?? 0, 0);
+});
+
+test("a reopened worker cannot grant a stale option", async (t) => {
+  const open = await shared(t);
+  let w = await runtime(t, () => answer("Done."), { storage: await open(), env: { ...ON, ROAM_OPTIONS: '["wallet","email"]' } });
+  await w.run("start");
+  const child = w.spawned("FreeRoam");
+  await w.close();
+  w = await runtime(t, () => answer("Done."), { storage: await open(), env: { ...ON, ROAM_OPTIONS: '["email"]' } });
+  const api = { conversationId: Number(child.conv), snapshot: (doc, id, c) => w.harness.snapshot(doc, id, c) };
+  assert.deepEqual(await w.fleet.options(child.id, api, ctx), ["email"]);
+  await w.close();
+  w = await runtime(t, () => answer("Done."), { storage: await open(), env: { ...ON, FREE_ROAM: "0" } });
+  await assert.rejects(w.fleet.options(child.id, api, ctx), /calling free-roam child/);
 });
