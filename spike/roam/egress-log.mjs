@@ -1,5 +1,6 @@
 // The egress log of a free-roam machine. It runs ON the machine, not on the
 // host: `node egress-log.mjs <port> <log file>`. Node built-ins only.
+// A third argument sets the CONNECT timer in ms (the test uses a short one).
 //
 // It is a forward proxy that allows every request and writes one line per
 // request. It is a log, not a wall: a request that does not use the proxy
@@ -17,6 +18,7 @@ import { dirname } from "node:path";
 
 const port = Number(process.argv[2]);
 const file = process.argv[3];
+const connectMs = Number(process.argv[4]) || 30_000;
 mkdirSync(dirname(file), { recursive: true });
 
 // The host drops a line with a longer host or URL (lib/roam-egress.mjs), so
@@ -50,6 +52,9 @@ const server = http.createServer((req, res) => {
     if (!res.headersSent) res.writeHead(502, { "content-type": "text/plain" });
     res.end();
   });
+  // A target that never answers gives no response and no error. When the
+  // client leaves, end the upstream: its error handler writes the line (502).
+  res.on("close", () => { if (!logged) upstream.destroy(); });
   req.pipe(upstream);
 });
 
@@ -65,12 +70,16 @@ server.on("connect", (req, client, head) => {
   let open = false;
   const upstream = net.connect(tport, host.replace(/^\[|\]$/g, ""), () => {
     open = true;
+    upstream.setTimeout(0);
     log(host, "CONNECT", url, null);
     client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
     if (head.length) upstream.write(head);
     upstream.pipe(client);
     client.pipe(upstream);
   });
+  // An address that does not answer: do not wait for the OS to give up. The
+  // timer is for the connect only; an open tunnel can be silent.
+  upstream.setTimeout(connectMs, () => upstream.destroy(new Error("timeout")));
   upstream.on("error", () => {
     if (open) { client.destroy(); return; }
     log(host, "CONNECT", url, 502);

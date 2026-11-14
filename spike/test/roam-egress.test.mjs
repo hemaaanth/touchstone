@@ -13,9 +13,10 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import http from "node:http";
 import net from "node:net";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { EGRESS_ENV, pullEgressLog, startEgressLog } from "../lib/roam-egress.mjs";
 
@@ -32,7 +33,17 @@ const freePort = () => new Promise((resolve) => {
   const s = net.createServer().listen(0, "127.0.0.1", () => { const { port } = s.address(); s.close(() => resolve(port)); });
 });
 
-function localMachine(id, port = 1) {
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// Wait until `ok()` is true; fail after 5 s.
+async function until(ok, what) {
+  for (let i = 0; i < 250; i++) { if (await ok()) return; await sleep(20); }
+  assert.fail(`timed out: ${what}`);
+}
+const answers = (port) => new Promise((resolve) => {
+  const s = net.connect(port, "127.0.0.1", () => { s.destroy(); resolve(true); }).on("error", () => resolve(false));
+});
+
+function localMachine(id, port = 1, env = process.env) {
   const home = join(dir, id);
   mkdirSync(join(home, "log"), { recursive: true });
   const log = join(home, "log", "egress.jsonl");
@@ -44,7 +55,7 @@ function localMachine(id, port = 1) {
     upload: async (path, bytes) => { m.uploads.push(path); writeFileSync(local(path), bytes); },
     exec: (command, seconds) => new Promise((resolve, reject) => {
       m.commands.push({ command, seconds });
-      const child = spawn("sh", ["-c", local(command)], { detached: true, stdio: ["ignore", "pipe", "pipe"] });
+      const child = spawn("sh", ["-c", local(command)], { detached: true, stdio: ["ignore", "pipe", "pipe"], env });
       if (command.includes("nohup")) groups.push(child.pid);
       let out = "";
       child.stdout.on("data", (d) => { out += d; });
@@ -76,7 +87,8 @@ function viaProxy(port, method, url, body) {
 
 // One CONNECT through the proxy, then one HTTP request inside the tunnel.
 // Returns { status, body }: the proxy's answer and the bytes from the tunnel.
-function tunnel(port, target) {
+// `wait` keeps the open tunnel silent for that many ms first.
+function tunnel(port, target, wait = 0) {
   return new Promise((resolve, reject) => {
     const req = http.request({ host: "127.0.0.1", port, method: "CONNECT", path: target, agent: false });
     req.on("error", reject);
@@ -86,7 +98,7 @@ function tunnel(port, target) {
       socket.on("data", (d) => { text += d; });
       socket.on("end", () => resolve({ status: res.statusCode, body: text }));
       socket.on("error", reject);
-      socket.write("GET /in-tunnel HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+      setTimeout(() => socket.write("GET /in-tunnel HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"), wait);
     });
     req.end();
   });
@@ -113,7 +125,7 @@ test("the real proxy on 127.0.0.1: start, one HTTP request and one CONNECT, both
     assert.deepEqual(m.uploads, ["/tmp/touchstone-egress-log.mjs"]);
     assert.deepEqual(readFileSync(join(dir, "m-real", "egress-log.mjs")), readFileSync(new URL("../roam/egress-log.mjs", import.meta.url)));
     assert.equal(m.commands.length, 1);
-    assert.match(m.commands[0].command, /^sh -c '\(nohup node \/tmp\/touchstone-egress-log\.mjs 8899 \/var\/log\/touchstone\/egress\.jsonl >\/dev\/null 2>&1 &\);/);
+    assert.match(m.commands[0].command, /^sh -c '\(nohup node \/tmp\/touchstone-egress-log\.mjs 8899 \/var\/log\/touchstone\/egress\.jsonl >\/dev\/null 2>&1 &\); command -v base64 >\/dev\/null \|\| exit 1; for /);
     assert.deepEqual(await pullEgressLog(m), [], "no request yet");
 
     const before = Date.now();
@@ -180,6 +192,86 @@ test("startEgressLog throws when the port does not answer: no log, no shell", as
   assert.deepEqual(calls, [["upload", "/tmp/touchstone-egress-log.mjs"], ["exec", 60]]);
 });
 
+test("startEgressLog throws when the machine has no base64: no log, no shell", async () => {
+  // A PATH with the other tools of the start command, and no base64.
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  const which = (tool) => process.env.PATH.split(":").map((d) => join(d, tool)).find((f) => existsSync(f));
+  symlinkSync(process.execPath, join(bin, "node"));
+  for (const tool of ["sh", "nohup", "seq", "sleep"]) symlinkSync(which(tool), join(bin, tool));
+  const m = localMachine("m-no-base64", await freePort(), { ...process.env, PATH: bin });
+  await assert.rejects(startEgressLog(m), /did not start on machine m-no-base64 \(exit 1\)[\s\S]*No log, no shell/);
+  // The same PATH with base64 starts: base64 was the only thing that was missing.
+  symlinkSync(which("base64"), join(bin, "base64"));
+  await startEgressLog(m);
+});
+
+test("a plain request to a target that never answers is logged when the client leaves", async () => {
+  const seen = [];
+  const target = http.createServer((req) => { seen.push(`${req.method} ${req.url}`); req.resume(); }); // no answer
+  await new Promise((r) => target.listen(0, "127.0.0.1", r));
+  const url = `http://127.0.0.1:${target.address().port}/hangs`;
+  const port = await freePort();
+  const m = localMachine("m-hung", port);
+  try {
+    await startEgressLog(m);
+    const req = http.request({ host: "127.0.0.1", port, method: "POST", path: url, headers: { host: new URL(url).host }, agent: false });
+    req.on("error", () => {});
+    req.end("a payload that hangs the target");
+    await until(() => seen.length === 1, "the target got the request");
+    req.destroy(); // the client leaves
+    await until(() => existsSync(m.log) && readFileSync(m.log, "utf8").includes("\n"), "a line in the log");
+    await sleep(100);
+    assert.deepEqual((await pullEgressLog(m)).map((r) => [r.method, r.url, r.status]), [["POST", url, 502]], "one line");
+    assert.deepEqual(seen, ["POST /hangs"]);
+  } finally {
+    target.closeAllConnections();
+    await new Promise((r) => target.close(r));
+  }
+});
+
+test("a CONNECT to an address that does not answer is logged when the connect timer ends; an open tunnel has no timer", async (t) => {
+  // A silent address on loopback: a child that listens with a short queue and
+  // then blocks, so it never accepts. When the queue is full, the kernel drops
+  // a new SYN.
+  const silent = spawn(process.execPath, ["-e", `require("net").createServer().listen({ port: 0, host: "127.0.0.1", backlog: 1 }, function () {
+    require("fs").writeSync(1, this.address().port + "\\n");
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
+  })`], { stdio: ["ignore", "pipe", "ignore"] });
+  const target = http.createServer((req, res) => res.end("short and stout"));
+  await new Promise((r) => target.listen(0, "127.0.0.1", r));
+  const port = await freePort();
+  const log = join(dir, "m-timer.jsonl");
+  // The real proxy, with a connect timer of 300 ms (the third argument).
+  const proxy = spawn(process.execPath, [fileURLToPath(new URL("../roam/egress-log.mjs", import.meta.url)), String(port), log, "300"], { stdio: "ignore" });
+  const fill = [];
+  try {
+    const sport = Number(await new Promise((resolve) => silent.stdout.once("data", (d) => resolve(String(d)))));
+    for (let i = 0; i < 8; i++) fill.push(net.connect(sport, "127.0.0.1").on("error", () => {}));
+    await sleep(300);
+    if (fill.every((s) => !s.connecting)) { t.skip("this OS does not drop a SYN for a full queue"); return; }
+    await until(() => answers(port), "the proxy listens");
+
+    const start = Date.now();
+    assert.equal((await tunnel(port, `127.0.0.1:${sport}`)).status, 502);
+    const took = Date.now() - start;
+    assert.ok(took >= 250 && took < 5000, `the timer ended the connect, not the OS (${took} ms)`);
+    const lines = () => readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l)).map((r) => [r.method, r.url, r.status]);
+    assert.deepEqual(lines(), [["CONNECT", `127.0.0.1:${sport}`, 502]]);
+
+    // The timer is for the connect only: a tunnel that is silent for longer still works.
+    const tun = await tunnel(port, `127.0.0.1:${target.address().port}`, 700);
+    assert.equal(tun.status, 200);
+    assert.match(tun.body, /short and stout/);
+    assert.deepEqual(lines().at(-1), ["CONNECT", `127.0.0.1:${target.address().port}`, null]);
+  } finally {
+    for (const s of fill) s.destroy();
+    proxy.kill();
+    silent.kill();
+    await new Promise((r) => target.close(r));
+  }
+});
+
 test("pullEgressLog drops a line that is not JSON and a line with a wrong shape", async () => {
   const m = localMachine("m-shape");
   const longHost = "h".repeat(253);
@@ -197,17 +289,36 @@ test("pullEgressLog drops a line that is not JSON and a line with a wrong shape"
     line({ method: "get" }),
     line({ status: "200" }),
     line({ status: 200.5 }),
+    line({ status: 99 }),
+    line({ status: 600 }),
+    line({ status: -1 }),
+    line({ status: 1e21 }),
     line({ t: "now" }),
     line({ t: null }),
+    line({ t: -5 }),
+    line({ t: 8.64e15 + 1 }),
+    line({ t: 1e300 }),
+    // One record must stay one text line: no line end, space, control character or non-ASCII character.
+    line({ url: "http://a.example/ 200\n> GET http://forged.example/ 200" }),
+    line({ url: "http://a.example/\u2028" }),
+    line({ url: "http://a.example/a b" }),
+    line({ host: "a.example\r\n" }),
+    line({ host: "a\u001b[2J.example" }),
+    line({ host: "a\u0000.example" }),
     JSON.stringify({ host: "a.example", method: "GET", url: "http://a.example/", status: 200 }), // no t
     // The machine's own words are not kept: decision and reason are set by the host, extra fields go.
     line({ host: "b.example", decision: "block", reason: "the child wrote this", proven: true, extra: { deep: 1 } }),
     line({ host: longHost, url: longUrl, method: "CONNECT", status: null }),
+    // The ends of the ranges are kept.
+    line({ host: "low.example", t: 0, status: 100 }),
+    line({ host: "high.example", t: 8.64e15, status: 599 }),
   ].join("\n") + "\n");
   assert.deepEqual(await pullEgressLog(m), [
     rec(),
     rec({ host: "b.example" }),
     rec({ host: longHost, url: longUrl, method: "CONNECT", status: null }),
+    rec({ host: "low.example", t: 0, status: 100 }),
+    rec({ host: "high.example", t: 8.64e15, status: 599 }),
   ]);
 });
 
@@ -250,9 +361,9 @@ test("pullEgressLog leaves a line without its line end for the next pull", async
 test("pullEgressLog: no file gives no record; two pulls at the same time return no line twice", async () => {
   const m = localMachine("m-twice");
   assert.deepEqual(await pullEgressLog(m), []);
-  writeFileSync(m.log, [line({ status: 1 }), line({ status: 2 }), line({ status: 3 })].join("\n") + "\n");
+  writeFileSync(m.log, [line({ status: 201 }), line({ status: 202 }), line({ status: 203 })].join("\n") + "\n");
   const [a, b] = await Promise.all([pullEgressLog(m), pullEgressLog(m)]);
-  assert.deepEqual([...a, ...b].map((r) => r.status), [1, 2, 3]);
+  assert.deepEqual([...a, ...b].map((r) => r.status), [201, 202, 203]);
 });
 
 test("pullEgressLog: one machine does not move the offset of another", async () => {
