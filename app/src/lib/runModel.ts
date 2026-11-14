@@ -5,6 +5,7 @@ import { closingHeld, repairFinalSay } from "./final-text"
 import type {
   Activity,
   AgentNode,
+  AttestationReceipt,
   HumanAsk,
   ArtifactDoc,
   BulletinNote,
@@ -242,6 +243,11 @@ export interface RunState {
   // The provider and model id the run started with, from the `provider` event.
   // Null on a run that predates the event.
   provider: { id: string; model: string } | null
+  // The TEE provenance receipt, from the latest `attestation` event: whether a
+  // signed NEAR enclave attestation was captured for the models that ran. Null
+  // until the run settles (or on a run that predates the event). Drives the
+  // provenance badge; "verified" is the only green state.
+  attestation: AttestationReceipt | null
   // The agents a server restart cut off mid-turn, each with the server's plain
   // reason. An agent leaves this list when it works again.
   cutOff: Record<string, string>
@@ -295,6 +301,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
   let prepass: PrepassView | null = null
   let modules: ModulePlanEntry[] | null = null
   let provider: { id: string; model: string } | null = null
+  let attestation: AttestationReceipt | null = null
   const cutOff: Record<string, string> = {}
   let stopped = false
   const humanAsks: HumanAsk[] = []
@@ -402,6 +409,11 @@ export function reduceEvents(events: RunEvent[]): RunState {
       case "provider":
         // The provider and model the run started with. No step.
         if (str(e.provider) && str(e.model)) provider = { id: str(e.provider), model: str(e.model) }
+        break
+      case "attestation":
+        // The TEE provenance receipt, captured at settle (a cold NEAR run may
+        // emit it twice: "unavailable" then "verified"). Last one wins. No step.
+        if (e.attestation && typeof e.attestation === "object") attestation = e.attestation as AttestationReceipt
         break
       case "modules": {
         // The pipeline plan. It shows on the Modules page, not in the
@@ -1149,6 +1161,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
     prepass,
     modules,
     provider,
+    attestation,
     cutOff,
     stopped,
     humanAsks,

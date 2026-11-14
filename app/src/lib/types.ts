@@ -406,6 +406,35 @@ export interface RunEvent {
   [k: string]: unknown
 }
 
+// The three provenance states a run's TEE attestation receipt can hold. Only
+// "verified" is a trust (green) signal; the other two are deliberate, visible
+// downgrades (see spike/lib/attestation.mjs). Kept in sync with that module.
+export type AttestationState = "verified" | "unattested" | "unavailable"
+
+// The compact, display-worthy fields captured per model from a NEAR AI Cloud
+// enclave attestation report. The bulky signed quote/payload stay server-side;
+// the hashes below commit to the exact model and the software that served it.
+export interface AttestationSummary {
+  modelName: string
+  signingAddress: string | null // the enclave's ed25519 identity
+  composeHash: string | null // the exact software stack that ran
+  osImageHash: string | null
+  mrAggregated: string | null
+  requestNonce: string | null
+  hasIntelQuote: boolean
+  hasNvidiaPayload: boolean
+  reportSha256: string
+}
+
+// The receipt a run carries: which state it earned, the provider it ran on, and
+// one summary per model that had a captured report.
+export interface AttestationReceipt {
+  state: AttestationState
+  provider: string | null
+  models: AttestationSummary[]
+  fetchedAt: number
+}
+
 // ---- The streaming cognition / subagent / finding / steering vocabulary.
 //
 // This is the ONE source of truth for the live event names the engine emits and

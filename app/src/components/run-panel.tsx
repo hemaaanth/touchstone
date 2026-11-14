@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react"
-import { Bot, ChevronDown, ChevronRight, Files, Flag, Info, MessagesSquare, ShieldCheck, ShieldQuestionMark } from "lucide-react"
-import type { ArtifactDoc, BulletinNote, PackChoice, RunLead, RunMode, Severity } from "@/lib/types"
+import { Bot, ChevronDown, ChevronRight, Files, Flag, Info, MessagesSquare, ShieldAlert, ShieldCheck, ShieldQuestionMark } from "lucide-react"
+import type { ArtifactDoc, AttestationReceipt, AttestationState, AttestationSummary, BulletinNote, PackChoice, RunLead, RunMode, Severity } from "@/lib/types"
 import type { RunState } from "@/lib/runModel"
 import { cn } from "cn"
 import { Markdown } from "@/components/markdown"
@@ -531,6 +531,7 @@ function RunInfo({
         <ModelLine key="model" provider={state.provider?.id ?? null} id={state.provider?.model ?? model} agents={mode === "fleet" ? state.agents.length : null} />
       ) : null,
     ],
+    ["Provenance", state.attestation ? <AttestationBadge key="attest" receipt={state.attestation} /> : null],
     [
       "Scope",
       state.scope?.title || state.brief ? (
@@ -593,6 +594,84 @@ function ModelLine({ provider, id, agents }: { provider: string | null; id: stri
         </span>
       ) : null}
     </span>
+  )
+}
+
+// The TEE provenance badge. Only "verified" is green: a NEAR AI Cloud run whose
+// signed Intel TDX + NVIDIA H100 attestation was captured. The other two states
+// are deliberate, visible downgrades — amber for a model that cannot attest at
+// all, grey for a NEAR run whose report did not arrive — so an unattested run
+// never looks as trustworthy as an attested one. Copy mirrors ATTESTATION_BADGE
+// in spike/lib/attestation.mjs (that server module can't load in the browser).
+const ATTESTATION_UI: Record<AttestationState, { tone: string; Icon: typeof ShieldCheck; label: string; blurb: string }> = {
+  verified: {
+    tone: "text-ok",
+    Icon: ShieldCheck,
+    label: "Verified NEAR TEE",
+    blurb: "Produced by an attested model inside an Intel TDX + NVIDIA H100 enclave. The exact model and the software that ran are proven unmodified.",
+  },
+  unattested: {
+    tone: "text-warn",
+    Icon: ShieldAlert,
+    label: "Unattested model",
+    blurb: "No hardware attestation. This provider cannot prove which model ran or that its output was untampered.",
+  },
+  unavailable: {
+    tone: "text-muted-foreground",
+    Icon: ShieldQuestionMark,
+    label: "Attestation unavailable",
+    blurb: "A NEAR TEE run, but its attestation report could not be fetched. Not proof of tampering — just unverified this time.",
+  },
+}
+
+function AttestationBadge({ receipt }: { receipt: AttestationReceipt }) {
+  const ui = ATTESTATION_UI[receipt.state]
+  const Icon = ui.Icon
+  const sum = receipt.models[0]
+  return (
+    <span className="flex min-w-0 flex-col gap-0.5">
+      <Hint label={ui.label} tip={ui.blurb}>
+        <span className={cn("inline-flex w-fit items-center gap-1.5", ui.tone)}>
+          <Icon className="size-3.5 shrink-0" />
+          <span className="font-medium">{ui.label}</span>
+        </span>
+      </Hint>
+      {receipt.state === "verified" && sum ? <AttestationDetails sum={sum} /> : null}
+    </span>
+  )
+}
+
+// The enclave measurements behind a verified badge, one click away: the ed25519
+// identity that signed, the measured software and OS image, and the digest of
+// the full signed report the server captured.
+function AttestationDetails({ sum }: { sum: AttestationSummary }) {
+  const rows: [string, string | null][] = [
+    ["Enclave", sum.signingAddress],
+    ["Software", sum.composeHash],
+    ["OS image", sum.osImageHash],
+    ["Report", sum.reportSha256],
+  ]
+  return (
+    <Collapsible>
+      <CollapsibleTrigger className="group -mx-1 flex items-center gap-1 rounded-sm px-1 text-muted-foreground transition-colors outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50">
+        <ChevronRight className="size-3 shrink-0 transition-transform group-data-[panel-open]:rotate-90" />
+        Enclave measurements
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <dl className="mt-1 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 rounded-md bg-muted/50 px-2 py-1.5 text-muted-foreground">
+          {rows
+            .filter(([, v]) => v)
+            .map(([k, v]) => (
+              <div key={k} className="col-span-2 grid grid-cols-subgrid">
+                <dt>{k}</dt>
+                <dd className="min-w-0">
+                  <TruncatedText text={v!} middle tail={10} mono />
+                </dd>
+              </div>
+            ))}
+        </dl>
+      </CollapsibleContent>
+    </Collapsible>
   )
 }
 
