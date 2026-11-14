@@ -1,4 +1,6 @@
-import { daytonaError, daytonaShellApi } from "./daytona-api.mjs";
+import { pendingMachines } from "./daytona-pending.mjs";
+import { probeDaytonaShell } from "./daytona-probe.mjs";
+import { daytonaError, daytonaShellApi, confirmDaytonaDeletion } from "./daytona-api.mjs";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { allRoamOperations, beginRoamOperation, roamAccountBinding, roamBinding, roamOperations, roamSelectionState, setRoamSelectionState, updateRoamOperation } from "./daytona-state.mjs";
@@ -53,6 +55,7 @@ export function roamSetupView(config) {
         ...(latest.action === "snapshot" ? { snapshotId: latest.resourceId ?? null, snapshotName: latest.snapshotName ?? null } : {}),
         canReconcile: !terminal(latest) && !drivers.has(latest.id),
       } : null,
+      legacyPending: pendingMachines().filter((r) => typeof r === "string").length,
       previousPending: allRoamOperations().filter((op) => op.binding !== binding && !terminal(op)).length,
     };
   } catch { return { state: "state_error", ready: false }; }
@@ -192,14 +195,16 @@ export async function reconcileRoamSnapshot(config, id, dependencies) {
     move(id, "cleanup", snapshot.id);
     try { await api.removeSnapshot(snapshot.id); }
     catch (error) { if (error.status !== 404) throw error; }
+    await confirmDaytonaDeletion(() => api.snapshot(snapshot.id), dependencies);
     move(id, "complete");
   }
   return roamSetupView(config);
 }
 
-async function removeTestMachine(api, id) {
+async function removeTestMachine(api, id, dependencies) {
   try { await api.removeSandbox(id); }
   catch (error) { if (error.status !== 404) throw error; }
+  await confirmDaytonaDeletion(() => api.sandbox(id), dependencies);
 }
 
 async function testShell(config, op, dependencies, api) {
@@ -212,7 +217,6 @@ async function testShell(config, op, dependencies, api) {
     sandbox = await api.createSandbox({ touchstone: "1", loadout: "shell-setup", nonce: op.nonce, operation: op.id }, selected.snapshotId, { stopMin: 5, deleteMin: 0, ttlMinutes: 10 });
     if (!sandbox || typeof sandbox.id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(sandbox.id)) throw daytonaError("daytona_response_invalid");
     move(op.id, "created", sandbox.id);
-    const { probeDaytonaShell } = await import("./daytona-probe.mjs");
     await probeDaytonaShell(api.machine(sandbox));
     passed = true;
   } catch (error) {
@@ -225,7 +229,7 @@ async function testShell(config, op, dependencies, api) {
   }
   // Record proof and cleanup separately. Readiness requires both.
   move(op.id, "cleanup", sandbox.id, { probePassed: passed, ...(errorCode ? { errorCode } : {}) });
-  try { await removeTestMachine(api, sandbox.id); }
+  try { await removeTestMachine(api, sandbox.id, dependencies); }
   catch {
     move(op.id, "cleanup", undefined, { errorCode: "daytona_cleanup_pending" });
     return;
@@ -266,7 +270,7 @@ export async function reconcileRoamShellTest(config, id, dependencies) {
   }
   if (!Object.entries(labels).every(([k, value]) => machine?.labels?.[k] === value)) throw daytonaError("daytona_response_invalid");
   move(id, "cleanup", machine.id);
-  await removeTestMachine(api, machine.id);
+  await removeTestMachine(api, machine.id, dependencies);
   move(id, "complete");
   // A process restart cannot turn a partially observed probe into a pass.
   // The owner can now start a new, explicitly approved disposable test.

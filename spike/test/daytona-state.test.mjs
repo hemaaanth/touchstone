@@ -105,3 +105,15 @@ test("competing processes reserve one create while retaining all independent slo
   assert.equal(new Set(results.map((r) => r.operation.id)).size, 1);
   assert.equal(roamOperations(binding).length, 5);
 });
+
+test("malformed persisted operation details refuse every mutation and preserve the original bytes", () => {
+  const { operation } = beginRoamOperation(config, "runtime", slot("malformed"));
+  updateRoamOperation(binding, operation.id, "intent", "created", "machine-1");
+  const rows = JSON.parse(readFileSync(daytonaStateFile(), "utf8"));
+  rows[0].resourceId = "../foreign-machine";
+  const raw = JSON.stringify(rows);
+  writeFileSync(daytonaStateFile(), raw);
+  assert.throws(() => roamOperations(binding), /New resource creation is blocked/);
+  assert.throws(() => beginRoamOperation(config, "runtime", slot("other")), /New resource creation is blocked/);
+  assert.equal(readFileSync(daytonaStateFile(), "utf8"), raw);
+});

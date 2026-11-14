@@ -34,6 +34,10 @@ function load(file) {
     } else if (r.kind === "operation") {
       if (!ACTIONS.has(r.action) || !PHASES.has(r.phase) || !HASH.test(r.slot) || !ID.test(r.nonce) || !HASH.test(r.account)) fail();
       if (r.run != null && !HASH.test(r.run)) fail();
+      for (const key of ["resourceId", "regionId", "snapshotId", "probeVersion", "snapshotName", "errorCode"]) if (r[key] != null && (typeof r[key] !== "string" || !ID.test(r[key]))) fail();
+      for (const key of ["snapshotRef", "recipeHash"]) if (r[key] != null && !HASH.test(r[key])) fail();
+      if (r.probePassed != null && typeof r.probePassed !== "boolean") fail();
+      if (["created", "cleanup"].includes(r.phase) && r.action !== "runtime" && !r.resourceId) fail();
     } else fail();
   }
   return rows;

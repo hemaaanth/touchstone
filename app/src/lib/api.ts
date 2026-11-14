@@ -436,6 +436,7 @@ export function setExecution(body: {
 export interface ShellSetup {
   state: "not_configured" | "not_checked" | "needs_test" | "ready" | "unavailable" | "rejected" | "pending" | "unknown" | "state_error"
   ready: boolean
+  legacyPending?: number
   previousPending?: number
   operation?: { id: string; action: "snapshot" | "probe"; phase: string; probePassed: boolean; errorCode: string | null; canReconcile: boolean; snapshotId?: string | null; snapshotName?: string | null } | null
 }

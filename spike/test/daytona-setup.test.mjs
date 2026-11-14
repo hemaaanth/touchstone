@@ -19,10 +19,9 @@ async function fixture(fn) {
   process.env.TOUCHSTONE_DAYTONA_STATE_FILE = join(dir, "setup.json");
   process.env.EVENTS_FILE = join(dir, "events.jsonl");
   const config = { backend: "daytona", apiUrl: "https://fixture.test/api", apiKey: "synthetic-key", target: "fixture-region", roamSnapshot: "selected" };
-  const machineId = `probe-${randomUUID()}`;
   const f = { calls: [], posts: 0, builds: 0, deletes: 0, cleanupFails: false, uncertain: false, failProbe: false, holdProbe: null, ref: "source-1", sandbox: null, snapshot: null, uploads: new Map(), epoch: 0 };
   const json = (x, status = 200) => new Response(JSON.stringify(x), { status });
-  const deps = { fetch: async (url, init) => {
+  const deps = { sleep: async () => {}, fetch: async (url, init) => {
     const u = new URL(url);
     assert.ok(["fixture.test", "tb.fixture.test"].includes(u.hostname), "no real provider call");
     f.calls.push({ path: u.pathname, method: init.method, auth: init.headers.Authorization, body: typeof init.body === "string" ? JSON.parse(init.body) : null });
@@ -39,15 +38,17 @@ async function fixture(fn) {
     if (u.pathname === "/api/sandbox" && init.method === "POST") {
       f.posts++;
       const body = JSON.parse(init.body);
-      f.sandbox = { id: machineId, toolboxProxyUrl: "https://tb.fixture.test", labels: body.labels };
-      if (f.uncertain) throw new Error("synthetic-secret");
+      f.epoch = 0;
+      f.sandbox = { id: `probe-${randomUUID()}`, toolboxProxyUrl: "https://tb.fixture.test", labels: body.labels };
+      if (f.uncertain || (f.uncertainRuntime && body.labels.loadout === "free-roam")) throw new Error("synthetic-secret");
       return json(f.sandbox);
     }
     if (u.pathname === "/api/sandbox") return json({ items: f.sandbox && !f.hideMachine ? [f.sandbox] : [] });
-    if (u.pathname === `/api/sandbox/${machineId}` && init.method === "GET") return f.sandbox ? json(f.sandbox) : json({}, 404);
-    if (u.pathname === `/api/sandbox/${machineId}` && init.method === "DELETE") {
+    if (u.hostname === "fixture.test" && u.pathname.startsWith("/api/sandbox/") && init.method === "GET") return f.sandbox ? json(f.sandbox) : json({}, 404);
+    if (u.hostname === "fixture.test" && u.pathname.startsWith("/api/sandbox/") && init.method === "DELETE") {
       f.deletes++;
       if (f.cleanupFails) return json({ message: "synthetic-secret" }, 409);
+      if (f.acceptedDelete) return new Response("", { status: 202 });
       f.sandbox = null; return new Response(null, { status: 204 });
     }
     if (u.pathname.endsWith("/files/upload-v2")) {
@@ -71,7 +72,7 @@ async function fixture(fn) {
     }
     throw new Error(`Unexpected fixture endpoint ${u.pathname}`);
   } };
-  try { await fn({ config, f, deps }); await settle(); }
+  try { await fn({ dir, config, f, deps }); await settle(); }
   finally { names.forEach((key, i) => old[i] == null ? delete process.env[key] : process.env[key] = old[i]); rmSync(dir, { recursive: true, force: true }); }
 }
 
@@ -98,6 +99,11 @@ test("one explicit test uses actual supervisor exchange, bounded lifetime and co
   startRoamShellTest(config, id, deps);
   await settle();
   assert.equal(f.posts, 1, "same request ID cannot provision again after success");
+  startRoamShellTest(config, randomUUID(), deps);
+  await settle();
+  assert.equal(f.posts, 2);
+  assert.equal(f.deletes, 2);
+  assert.equal(roamSetupView(config).ready, true, "a later explicit test uses a fresh supervisor");
 }));
 
 test("failed capabilities cannot become ready even when cleanup succeeds", async () => fixture(async ({ config, f, deps }) => {
@@ -187,4 +193,43 @@ test("unknown snapshot creation is recovered by its exact unique name without an
   await reconcileRoamSnapshot(config, op.id, deps);
   assert.equal(allRoamOperations()[0].phase, "complete");
   assert.equal(f.builds, 1);
+}));
+
+test("accepted DELETE does not establish deletion or shell readiness", async () => fixture(async ({ config, f, deps }) => {
+  f.acceptedDelete = true;
+  startRoamShellTest(config, randomUUID(), deps);
+  await settle();
+  assert.equal(f.posts, 1);
+  assert.equal(allRoamOperations()[0].phase, "cleanup");
+  assert.equal(roamSetupView(config).ready, false);
+  assert.ok(f.calls.filter((c) => c.method === "GET" && c.path.startsWith("/api/sandbox/")).length >= 10);
+  f.acceptedDelete = false;
+  await reconcileRoamShellTest(config, allRoamOperations()[0].id, deps);
+  assert.equal(allRoamOperations()[0].phase, "complete");
+  assert.equal(roamSetupView(config).ready, false);
+}));
+
+test("a second real setup proof cannot bypass an uncertain runtime create for the same child", async () => fixture(async ({ dir, config, f, deps }) => {
+  const { roamMachine } = await import("../lib/daytona.mjs");
+  const env = { TOUCHSTONE_EXEC: "daytona", DAYTONA_API_KEY: config.apiKey, DAYTONA_API_URL: config.apiUrl, DAYTONA_TARGET: config.target, TOUCHSTONE_ROAM_SNAPSHOT: config.roamSnapshot };
+  const old = Object.fromEntries(Object.keys(env).map((k) => [k, process.env[k]]));
+  const realFetch = globalThis.fetch;
+  Object.assign(process.env, env); globalThis.fetch = deps.fetch;
+  try {
+    startRoamShellTest(config, randomUUID(), deps);
+    await settle();
+    assert.equal(roamSetupView(config).ready, true);
+    f.uncertainRuntime = true; f.hideMachine = true;
+    await assert.rejects(roamMachine(join(dir, "run"), "child"));
+    startRoamShellTest(config, randomUUID(), deps);
+    await settle();
+    assert.equal(roamSetupView(config).ready, true);
+    await assert.rejects(roamMachine(join(dir, "run"), "child"));
+    const posts = f.calls.filter((c) => c.method === "POST" && c.path === "/api/sandbox" && c.body.labels.loadout === "free-roam");
+    assert.equal(posts.length, 1);
+    assert.equal(allRoamOperations().filter((o) => o.action === "runtime").length, 1);
+  } finally {
+    globalThis.fetch = realFetch;
+    for (const [k, v] of Object.entries(old)) v == null ? delete process.env[k] : process.env[k] = v;
+  }
 }));

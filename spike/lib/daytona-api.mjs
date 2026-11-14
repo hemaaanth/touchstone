@@ -164,3 +164,14 @@ export function daytonaShellApi(config, { fetch: transport = globalThis.fetch } 
     },
   };
 }
+
+// DELETE can mean accepted, not gone. A 404 from the resource read is the
+// confirmation. An unresolved delete keeps its cleanup obligation.
+export async function confirmDaytonaDeletion(read, { sleep = (ms) => new Promise((r) => setTimeout(r, ms)) } = {}) {
+  for (let i = 0; i < 10; i++) {
+    try { await read(); }
+    catch (error) { if (error.status === 404) return; throw error; }
+    if (i < 9) await sleep(1000);
+  }
+  throw daytonaError("daytona_cleanup_pending");
+}

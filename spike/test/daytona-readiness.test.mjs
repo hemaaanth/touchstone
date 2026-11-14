@@ -38,6 +38,7 @@ async function fixture(fn) {
       fake.deletes.push({ id: u.pathname.split("/").at(-1), auth: init.headers.Authorization });
       return new Response(null, { status: 204 });
     }
+    if (u.pathname.startsWith("/api/sandbox/") && init.method === "GET") return json({}, 404);
     if (u.pathname.endsWith("/process/execute")) return json({ exitCode: 0, result: "" });
     throw new Error(`Unexpected synthetic endpoint: ${init.method} ${u.pathname}`);
   };
@@ -147,4 +148,26 @@ test("legacy unbound free-roam sidecars are preserved without account requests",
   assert.equal(fake.posts, 0);
   assert.equal(fake.deletes.length, 0);
   assert.deepEqual(JSON.parse(readFileSync(`${root}.daytona.json`, "utf8")), JSON.parse(raw));
+}));
+
+test("ID-less cleanup remains eligible after an empty close and workspace loss", async () => fixture(async ({ dir, fake, config }) => {
+  const root = join(dir, "run");
+  fake.mode = "timeout";
+  await assert.rejects(roamMachine(root, "child"));
+  await closeRun(root);
+  assert.equal(roamOperations(roamBinding(config))[0].phase, "cleanup");
+  fake.list = [{ id: "late-machine", labels: fake.requests[0].labels }];
+  await closeRun(join(dir, "later-run"));
+  assert.deepEqual(fake.deletes.map((x) => x.id), ["late-machine"]);
+  assert.equal(roamOperations(roamBinding(config))[0].phase, "complete");
+}));
+
+test("bare legacy pending IDs survive a replacement account and its possible 404", async () => fixture(async ({ dir, fake }) => {
+  const { writeFileSync, readFileSync } = await import("node:fs");
+  const file = process.env.DAYTONA_PENDING;
+  writeFileSync(file, JSON.stringify(["legacy-unknown-account"]));
+  process.env.DAYTONA_API_KEY = "replacement-synthetic-key";
+  await closeRun(join(dir, "another-run"));
+  assert.equal(fake.deletes.length, 0);
+  assert.deepEqual(JSON.parse(readFileSync(file, "utf8")), ["legacy-unknown-account"]);
 }));

@@ -55,7 +55,8 @@ import { readConfig } from "./providers.mjs";
 import { scrubError, scrubUrl } from "./redact-url.mjs";
 import { saveStore, withStoreLock } from "./grant-store.mjs";
 import { MANIFEST } from "./images.mjs";
-import { daytonaError, daytonaShellApi } from "./daytona-api.mjs";
+import { pendingMachines, recordPendingMachine, clearPendingMachines } from "./daytona-pending.mjs";
+import { daytonaError, daytonaShellApi, confirmDaytonaDeletion } from "./daytona-api.mjs";
 import { checkRoamSelection, requireRoamReady } from "./daytona-setup.mjs";
 import { allRoamOperations, beginRoamOperation, roamAccountBinding, roamBinding, setRoamSelectionState, updateRoamOperation } from "./daytona-state.mjs";
 
@@ -269,6 +270,7 @@ function client(c) {
     return t ? JSON.parse(t) : null;
   }
   return {
+    account: roamAccountBinding(c),
     getSnapshot: (name) => call("GET", `${API}/snapshots/${encodeURIComponent(name)}`),
     createSnapshot: (name) => call("POST", `${API}/snapshots`, {
       name, imageName: SNAPSHOT_IMAGE, sandboxClass: "linux-vm", cpu: 2, memory: 4, disk: 10, regionId: c.target,
@@ -332,6 +334,13 @@ export function runRoot(dir, tmp = tmpdir()) {
   }
 }
 
+// Keep the existing capped toolbox transport, but use the bounded shell API
+// for account metadata and cleanup reconciliation.
+function roamClient(config) {
+  const api = daytonaShellApi(config);
+  return { ...client(config), get: api.sandbox, remove: api.removeSandbox, byLabel: async (labels) => ({ items: await api.sandboxes(labels) }) };
+}
+
 const sidecar = (root) => `${root}.daytona.json`;
 
 function readSidecar(root) {
@@ -351,12 +360,15 @@ function changeSidecar(root, fn) {
   return withStoreLock(sidecar(root), "Daytona machines", () => {
     const all = readSidecar(root);
     fn(all);
-    saveStore(sidecar(root), all, { mode: 0o600 });
+    if (Object.keys(all).length) saveStore(sidecar(root), all, { mode: 0o600 });
+    else rmSync(sidecar(root), { force: true });
   });
 }
 
 async function cleanupRoamOperation(op, api) {
   if (!op || ["complete", "rejected"].includes(op.phase)) return false;
+  updateRoamOperation(op.binding, op.id, op.phase, "cleanup");
+  op = { ...op, phase: "cleanup" };
   let id = op.resourceId;
   if (!id) {
     const labels = { touchstone: "1", nonce: op.nonce, loadout: "free-roam", run: op.run.slice(0, 12) };
@@ -366,7 +378,10 @@ async function cleanupRoamOperation(op, api) {
     id = matches[0].id;
   }
   updateRoamOperation(op.binding, op.id, op.phase, "cleanup", id);
-  if (!(await deleteMachine(api, id))) return false;
+  try {
+    try { await api.remove(id); } catch (error) { if (error.status !== 404) throw error; }
+    await confirmDaytonaDeletion(() => api.get(id));
+  } catch { return false; }
   updateRoamOperation(op.binding, op.id, "cleanup", "complete");
   return true;
 }
@@ -383,6 +398,7 @@ async function machineFor(c, root) {
     p.catch(() => machines.delete(key));
   }
   const m = await machines.get(key);
+  if (m.api.account !== roamAccountBinding(c)) throw daytonaError("daytona_shell_unverified");
   m.key = key;
   if (Date.now() - m.used > staleMs() && !(await alive(m))) {
     retire(m);
@@ -411,9 +427,9 @@ function retire(m) {
     }).catch(() => {});
     return;
   }
+  recordPendingMachine(m.id, m.api.account);
   if (m.root) changeSidecar(m.root, (all) => { if (all[m.agent]?.id === m.id) delete all[m.agent]; });
-  const keep = () => writePending([...readPending(), m.id]);
-  deleteMachine(m.api, m.id).then((ok) => ok || keep(), keep);
+  deleteMachine(m.api, m.id).then((gone) => { if (gone) clearPendingMachines([{ id: m.id, account: m.api.account }]); }).catch(() => {});
 }
 
 // True when the machine can still take calls. A 404 means it is gone.
@@ -431,6 +447,7 @@ async function openMachine(c, root, agent) {
   const api = client(c);
   const known = root ? readSidecar(root)[agent] : null;
   if (known) {
+    if (known.account !== api.account) throw daytonaError("daytona_shell_unverified");
     // Another process of this run (the pre-pass in the app server) made it.
     const m = { id: known.id, toolbox: known.toolbox, api, synced: new Map(), ready: new Set(), lock: Promise.resolve(), used: Date.now(), root, agent };
     try {
@@ -454,13 +471,16 @@ async function openMachine(c, root, agent) {
   } catch (e) {
     api.byLabel({ touchstone: "1", nonce }).then((r) => {
       for (const x of r?.items ?? r ?? []) {
-        if (x?.labels?.nonce === nonce) deleteMachine(api, x.id).then((ok) => ok || writePending([...readPending(), x.id]));
+        if (x?.labels?.nonce === nonce) {
+          recordPendingMachine(x.id, api.account);
+          deleteMachine(api, x.id).then((ok) => { if (ok) clearPendingMachines([{ id: x.id, account: api.account }]); }).catch(() => {});
+        }
       }
     }).catch(() => {});
     throw e;
   }
   const m = { id: sb.id, toolbox: `${sb.toolboxProxyUrl}/${sb.id}`, api, synced: new Map(), ready: new Set(), lock: Promise.resolve(), used: Date.now(), root, agent };
-  changeSidecar(root, (all) => { all[agent] = { id: m.id, toolbox: m.toolbox }; });
+  changeSidecar(root, (all) => { all[agent] = { id: m.id, toolbox: m.toolbox, account: api.account }; });
   event("exec-machine", { backend: "daytona", sandbox: m.id, run: labels.run ?? null });
   await waitReady(m);
   return m;
@@ -521,46 +541,41 @@ export async function closeRun(ws) {
   const runHash = createHash("sha256").update(root).digest("hex");
   const captured = new Map();
   for (const [key, promise] of machines) {
-    if (!key.startsWith(`${root}|roam:`)) continue;
-    try { const m = await promise; captured.set(m.operationId, m); } catch {}
+    if (!key.startsWith(`${root}|`)) continue;
+    try { const m = await promise; captured.set(m.id, m); } catch {}
   }
   const obligations = allRoamOperations().filter((o) => o.action === "runtime" && (o.run === runHash || o.phase === "cleanup") && !["complete", "rejected"].includes(o.phase));
-  const legacyPending = readPending();
-  if (!Object.keys(all).length && !obligations.length && !legacyPending.length) return [];
-  const roamDone = [];
+  const gone = [];
   for (const op of obligations) {
-    // Also retry earlier obligations whose workspace has already been removed.
-    const m = captured.get(op.id);
-    if (!m && op.account !== account) continue;
-    try { if (await cleanupRoamOperation(op, m?.api ?? client(config))) roamDone.push(op.resourceId); } catch {}
+    const m = captured.get(op.resourceId);
+    if (!m && (op.account !== account || !config.apiKey)) continue;
+    try { if (await cleanupRoamOperation(op, m?.api ?? roamClient(config))) gone.push(op.resourceId); } catch {}
   }
-  changeSidecar(root, (entries) => {
-    const complete = new Set(allRoamOperations().filter((o) => o.phase === "complete").map((o) => o.id));
-    for (const [key, entry] of Object.entries(entries)) if (key.startsWith("roam:") && complete.has(entry.operationId)) delete entries[key];
+  // New confined records also carry their original account. Bare legacy IDs
+  // cannot establish ownership, so they remain unresolved without a DELETE.
+  for (const [key, entry] of Object.entries(all)) {
+    if (!key.startsWith("roam:")) recordPendingMachine(entry.id, entry.account ?? null);
+  }
+  const done = [];
+  for (const row of pendingMachines()) {
+    if (typeof row === "string") continue;
+    const m = captured.get(row.id);
+    const api = m?.api.account === row.account ? m.api : row.account === account && config.apiKey ? client(config) : null;
+    if (!api) continue;
+    if (await deleteMachine(api, row.id, all && Object.values(all).some((v) => v.id === row.id) ? 10 : 1)) { done.push(row); gone.push(row.id); }
+  }
+  if (done.length) clearPendingMachines(done);
+  const complete = new Set(allRoamOperations().filter((o) => o.phase === "complete").map((o) => o.id));
+  if (Object.keys(all).length) changeSidecar(root, (entries) => {
+    for (const [key, entry] of Object.entries(entries)) {
+      if (key.startsWith("roam:") ? complete.has(entry.operationId) : Boolean(entry.account)) delete entries[key];
+    }
   });
-  const ids = Object.entries(all).filter(([key]) => !key.startsWith("roam:")).map(([, x]) => x.id).filter(Boolean);
-  const removeSidecar = () => { if (!Object.keys(readSidecar(root)).some((key) => key.startsWith("roam:"))) rmSync(sidecar(root), { force: true }); };
   for (const key of [...machines.keys()]) if (key.startsWith(`${root}|`)) machines.delete(key);
-  if (!ids.length && !legacyPending.length) { removeSidecar(); return roamDone.filter(Boolean); }
-  const old = legacyPending.filter((id) => !ids.includes(id));
-  if (!ids.length && !old.length) {
-    removeSidecar();
-    return roamDone.filter(Boolean);
-  }
-  // Record the ids first. If this process dies during the deletes, the next
-  // closeRun still finds them. The sidecar goes only after the deletes.
-  writePending([...old, ...ids]);
-  const api = client(execConfig());
-  const gone = await Promise.all(ids.map((id) => deleteMachine(api, id)));
-  const oldGone = await Promise.all(old.map((id) => deleteMachine(api, id, 1)));
-  const done = new Set([...ids.filter((_, i) => gone[i]), ...old.filter((_, i) => oldGone[i])]);
-  // Read the file again: another run may have added ids meanwhile.
-  const left = readPending().filter((id) => !done.has(id));
-  writePending(left);
-  changeSidecar(root, (entries) => { for (const key of Object.keys(entries)) if (!key.startsWith("roam:")) delete entries[key]; });
-  removeSidecar();
-  if (left.length) event("exec-cleanup", { backend: "daytona", left, note: "Daytona would not delete these yet; the next run retries" });
-  return [...roamDone.filter(Boolean), ...ids.filter((_, i) => gone[i])];
+  const unresolved = pendingMachines().length;
+  if (unresolved) event("exec-cleanup", { backend: "daytona", pending: unresolved, note: "Cleanup remains unresolved; legacy IDs require their original account to be established." });
+  const ownIds = new Set(Object.values(all).map((m) => m.id));
+  return gone.filter((id) => id && ownIds.has(id));
 }
 
 // True when the machine is gone.
@@ -578,23 +593,10 @@ async function deleteMachine(api, id, tries = 10) {
   return false;
 }
 
-// Machines that Daytona would not delete yet. spike/data/ is git-ignored.
-const PENDING = () => process.env.DAYTONA_PENDING || new URL("../data/daytona-pending.json", import.meta.url).pathname;
-
+// Compatibility for callers that display pending IDs. Deletion uses only the
+// account-bound records above; this view cannot authorize an API request.
 export function readPending() {
-  try {
-    const ids = JSON.parse(readFileSync(PENDING(), "utf8"));
-    return Array.isArray(ids) ? ids.filter((x) => typeof x === "string") : [];
-  } catch {
-    return [];
-  }
-}
-
-function writePending(ids) {
-  const f = PENDING();
-  if (!ids.length) return rmSync(f, { force: true });
-  mkdirSync(dirname(f), { recursive: true });
-  writeFileSync(f, JSON.stringify([...new Set(ids)]) + "\n");
+  return pendingMachines().map((r) => typeof r === "string" ? r : r.id);
 }
 
 // ---- Workspace sync
@@ -974,7 +976,7 @@ export async function roamMachine(ws, agent) {
       p.catch(() => machines.get(key) === mine && machines.delete(key));
     }
     m = await p;
-    if (m.account !== roamAccountBinding(c)) throw daytonaError("daytona_shell_unverified");
+    if (m.account !== roamAccountBinding(c) || m.binding !== roamBinding(c)) throw daytonaError("daytona_shell_unverified");
     if (opened || Date.now() - m.used <= staleMs() || (await alive(m))) break;
     // It stopped by itself or it is gone. Open a new one, and say so.
     if (machines.get(key) === p) await retire(m);
@@ -999,11 +1001,11 @@ export async function roamMachine(ws, agent) {
 }
 
 async function openRoam(c, root, agent, key, lost) {
-  const api = client(c);
+  const api = roamClient(c);
   const tag = `roam:${agent}`;
   const known = readSidecar(root)[tag];
   if (known) {
-    if (known.account !== roamAccountBinding(c)) throw daytonaError("daytona_shell_unverified");
+    if (known.account !== roamAccountBinding(c) || known.binding !== roamBinding(c)) throw daytonaError("daytona_shell_unverified");
     // An earlier worker of this run made it. It has no cache key, so retire
     // does not drop the entry of this very call.
     const old = { ...known, api, root, agent: tag, used: Date.now(), created: false, replaced: false };
@@ -1021,7 +1023,7 @@ async function openRoam(c, root, agent, key, lost) {
   const binding = roamBinding(c);
   const runHash = createHash("sha256").update(root).digest("hex");
   const run = runHash.slice(0, 12);
-  const slot = createHash("sha256").update(JSON.stringify([root, agent, selection.verificationId])).digest("hex");
+  const slot = createHash("sha256").update(JSON.stringify([root, agent])).digest("hex");
   const { operation, created } = beginRoamOperation(c, "runtime", slot, { run: runHash });
   const labels = { touchstone: "1", agent: String(agent).slice(0, 60), nonce: operation.nonce, run, loadout: "free-roam" };
   const shellApi = daytonaShellApi(c);
