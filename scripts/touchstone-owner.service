@@ -1,0 +1,29 @@
+# Generated for one reviewed release. Copy/install/start only after owner approval.
+[Unit]
+Description=Touchstone fixed owner-test release
+After=network.target
+ConditionPathExists=@RELEASE@/release-manifest.json
+ConditionPathExists=@RELEASE@/app/node_modules/vite/package.json
+ConditionPathExists=@RELEASE@/spike/node_modules/@earendil-works/pi-durable/package.json
+
+[Service]
+Type=simple
+User=@USER@
+WorkingDirectory=@RELEASE@/app
+EnvironmentFile=@STATE@/env/owner.env
+ExecStart=@NODE@ @RELEASE@/app/server/start.mjs
+Restart=no
+KillMode=control-group
+TimeoutStopSec=90
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadOnlyPaths=@RELEASE@
+ReadWritePaths=@STATE@
+PrivateTmp=true
+StandardOutput=append:@STATE@/logs/server.log
+StandardError=append:@STATE@/logs/server-error.log
+
+[Install]
+WantedBy=multi-user.target
