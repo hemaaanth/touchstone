@@ -34,6 +34,8 @@ not part of the public deployment.
 
 - A Linux x86-64 host with Docker and persistent local storage.
 - Node 24 or newer and the pinned Bun installation used for frozen installs.
+- Python 3 with `os.pidfd_open` and `signal.pidfd_send_signal`. Demo cleanup
+  uses these Linux APIs to signal registered processes without PID reuse races.
 - The pinned Foundry image and warmed Solidity 0.8.38 cache from
   `spike/lib/images.mjs` and `spike/lib/sandbox.mjs`.
 - A non-root service account whose private workspaces are writable by the
@@ -130,6 +132,12 @@ Check two independent sessions: the second must not list, recover, read, stream,
 stop, or export the first session's run or findings. Also check a saved session
 after restart, lost-response recovery, rate limits, invalid requests, and denial
 of settings and Vite/source routes.
+
+Exercise Stop, the work deadline, forced worker exit, and server restart during
+an in-flight Forge operation. Check process termination and Docker container
+removal separately. A Docker CLI exit does not prove the container is gone.
+Cleanup must target only the run's registered resources. Unknown ownership or
+failed cleanup must keep capacity reserved, including after restart.
 
 On the actual host, complete one bounded NEAR AI assessment through the existing
 proof gate. Confirm that the browser shows the real result, that its report is
