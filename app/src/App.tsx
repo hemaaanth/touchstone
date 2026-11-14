@@ -17,6 +17,7 @@ import { ModulesPage } from "@/components/modules-page"
 import { ScopesPage } from "@/components/scopes-page"
 import { SettingsPage } from "@/components/settings-page"
 import { NewRunDialog } from "@/components/new-run-dialog"
+import { SetupStart } from "@/components/setup-start"
 import { loadRun, onRunSettled, reloadRun, useRunBriefs } from "@/lib/runModel"
 import { useStoredWidth } from "@/components/resize-handle"
 import { ErrorState } from "@/components/assistant-ui/elements/error-state"
@@ -225,7 +226,7 @@ export function App() {
       />
 
       <main className="relative flex h-svh min-w-0 flex-1 flex-col">
-        {setupError && catalog === "ready" && page !== "settings" ? (
+        {setupError && catalog === "ready" && page !== "settings" && rows.length > 0 ? (
           <ErrorState
             className="shrink-0"
             title={demo ? "Demo unavailable" : "Finish provider setup"}
@@ -233,7 +234,15 @@ export function App() {
             actions={demo ? undefined : <Button size="sm" onClick={() => select({ kind: "page", id: "settings" })}>Set up provider</Button>}
           />
         ) : null}
-        {activeRun ? (
+        {!demo && setupError && catalog === "ready" && rows.length === 0 ? (
+          <SetupStart
+            onSaved={refreshModels}
+            onStarted={(id) => {
+              fetchRuns().then(setRuns).catch(() => {})
+              openRun(id)
+            }}
+          />
+        ) : activeRun ? (
           <RunChat
             key={activeRun.id}
             run={activeRun}
