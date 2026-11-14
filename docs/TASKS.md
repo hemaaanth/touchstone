@@ -154,7 +154,8 @@ Started 2026-11-13: a planner (`thr_j9x637fuk6`, read-only worktree `redteam-w4-
 - **I4 is split.** I4a (the ask row: Done, Reply, Cancel) is a Should for the deadline. I4b (the Voxl desktop view and takeover) is after the deadline.
 - **I6 does not wait for G5 any more:** G5 is done; the session record sits beside `recordScript` in `spike/lib/candidate.mjs`.
 - **Lanes:** A = I1, B = I2, C = I6, D = I7a, built at the same time; then one real Daytona run of the slice; then E = I3 (smallest) and F = I4a if lane D is merged by 14:00 UTC. Merge cut-off 21:00 UTC.
-- **Open for the owner:** the Daytona tier (an open network may need Tier 3); `daytona-medium` as the free-roam base, with one exemption line for the stop condition "a third-party tool that would run outside Docker `runTool()`"; who asks the human; the yes for the real slice run.
+- **Owner answer, 2026-11-14: the Daytona organisation is on Tier 3 or 4.** A machine has full internet by default (Daytona docs, network limits). No top-up is needed. A free-roam machine reaches any host, so the scope lines in the child's instructions and the egress log are the only limits. Not verified by a thread (no Daytona call for it).
+- **Open for the owner:** `daytona-medium` as the free-roam base, with one exemption line for the stop condition "a third-party tool that would run outside Docker `runTool()`"; who asks the human; the yes for the real slice run.
 
 **Wave 5. Live proof. Needs a paid-run budget.**
 
