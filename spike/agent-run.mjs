@@ -67,6 +67,12 @@ mkdirSync(DIR, { recursive: true });
 //   passed  test contract name -> the exact source that last passed
 //   found   submitted findings, in submit order
 async function openHarness(db, ws, state) {
+  try {
+    const options = JSON.parse(process.env.ROAM_OPTIONS ?? "[]");
+    if (!Array.isArray(options) || options.length) throw new Error();
+  } catch {
+    throw new Error("ROAM_OPTIONS must be [] for this release.");
+  }
   const pack = packFor(readTouchstone(ws));
   // Source navigation is the DEFAULT code-reading layer for any run given a local
   // folder or a fetched repo: Contracts and Review. The hunter gets the five
