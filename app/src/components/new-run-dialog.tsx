@@ -2,12 +2,13 @@ import { useRef, useState } from "react"
 import { FileCode2, FlaskConical, Folder, FolderGit2, Globe, Loader2, Plus, Upload, X } from "lucide-react"
 import type { ModelChoice, PackChoice, RoamSelection, RunMode, TargetChoice } from "@/lib/types"
 import { attachScope, type ScopeMember } from "@/lib/api"
-import { DEFAULT_PACK, packOf, plural } from "@/lib/catalog"
+import { DEFAULT_PACK, isOwnScope, packOf, plural } from "@/lib/catalog"
 import { cn } from "@/lib/utils"
 import { Dialog, DialogClose, DialogContent, DialogTitle } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import { Badge } from "@/components/ui/badge"
 
 const RANDOM = "random"
 const DEFAULT_BUDGET = "5.00"
@@ -83,7 +84,13 @@ export function NewRunDialog({
     onStart(alias, scope?.id, budgetN, modules, mode, { freeRoam: mode === "fleet" && freeRoam, options: [] })
   }
 
-  const scopeItems = [{ value: RANDOM, label: "Random scope" }, ...runnable.map((t) => ({ value: t.id, label: t.title }))]
+  const own = (target: TargetChoice) => isOwnScope(target.id) || target.kind === "live"
+  const scopeGroups = [
+    { label: "Your scopes", demo: false, targets: runnable.filter(own) },
+    { label: "Demo scopes", demo: true, targets: runnable.filter((target) => !own(target)) },
+  ]
+  const scopeItems = [{ value: RANDOM, label: "Random scope" }, ...scopeGroups.flatMap((group) => group.targets.map((t) => ({ value: t.id, label: t.title })))]
+  const demoBadge = <Badge variant="outline" className="h-[18px] shrink-0 px-1.5 text-[10.5px] font-normal text-muted-foreground">Demo</Badge>
 
   const notice = setupError || (needsRoamSetup ? "Set up and test Daytona in Settings to use free-roam agents. You can also turn off free-roam agents for this run." : null) || (!budgetOk
     ? "The budget must be between $0.01 and $1,000."
@@ -130,12 +137,20 @@ export function NewRunDialog({
             >
               <SelectTrigger className={field} aria-labelledby="new-run-scope">
                 <SelectValue className="min-w-0 truncate" />
+                {scope && !own(scope) ? demoBadge : null}
               </SelectTrigger>
               <SelectContent alignItemWithTrigger={false} className="p-1">
-                {scopeItems.map((s) => (
-                  <SelectItem key={s.value} value={s.value} className="text-[13px]">
-                    <span className="truncate">{s.label}</span>
-                  </SelectItem>
+                <SelectItem value={RANDOM} className="text-[13px]">Random scope</SelectItem>
+                {scopeGroups.filter((group) => group.targets.length > 0).map((group) => (
+                  <SelectGroup key={group.label}>
+                    <SelectLabel>{group.label}</SelectLabel>
+                    {group.targets.map((target) => (
+                      <SelectItem key={target.id} value={target.id} className="text-[13px]">
+                        <span className="min-w-0 flex-1 truncate">{target.title}</span>
+                        {group.demo ? demoBadge : null}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
                 ))}
               </SelectContent>
             </Select>
