@@ -67,7 +67,7 @@ for (const match of imports) {
   if (!spec.startsWith(".") || ["./findings.mjs", "./settings.mjs", "../../spike/lib/daytona-setup.mjs"].includes(spec) || spec.startsWith("./demo-")) continue;
   const exports = Object.fromEntries(match[1].split(",").map((name) => { name = name.trim().split(/\s+as\s+/)[0]; return [name, allowed[name] ?? (() => { throw Error(`Unexpected dependency ${name}`); })]; }));
   // Findings shares these exports although runs does not import them all.
-  if (spec.endsWith("/scopes-store.mjs")) for (const name of ["setScopeBrief", "setScopeNetworkPolicy"]) exports[name] = () => { throw Error("Owner scopes forbidden"); };
+  if (spec.endsWith("/scopes-store.mjs")) for (const name of ["setScopeBrief", "setScopeNetworkPolicy", "secretContent"]) exports[name] = () => { throw Error("Owner scopes forbidden"); };
   if (spec.endsWith("/candidate.mjs")) Object.assign(exports, Object.fromEntries(["isCandidate", "makeCandidate", "makeAgentFinding", "measuredRule"].map((k) => [k, allowed[k]])));
   if (spec === "./candidates.mjs") Object.assign(exports, { measuredOfRecord: allowed.measuredOfRecord, recordRowOf: allowed.recordRowOf });
   if (spec.endsWith("/proof-view.mjs")) exports.proofView = allowed.proofView;
