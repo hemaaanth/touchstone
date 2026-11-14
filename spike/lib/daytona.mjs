@@ -237,7 +237,7 @@ export function shq(s) {
 function client(c) {
   const API = c.apiUrl;
   const auth = { Authorization: `Bearer ${c.apiKey}` };
-  async function call(method, url, body, { raw = false, timeoutMs = 60_000 } = {}) {
+  async function call(method, url, body, { raw = false, timeoutMs = 60_000, cap = 0 } = {}) {
     const init = { method, headers: { ...auth }, signal: AbortSignal.timeout(timeoutMs) };
     if (body instanceof FormData) init.body = body;
     else if (body !== undefined) { init.headers["content-type"] = "application/json"; init.body = JSON.stringify(body); }
@@ -250,11 +250,15 @@ function client(c) {
       throw scrubError(err, API);
     }
     if (!r.ok) {
-      const text = (await r.text()).slice(0, 300);
+      // `cap` marks a call to a free-roam machine. Its answer is the child's
+      // text and may be huge, so an error does not read it.
+      if (cap) r.body?.cancel().catch(() => {});
+      const text = cap ? "" : (await r.text()).slice(0, 300);
       const e = new Error(scrubUrl(`Daytona ${method} ${url.replace(/\?.*/, "")} -> ${r.status}: ${text}`, API));
       e.status = r.status;
       throw e;
     }
+    if (cap) return cappedExec(r, cap);
     if (raw) return Buffer.from(await r.arrayBuffer());
     const t = await r.text();
     return t ? JSON.parse(t) : null;
@@ -265,15 +269,20 @@ function client(c) {
       name, imageName: SNAPSHOT_IMAGE, sandboxClass: "linux-vm", cpu: 2, memory: 4, disk: 10, regionId: c.target,
     }),
     // Create can block for minutes when the region is busy.
-    create: (labels) => call("POST", `${API}/sandbox`, {
-      snapshot: c.snapshot, target: c.target, user: "root", labels,
-      autoStopInterval: IDLE_STOP_MIN, autoDeleteInterval: 0,
+    // The defaults are for a confined tool machine: it holds no state, so it
+    // stops after 15 idle minutes and is deleted when it stops.
+    create: (labels, { snapshot = c.snapshot, stopMin = IDLE_STOP_MIN, deleteMin = 0 } = {}) => call("POST", `${API}/sandbox`, {
+      snapshot, target: c.target, user: "root", labels,
+      autoStopInterval: stopMin, autoDeleteInterval: deleteMin,
     }, { timeoutMs: 300_000 }),
     byLabel: (labels) => call("GET", `${API}/sandbox?labels=${encodeURIComponent(JSON.stringify(labels))}`),
     get: (id) => call("GET", `${API}/sandbox/${id}`),
     remove: (id) => call("DELETE", `${API}/sandbox/${id}`),
     exec: (m, command, seconds) => call("POST", `${m.toolbox}/process/execute`, { command, timeout: seconds },
       { timeoutMs: (seconds + 30) * 1000 }),
+    // The same call for a free-roam machine: the answer is read with a size limit.
+    roamExec: (m, command, seconds) => call("POST", `${m.toolbox}/process/execute`, { command, timeout: seconds },
+      { timeoutMs: (seconds + 30) * 1000, cap: ROAM_ANSWER_BYTES }),
     upload: (m, path, buf) => {
       const form = new FormData();
       form.append("file", new Blob([buf]), "f");
@@ -818,4 +827,362 @@ export function warmScript(v) {
     `rc=0; docker run --rm -v foundry-svm:/home/foundry/.svm -v "$D:/work" -w /work ${img} "forge build --use $V" >"$D.log" 2>&1 || rc=$?`,
     `rm -rf "$D"; [ $rc -eq 0 ] || tail -c 400 "$D.log"; rm -f "$D.log"; exit $rc`,
   ].join("\n");
+}
+
+// ---- Free-roam machine (Wave 4, I1)
+//
+// One container machine per free-roam child, kept for the whole run. It is
+// not the confined tool machine: no Docker, no workspace copy, open network.
+// - Sidecar key `roam:<agent>`, so closeRun deletes it like every other machine.
+// - It never runs on this computer. Without Daytona, roamMachine throws.
+// - It stops after 60 idle minutes and is deleted 240 minutes after that. This
+//   is only the backstop for a leak; closeRun is the normal delete. Never 0
+//   here: 0 deletes the child's files at the first stop.
+// - A machine that stopped or is gone is replaced by an empty one, and the
+//   caller is told (`replaced`). Nothing starts a stopped machine again.
+// - The snapshot is a Daytona default. This code never creates a snapshot.
+export const ROAM_SNAPSHOT = process.env.TOUCHSTONE_ROAM_SNAPSHOT ?? "daytona-medium";
+const ROAM_STOP_MIN = 60;
+const ROAM_DELETE_MIN = 240;
+// Bound retained response bytes, not decoded strings or the transport's current chunk.
+const ROAM_ANSWER_BYTES = 4 * 1024 * 1024;
+
+// Retain a fixed `max`-byte tail and a separate 64-byte prefix. For a larger
+// answer, exitCode is known only when it stands at the start or end of the JSON.
+async function cappedExec(r, max) {
+  const tail = Buffer.alloc(max);
+  const first = Buffer.alloc(64);
+  let prefix = 0;
+  let at = 0;
+  let total = 0;
+  for await (const chunk of r.body ?? []) {
+    const n = Math.min(first.length - prefix, chunk.length);
+    first.set(chunk.subarray(0, n), prefix);
+    prefix += n;
+    total += chunk.length;
+    if (chunk.length >= max) {
+      tail.set(chunk.subarray(chunk.length - max));
+      at = 0;
+    } else {
+      const end = Math.min(chunk.length, max - at);
+      tail.set(chunk.subarray(0, end), at);
+      tail.set(chunk.subarray(end), 0);
+      at = (at + chunk.length) % max;
+    }
+  }
+  if (total <= max) return total ? JSON.parse(new TextDecoder().decode(tail.subarray(0, total))) : null;
+  // Rotate the ring in place; do not allocate another response-sized buffer.
+  tail.subarray(0, at).reverse();
+  tail.subarray(at).reverse();
+  tail.reverse();
+  const s = tail.toString("utf8");
+  const last = s.match(/"\s*,\s*"exitCode"\s*:\s*(-?\d+)\s*\}\s*$/);
+  const code = last ?? first.toString("latin1").match(/^\s*\{\s*"exitCode"\s*:\s*(-?\d+)\s*,/);
+  const end = last ? last.index : s.search(/"\s*\}\s*$/);
+  // The cut may fall inside an escape. Skip a few characters until the rest reads.
+  for (let k = 0; end > 0 && k < 8; k++) {
+    try {
+      return { exitCode: code ? Number(code[1]) : undefined, result: JSON.parse(`"${s.slice(k, end)}"`) };
+    } catch {}
+  }
+  return { exitCode: code ? Number(code[1]) : undefined, result: "" };
+}
+
+// The machine of one free-roam child, opened on first use.
+//   -> { id, fresh, replaced, exec(command, seconds) -> { exitCode, result }, upload(path, bytes) }
+//   fresh     this call created or replaced the machine
+//   replaced  an older machine of this agent was lost (stopped, destroyed or 404)
+// `exec` sends one command string to the machine. Nothing else from this host
+// goes there: no environment, no file, no key.
+export async function roamMachine(ws, agent) {
+  const c = execConfig();
+  if (!(c.backend === "daytona" && c.apiKey)) throw new Error("Free-roam needs the Daytona backend and its key. It never runs on this computer.");
+  if (!agent) throw new Error("A free-roam machine belongs to one child agent. No agent was given.");
+  const root = resolve(ws);
+  const key = `${root}|roam:${agent}`;
+  let opened = false;
+  let lost = false;
+  let m;
+  for (;;) {
+    let p = machines.get(key);
+    if (!p) {
+      opened = true;
+      p = openRoam(c, root, agent, key, lost);
+      machines.set(key, p);
+      const mine = p;
+      p.catch(() => machines.get(key) === mine && machines.delete(key));
+    }
+    m = await p;
+    if (opened || Date.now() - m.used <= staleMs() || (await alive(m))) break;
+    // It stopped by itself or it is gone. Open a new one, and say so.
+    if (machines.get(key) === p) retire(m);
+    lost = true;
+  }
+  return {
+    id: m.id,
+    fresh: opened && m.created,
+    replaced: opened && m.replaced,
+    exec: async (command, seconds) => {
+      try {
+        const r = await m.api.roamExec(m, command, seconds);
+        m.used = Date.now();
+        return { exitCode: r?.exitCode, result: String(r?.result ?? "") };
+      } catch (e) {
+        m.used = 0; // the next call checks the machine's state first
+        throw e;
+      }
+    },
+    upload: (path, bytes) => m.api.upload(m, path, bytes),
+  };
+}
+
+async function openRoam(c, root, agent, key, lost) {
+  const api = client(c);
+  const tag = `roam:${agent}`;
+  const known = readSidecar(root)[tag];
+  if (known) {
+    // An earlier worker of this run made it. It has no cache key, so retire
+    // does not drop the entry of this very call.
+    const old = { id: known.id, toolbox: known.toolbox, api, root, agent: tag, used: Date.now(), created: false, replaced: false };
+    if (await alive(old)) {
+      await roamReady(old);
+      old.key = key;
+      return old;
+    }
+    retire(old);
+    lost = true;
+  }
+  // The nonce finds the machine again if create times out after Daytona made it.
+  const nonce = randomBytes(6).toString("hex");
+  const run = createHash("sha256").update(root).digest("hex").slice(0, 12);
+  const labels = { touchstone: "1", agent: String(agent).slice(0, 60), nonce, run, loadout: "free-roam" };
+  let sb;
+  try {
+    sb = await api.create(labels, { snapshot: ROAM_SNAPSHOT, stopMin: ROAM_STOP_MIN, deleteMin: ROAM_DELETE_MIN });
+  } catch (e) {
+    api.byLabel({ touchstone: "1", nonce }).then((r) => {
+      for (const x of r?.items ?? r ?? []) {
+        if (x?.labels?.nonce === nonce) deleteMachine(api, x.id).then((ok) => ok || writePending([...readPending(), x.id]));
+      }
+    }).catch(() => {});
+    if (e.status === 404) {
+      throw new Error(`Daytona answered 404 to the create call. The most likely cause is that the snapshot "${ROAM_SNAPSHOT}" does not exist. Touchstone never creates this snapshot. Set TOUCHSTONE_ROAM_SNAPSHOT to a container snapshot that your Daytona organisation has. (${e.message})`, { cause: e });
+    }
+    throw e;
+  }
+  const m = { id: sb.id, toolbox: `${sb.toolboxProxyUrl}/${sb.id}`, api, root, agent: tag, key, used: Date.now(), created: true, replaced: lost };
+  const all = readSidecar(root);
+  all[tag] = { id: m.id, toolbox: m.toolbox };
+  writeFileSync(sidecar(root), JSON.stringify(all, null, 2));
+  event("exec-machine", { backend: "daytona", sandbox: m.id, run, loadout: "free-roam", ...(lost ? { replaced: true } : {}) });
+  await roamReady(m);
+  return m;
+}
+
+// The toolbox answers once the machine is up. A container machine has no
+// dockerd, so the check is `true`, not START_DOCKER. The error is a fixed
+// text: what the toolbox answered comes from the child's machine, and the
+// model reads this error.
+async function roamReady(m) {
+  let why = "no answer";
+  for (let i = 0; i < 60; i++) {
+    try {
+      const r = await m.api.roamExec(m, "true", 30);
+      if (r?.exitCode === 0) return;
+      why = "the check command failed";
+    } catch (e) {
+      why = Number.isInteger(e?.status) ? `HTTP ${e.status}` : "no answer";
+      if (e?.status === 404) break;
+    }
+    await new Promise((r) => setTimeout(r, Number(process.env.DAYTONA_RETRY_MS) || 2000));
+  }
+  throw new Error(`The free-roam machine is not ready (${why}).`);
+}
+
+// ---- Server-only desktop and artifact control. Never offered as agent tools.
+const CONTROL_ERROR = "The free-roam control request failed.";
+const CONTROL_LIMIT = 64 * 1024;
+const DESKTOP_LIMIT = 8192;
+const DESKTOP_ENTRY = "/opt/touchstone/roam/desktop/entry.mjs";
+const controlId = (s) => typeof s === "string" && /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/.test(s);
+const controlPort = (n) => Number.isInteger(n) && n >= 1 && n <= 65535;
+const exactKeys = (o, keys) => o && typeof o === "object" && !Array.isArray(o) && Object.keys(o).sort().join(",") === [...keys].sort().join(",");
+const controlOrigin = (s) => {
+  try { return typeof s === "string" && s.length <= 2048 && new URL(s).protocol === "https:" && new URL(s).origin === s; } catch { return false; }
+};
+const controlFail = () => { throw new Error(CONTROL_ERROR); };
+
+// Unlike the existing execution client, refuse oversized bodies rather than
+// taking a tail. No response text, URL, credentials or original cause escapes.
+async function controlCall(c, method, url, body, limit = CONTROL_LIMIT, raw = false) {
+  let r;
+  try {
+    const headers = { Authorization: `Bearer ${c.apiKey}` };
+    if (body !== undefined && !(body instanceof FormData)) {
+      headers["content-type"] = "application/json";
+      body = JSON.stringify(body);
+    }
+    r = await fetch(url, { method, headers, body, redirect: "error", signal: AbortSignal.timeout(60_000) });
+    if (!r.ok || r.redirected || (r.url && r.url !== url)) {
+      await r.body?.cancel().catch(() => {});
+      controlFail();
+    }
+    const bytes = Buffer.alloc(limit);
+    let used = 0;
+    for await (const chunk of r.body ?? []) {
+      if (chunk.length > limit - used) controlFail();
+      bytes.set(chunk, used);
+      used += chunk.length;
+    }
+    const result = bytes.subarray(0, used);
+    return raw ? result : used ? JSON.parse(new TextDecoder().decode(result)) : null;
+  } catch {
+    const error = new Error(CONTROL_ERROR);
+    if (Number.isInteger(r?.status)) error.status = r.status;
+    throw error;
+  }
+}
+
+function desktopInput(bytes) {
+  if (!(bytes instanceof Uint8Array) || bytes.byteLength === 0 || bytes.byteLength > DESKTOP_LIMIT) controlFail();
+  const input = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  if (["configure", "status", "close"].includes(input?.action) && exactKeys(input, ["action"])) return input;
+  if (input?.action !== "open" || !exactKeys(input, ["action", "previewOrigin", "appOrigins", "token", "viewOnly"]) ||
+      !controlOrigin(input.previewOrigin) || !Array.isArray(input.appOrigins) || input.appOrigins.length !== 1 ||
+      !controlOrigin(input.appOrigins[0]) || typeof input.token !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(input.token) || typeof input.viewOnly !== "boolean") controlFail();
+  return input;
+}
+
+function desktopOutput(output, input) {
+  const keys = output?.kind === "closed" ? ["kind"] : output?.kind === "configured" ? ["kind", "port", "expires"] : ["kind", "port", "expires", "viewOnly"];
+  if (!exactKeys(output, keys) || !["closed", "configured", "open"].includes(output.kind)) controlFail();
+  if (output.kind !== "closed" && (!controlPort(output.port) || !Number.isSafeInteger(output.expires) || output.expires <= Date.now() || output.expires > Date.now() + 900_000)) controlFail();
+  if (output.kind === "open" && typeof output.viewOnly !== "boolean") controlFail();
+  if (input.action !== "status" && output.kind !== ({ configure: "configured", open: "open", close: "closed" })[input.action]) controlFail();
+  if (input.action === "open" && output.viewOnly !== input.viewOnly) controlFail();
+  return output;
+}
+
+// Open every source path component without following symlinks. Keep directory
+// descriptors pinned during the walk. A root child can still forge its evidence.
+const ARTIFACT_SNAPSHOT = `const fs=require('node:fs'),crypto=require('node:crypto');
+const [source,target,max]=process.argv.slice(1),limit=Number(max),fds=[];
+try {
+ let fd=fs.openSync('/',fs.constants.O_RDONLY|fs.constants.O_DIRECTORY);fds.push(fd);
+ const parts=source.slice(1).split('/');
+ for(let i=0;i<parts.length;i++) {
+  fd=fs.openSync('/proc/self/fd/'+fd+'/'+parts[i],fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW|(i<parts.length-1?fs.constants.O_DIRECTORY:fs.constants.O_NONBLOCK));fds.push(fd);
+ }
+ const before=fs.fstatSync(fd);if(!before.isFile()||before.size>limit)throw Error();
+ const data=Buffer.alloc(limit+1);let size=0,n;
+ while(size<data.length&&(n=fs.readSync(fd,data,size,data.length-size,null)))size+=n;
+ const after=fs.fstatSync(fd);if(size>limit||size!==before.size||after.size!==before.size||after.mtimeMs!==before.mtimeMs)throw Error();
+ const out=fs.openSync(target,fs.constants.O_WRONLY|fs.constants.O_CREAT|fs.constants.O_EXCL|fs.constants.O_NOFOLLOW,0o600);fds.push(out);
+ fs.writeFileSync(out,data.subarray(0,size));
+ process.stdout.write(JSON.stringify({bytes:size,sha256:crypto.createHash('sha256').update(data.subarray(0,size)).digest('hex')}));
+} catch {process.exitCode=1;} finally {for(const fd of fds.reverse())try{fs.closeSync(fd)}catch{}}`;
+
+// Existing-only lookup. The app must first authorize ws + agent from its run.
+// Every operation rechecks sidecar identity and control-plane ownership labels.
+export async function findRoamMachine(ws, agent) {
+  try {
+    if (typeof ws !== "string" || !isAbsolute(ws) || !controlId(agent) || agent.length > 60) controlFail();
+    const root = resolve(ws);
+    const tag = `roam:${agent}`;
+    const known = readSidecar(root)[tag];
+    if (!known) return null;
+    if (!controlId(known.id)) controlFail();
+    const id = known.id;
+    const c = execConfig();
+    if (c.backend !== "daytona" || !c.apiKey) controlFail();
+    const base = `${c.apiUrl}/sandbox/${encodeURIComponent(id)}`;
+    const run = createHash("sha256").update(root).digest("hex").slice(0, 12);
+    async function current(revoking = false) {
+      if (readSidecar(root)[tag]?.id !== id) controlFail();
+      let s;
+      try { s = await controlCall(c, "GET", base); } catch (e) { if (e.status === 404) return null; throw e; }
+      if (s?.id !== id || s?.labels?.agent !== agent || s?.labels?.run !== run || s?.labels?.touchstone !== "1" || s?.labels?.loadout !== "free-roam") controlFail();
+      // Revocation is a control-plane action and must still work after a stop.
+      if (revoking) return true;
+      if (s.state !== "started") return null;
+      if (typeof s.toolboxProxyUrl !== "string" || s.toolboxProxyUrl.length > 2048 || !safeUrl(s.toolboxProxyUrl)) controlFail();
+      const url = new URL(s.toolboxProxyUrl);
+      if (url.href !== s.toolboxProxyUrl && url.origin !== s.toolboxProxyUrl) controlFail();
+      return `${s.toolboxProxyUrl.replace(/\/$/, "")}/${encodeURIComponent(id)}`;
+    }
+    if (!(await current())) return null;
+    async function live() { return (await current()) || controlFail(); }
+    async function exec(toolbox, command) {
+      const r = await controlCall(c, "POST", `${toolbox}/process/execute`, { command, timeout: 45 });
+      if (r?.exitCode !== 0 || typeof r.result !== "string" || Buffer.byteLength(r.result) > DESKTOP_LIMIT) controlFail();
+      return r.result;
+    }
+    async function privateFile(fn) {
+      const toolbox = await live();
+      const dir = `/tmp/touchstone-control-${randomBytes(16).toString("hex")}`;
+      await exec(toolbox, `sh -c ${shq(`umask 077; mkdir -- ${shq(dir)}`)}`);
+      const cleanup = `rm -rf -- ${shq(dir)}`;
+      try { return await fn(toolbox, `${dir}/request`, cleanup); }
+      finally { await exec(toolbox, `sh -c ${shq(cleanup)}`); }
+    }
+    return {
+      id,
+      async request(bytes) {
+        try {
+          const input = desktopInput(bytes);
+          // Copy the validated payload before awaiting network I/O.
+          const payload = Buffer.from(JSON.stringify(input));
+          return await privateFile(async (toolbox, path, cleanup) => {
+            const form = new FormData();
+            form.append("file", new Blob([payload]), "f");
+            await controlCall(c, "POST", `${toolbox}/files/upload-v2?path=${encodeURIComponent(path)}`, form);
+            const command = `trap ${shq(cleanup)} EXIT HUP INT TERM; chmod 600 -- ${shq(path)} && node ${DESKTOP_ENTRY} < ${shq(path)}`;
+            const result = await exec(toolbox, `sh -c ${shq(command)}`);
+            return desktopOutput(JSON.parse(result), input);
+          });
+        } catch { controlFail(); }
+      },
+      async previewGrant(port, seconds = 60) {
+        let issued;
+        try {
+          if (!controlPort(port) || !Number.isInteger(seconds) || seconds < 1 || seconds > 900) controlFail();
+          await live();
+          const expires = Date.now() + seconds * 1000;
+          const r = await controlCall(c, "GET", `${base}/ports/${port}/signed-preview-url?expiresInSeconds=${seconds}`);
+          if (r?.sandboxId === id && r?.port === port && typeof r?.token === "string" && /^[a-z0-9-]{1,57}$/.test(r.token)) issued = r.token;
+          if (!exactKeys(r, ["sandboxId", "port", "token", "url"]) || r.sandboxId !== id || r.port !== port || typeof r.token !== "string" || !/^[a-z0-9-]{1,57}$/.test(r.token) || typeof r.url !== "string" || r.url.length > 2048) controlFail();
+          const u = new URL(r.url);
+          const labels = u.hostname.split(".");
+          if (!controlOrigin(u.origin) || u.port || u.username || u.password || u.search || u.hash || (r.url !== u.origin && r.url !== `${u.origin}/`) || labels.length < 3 || labels[0] !== `${port}-${r.token}` || labels.some((label) => !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label)) || Date.now() >= expires) controlFail();
+          // Never spread the API response. The revoke token stays on the server.
+          return { url: r.url, expires, revokeToken: r.token };
+        } catch {
+          // If validation failed after issuance, revoke only the matching grant.
+          if (issued) await controlCall(c, "POST", `${base}/ports/${port}/signed-preview-url/${encodeURIComponent(issued)}/expire`).catch(() => {});
+          controlFail();
+        }
+      },
+      async expirePreview(port, token) {
+        try {
+          if (!controlPort(port) || typeof token !== "string" || !/^[\x21-\x7e]{1,512}$/.test(token) || token === "." || token === "..") controlFail();
+          if (!(await current(true))) controlFail();
+          await controlCall(c, "POST", `${base}/ports/${port}/signed-preview-url/${encodeURIComponent(token)}/expire`);
+        } catch { controlFail(); }
+      },
+      async readArtifact(path, maxBytes) {
+        try {
+          const cap = path === "/var/lib/touchstone/session/browser.har" ? 2 * 1024 * 1024 : /^\/var\/lib\/touchstone\/session\/shot-(?:[1-9]|1[0-2])\.png$/.test(path) ? 5 * 1024 * 1024 : 0;
+          if (typeof path !== "string" || !cap || !Number.isInteger(maxBytes) || maxBytes < 1 || maxBytes > cap) controlFail();
+          return await privateFile(async (toolbox, target) => {
+            const command = `node -e ${shq(ARTIFACT_SNAPSHOT)} ${shq(path)} ${shq(target)} ${maxBytes}`;
+            const receipt = JSON.parse(await exec(toolbox, command));
+            if (!exactKeys(receipt, ["bytes", "sha256"]) || !Number.isInteger(receipt.bytes) || receipt.bytes < 0 || receipt.bytes > maxBytes || typeof receipt.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(receipt.sha256)) controlFail();
+            const bytes = await controlCall(c, "GET", `${toolbox}/files/download?path=${encodeURIComponent(target)}`, undefined, maxBytes, true);
+            if (bytes.length !== receipt.bytes || createHash("sha256").update(bytes).digest("hex") !== receipt.sha256) controlFail();
+            return bytes;
+          });
+        } catch { controlFail(); }
+      },
+    };
+  } catch { controlFail(); }
 }
