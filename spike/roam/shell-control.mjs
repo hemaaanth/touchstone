@@ -129,9 +129,15 @@ async function worker(q) {
       process.kill(-process.pid, "SIGKILL");
     }
   };
+  let ownerGone = !process.connected;
+  process.on("disconnect", () => {
+    ownerGone = true; // latch before admission; poison alone can queue behind its lock
+    if (shell && !returned) void poison();
+  });
   try {
     await locked(() => {
       const s = readState(); check(s);
+      if (ownerGone || !process.connected) fail();
       if (s.mode !== "active" || s.generation !== q.generation || s.epoch !== q.epoch) fail();
       // Keep only live jobs. A drained job has no managed group left to signal.
       s.jobs = s.jobs.filter((j) => !j.drained);
@@ -163,7 +169,6 @@ async function worker(q) {
         } catch { void poison(); }
       }, 50);
     });
-    process.on("disconnect", () => { if (!returned) void poison(); });
   } catch {
     send({ ok: false });
     process.exit(1);

@@ -1,6 +1,7 @@
 // Local synthetic owned processes only. This is not live Daytona or root-isolation proof.
 import "./helpers/isolated-env.mjs";
 import { test } from "node:test";
+import { once } from "node:events";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, rmSync } from "node:fs";
@@ -70,8 +71,46 @@ function fixture(t) {
     await until(() => [...owned.values()].every((p) => { const n = identity(p.pid); return !n || n.birth !== p.birth || n.state === "Z"; }));
     rmSync(dir, { recursive: true, force: true });
   });
-  return { m, dir, run, entries, ops, state, statePath, remember };
+  return { m, dir, run, entries, ops, state, statePath, remember, owned };
 }
+
+test("owner loss while queued for admission never launches a shell or records a job", async (t) => {
+  const f = fixture(t);
+  await pauseRoamShell(f.m);
+  await resumeRoamShell(f.m);
+  const before = f.state();
+  const lock = join(f.dir, "touchstone-shell-control", "lock");
+  const marker = join(f.dir, "must-not-launch");
+  const id = randomUUID();
+  writeFileSync(join(f.dir, `touchstone-shell-${id}.json`), JSON.stringify({
+    id, op: "run", generation: before.generation, epoch: before.epoch,
+    command: `printf launched > '${marker}'`, seconds: 5,
+  }));
+  mkdirSync(lock);
+  const owner = spawn(process.execPath, [join(f.dir, "touchstone-shell-control.mjs"), id], { stdio: "ignore" });
+  const closed = once(owner, "close");
+  const ownerIdentity = identity(owner.pid);
+  assert.ok(ownerIdentity);
+  f.owned.set(owner.pid, ownerIdentity);
+  let worker;
+  await until(() => {
+    const children = readFileSync(`/proc/${owner.pid}/task/${owner.pid}/children`, "utf8").trim().split(/\s+/).filter(Boolean);
+    worker = children.map(identity).find((p) => p && p.group === p.pid);
+    if (worker) f.owned.set(worker.pid, worker);
+    return worker;
+  });
+  // Let the owned worker enter its lock wait before disconnecting its owner.
+  await sleep(100);
+  assert.deepEqual(f.state(), before);
+  owner.kill("SIGKILL");
+  await closed;
+  await sleep(100);
+  rmSync(lock, { recursive: true });
+  await until(() => { const p = identity(worker.pid); return !p || p.birth !== worker.birth || p.state === "Z"; });
+  assert.equal(existsSync(marker), false, "owner loss before admission must prevent shell execution");
+  assert.deepEqual(f.state(), before, "no queued job is recorded and supervisor state stays unchanged");
+  assert.equal(existsSync(join(f.dir, `touchstone-shell-${id}.json`)), false, "the request payload is consumed");
+});
 
 test("uploaded shell payload preserves log env and session record without command-line interpolation", async (t) => {
   const f = fixture(t);
