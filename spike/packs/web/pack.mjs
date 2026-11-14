@@ -657,6 +657,10 @@ function tools(ws, state) {
   const runScript = defineTool({
     name: "run_request_script",
     description: "Run a short JS script against the target and read what happened. `path` is resolved against the run's base URL (the lab, or the live site). Inside the script, three globals are already defined: await request(method, path, { headers, body }) makes one real HTTP call and returns { status, resBody, resHeaders }; buildSiwe({ domain, address, uri, version, chainId, nonce, issuedAt }) returns the EIP-4361 message text for those fields; await signPersonal(privateKeyHex, message) returns an EIP-191 personal_sign signature. Every request/response is recorded in an independent transcript the script cannot edit; after the script runs, this tool reports whether that transcript tripped one of the engine's own harm checks. Give each attempt a short, unique label (e.g. \"replay-1\"); if it trips a pattern, call submit_finding with that same label. console.log() in the script comes back with the transcript, so print the summary you want to read." + (isLive(ws) ? ` On a live site one script has ${Math.round(LIVE_SCRIPT_TIMEOUT_MS / 1000)} s of wall clock, and request() already retries a 429 or 503 by itself (bounded, honouring Retry-After), so keep each script short and do not sleep() for the whole allowance.` : ""),
+    parameters: obj({
+      label: str({ description: "a short, unique name for this attempt, e.g. \"replay-1\" (pass this same label to submit_finding on a match)" }),
+      script: str({ description: "JS source using request()/buildSiwe()/signPersonal(), e.g.: const n = await request(\"GET\", \"/siwe/nonce\"); const msg = buildSiwe({...}); ..." }),
+    }),
     replay: "unsafe",
     execute: async (args) => {
       const attempt = ++state.poc;
