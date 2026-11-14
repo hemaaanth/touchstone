@@ -1,3 +1,4 @@
+import { originOf, providerGroups } from "@/lib/provider-groups"
 import { useEffect, useMemo, useRef, useState } from "react"
 import { Check, Cloud, Container, Info, KeyRound, Loader2, Pencil, Plus, RefreshCw, Star, Trash2 } from "lucide-react"
 import type { DiscoveredModel, ModelDraft, ProviderSetting, SettingsState } from "@/lib/types"
@@ -22,7 +23,7 @@ import { ErrorState } from "@/components/assistant-ui/elements/error-state"
 
 const badge = "h-[18px] px-1.5 text-[10.5px] font-normal text-muted-foreground"
 const noKeyBadge = <Badge variant="outline" className={badge}>No key</Badge>
-const defaultBadge = <Badge variant="secondary" className={badge}>Default</Badge>
+const defaultBadge = <Badge className="h-[18px] gap-1 px-1.5 text-[10.5px] font-medium"><Star className="size-2.5 fill-current" />Default</Badge>
 
 // What the server says about the execution backend (settings.mjs executionState).
 interface ExecutionSetting {
@@ -95,11 +96,7 @@ export function SettingsPage({ onChanged }: { onChanged: () => void }) {
   const makeDefaultOf = (p: ProviderSetting) =>
     p.key.set && !settings.envOverride ? (alias: string) => attempt(() => setDefaultModel(p.id, alias)) : null
   const ex = executionOf(settings)
-  const privateProviders = settings.providers.filter((p) => p.id === "near" && originOf(p.baseUrl) === "https://cloud-api.near.ai")
-  const groups = [
-    { title: "Private inference", description: undefined, providers: privateProviders, private: true },
-    { title: "Other providers", description: settings.envOverride ? `The server fixes the provider to ${settings.envOverride}. Restart without PROVIDER to change it.` : undefined, providers: settings.providers.filter((p) => !privateProviders.includes(p)), private: false },
-  ]
+  const groups = providerGroups(settings)
 
   return (
     <ListPage title="Settings">
@@ -137,8 +134,8 @@ export function SettingsPage({ onChanged }: { onChanged: () => void }) {
             return (
               <ListRow
                 key={p.id}
-                className={group.private ? "min-h-20" : undefined}
-                icon={<ProviderLogo id={p.id} label={p.label} className="size-full rounded-none bg-transparent text-muted-foreground ring-0 [&>span]:size-4" />}
+                className={cn("transition-colors", isDefault ? "bg-muted/60" : "opacity-60 hover:opacity-100 focus-within:opacity-100")}
+                icon={<ProviderLogo id={p.id} label={p.label} className={cn("size-full rounded-none bg-transparent ring-0 [&>span]:size-4", isDefault ? "text-foreground" : "text-muted-foreground")} />}
                 title={p.label}
                 badges={
                   <>
@@ -271,17 +268,6 @@ function UrlField({ value, onChange, placeholder, disabled }: { value: string; o
       autoCapitalize="off"
     />
   )
-}
-
-// The scheme, host and port of an http(s) URL, as the server compares them
-// (redact-url.mjs originOf). "" when it is not one.
-function originOf(url: string) {
-  try {
-    const u = new URL(url)
-    return u.protocol === "http:" || u.protocol === "https:" ? u.origin : ""
-  } catch {
-    return ""
-  }
 }
 
 // The host and port of a URL, lower case, as the server compares them.
@@ -673,7 +659,7 @@ function ProviderEditor({
     <>
       <SheetHeader className="flex-row items-start gap-3 pr-12">
         <span aria-hidden className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
-          <ProviderLogo id={p.id} label={p.label} className="size-full rounded-none bg-transparent text-muted-foreground ring-0 [&>span]:size-4" />
+          <ProviderLogo id={p.id} label={p.label} className={cn("size-full rounded-none bg-transparent ring-0 [&>span]:size-4", isDefault ? "text-foreground" : "text-muted-foreground")} />
         </span>
         <div className="flex min-w-0 flex-col gap-1">
           <SheetTitle className="leading-snug wrap-anywhere">{p.label}</SheetTitle>
