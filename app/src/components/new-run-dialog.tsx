@@ -62,7 +62,7 @@ export function NewRunDialog({
   const [budget, setBudget] = useState(DEFAULT_BUDGET)
   // The last choice sticks, so an operator who runs fleets keeps getting one.
   const [mode, setModeState] = useState<RunMode>(() => (demo ? "fleet" : localStorage.getItem(MODE_KEY) === "solo" ? "solo" : "fleet"))
-  const [freeRoam, setFreeRoam] = useState(!demo)
+  const [freeRoam, setFreeRoam] = useState(false)
   const setMode = (m: RunMode) => {
     setModeState(m)
     localStorage.setItem(MODE_KEY, m)

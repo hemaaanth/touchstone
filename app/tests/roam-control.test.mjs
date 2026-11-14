@@ -83,7 +83,9 @@ const ask = (id = "ask-1", agent = "a-1") => ({ ev: "ask-human", id, agent, kind
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0))
 
 test("per-run options default fleet on and cannot leak to solo or confined", () => {
-  expect(roamSelection()).toEqual({ freeRoam: true, options: [] })
+  // Off by default: a demo run needs no Daytona, and confined children still work.
+  expect(roamSelection()).toEqual({ freeRoam: false, options: [] })
+  expect(roamSelection(true)).toEqual({ freeRoam: true, options: [] })
   expect(roamSelection(undefined, [], "solo")).toEqual({ freeRoam: false, options: [] })
   for (const args of [[true, [], "solo"], [true, ["wallet"]], [true, ["email"]], [false, ["email"]], [true, ["wallet", "wallet"]], [true, ["rpc"]], ["1", []], [null, []]]) expect(() => roamSelection(...args)).toThrow()
 })
