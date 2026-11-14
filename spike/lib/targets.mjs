@@ -235,11 +235,11 @@ export function eligiblePacks(target) {
   const own = packOf(target)
   if (target?.kind === "live" && !target.github) {
     const ticked = (Array.isArray(target.packs) ? target.packs : [own]).filter((id) => PACKS[id]?.live === true && !PACKS[id].grants)
-    return [...new Set([...ticked, ...Object.keys(PACKS).filter((id) => alwaysOn(PACKS[id]))])]
+    return [...new Set([...ticked, ...Object.keys(PACKS).filter((id) => alwaysOn(PACKS[id])), ...(target.members?.length ? ["review"] : []), ...(target.contracts?.length || target.members?.some((m) => m.kind === "repo") || solidityKnown(target.members ?? []) ? ["contracts"] : [])])]
   }
   if (target?.kind === "scope") {
     const members = Array.isArray(target.members) ? target.members : []
-    const contracts = solidityKnown(members) || members.some((m) => m.kind === "repo")
+    const contracts = target.contracts?.length || solidityKnown(members) || members.some((m) => m.kind === "repo")
     return [...new Set([own, ...(contracts ? ["contracts"] : []), "review"])]
   }
   return [own]
@@ -248,6 +248,10 @@ export function eligiblePacks(target) {
 // The scope as one run sees it, under the module that run picked. The run keeps
 // this copy (run.target in the console), so a restart keeps its module.
 export function withPack(target, pack) {
+  if (target?.kind === "live" && ["contracts", "review"].includes(pack) && (target.members?.length || target.contracts?.length)) {
+    const { mcp, ...rest } = target
+    return { ...rest, pack, signal: "agent", proofSurface: SCOPE_PACKS[pack] }
+  }
   if (target?.kind === "scope") {
     const solidity = memberFilePaths(target.members ?? []).some((f) => /\.sol$/i.test(f.path))
     return { ...target, pack, signal: pack === "contracts" && solidity ? "static" : "agent", proofSurface: SCOPE_PACKS[pack] ?? target.proofSurface }
@@ -311,7 +315,7 @@ export function targetSummary(target, { paths = false } = {}) {
     s.hosts = reachHosts(target)
     s.origins = liveOrigins(target)
   }
-  if (target.kind === "scope") {
+  if (target.kind === "scope" || target.members?.length) {
     const members = Array.isArray(target.members) ? target.members : []
     s.links = Array.isArray(target.links) ? target.links : []
     s.files = memberFilePaths(members).map((f) => f.path)
@@ -320,6 +324,7 @@ export function targetSummary(target, { paths = false } = {}) {
       ? { kind: "repo", url: m.url, proof: memberProof(m, packOf(target)) }
       : { kind: "folder", name: m.name, ...(paths && m.path ? { path: m.path } : {}), files: m.files.length, proof: memberProof(m, packOf(target)) }))
   }
+  if (target.contracts?.length) s.contracts = target.contracts
   return s
 }
 
@@ -331,7 +336,7 @@ function isRunnable(target) {
   if (target.kind === "lab") return existsSync(path.join(ROOT, target.dir))
   if (target.kind === "brief") return true
   if (target.kind === "local-source") return (target.files?.length ?? 0) > 0
-  if (target.kind === "scope") return Boolean(PACKS[packOf(target)]) && (target.members?.length ?? 0) > 0
+  if (target.kind === "scope") return Boolean(PACKS[packOf(target)]) && ((target.members?.length ?? 0) > 0 || (target.contracts?.length ?? 0) > 0)
   // A live target runs when it names at least one host and its module says it
   // can test a live site (`live: true`). A pack that has not been wired to a
   // live host would scan its own lab, so it is not offered. The grant check
@@ -399,8 +404,12 @@ export const briefOf = (target) => (typeof target?.brief === "string" ? target.b
 // `packs` is every module the run covers: a joined run's notes must name the
 // facts of all of them (supply chain's GitHub list), not of the first alone.
 function scopeNotes(target, packs) {
+  const assets = [
+    ...(target.members?.length && target.kind === "live" ? [scopeOutline(target).trim()] : []),
+    ...(target.contracts?.length ? ["Contract deployments (identity only; no RPC or transaction permission):", ...target.contracts.map((c) => `- eip155:${c.chainId}:${c.address}`)] : []),
+  ].join("\n")
   const held = Array.isArray(packs) && packs.length ? packs : [packOf(target)]
-  if (target?.kind === "scope" && Array.isArray(target.members)) return scopeOutline(target).trim()
+  if (target?.kind === "scope" && Array.isArray(target.members)) return [scopeOutline(target).trim(), assets].filter(Boolean).join("\n\n")
   if (target?.kind === "brief") {
     const links = Array.isArray(target.links) ? target.links : []
     return links.length ? [`# ${target.title || "Brief"}`, "", "Sources to fetch with fetch_source (pass the exact URL):", ...links.map((l) => `- ${l}`)].join("\n") : ""
@@ -426,7 +435,7 @@ function scopeNotes(target, packs) {
   // (the web and ai-mcp kickoffs read it from .touchstone.json), as before.
   if (held.includes("supply-chain") && Array.isArray(target.github)) lines.push("", "GitHub repos and orgs (read-only API reads, nothing is cloned or run):", ...target.github.map((g) => `- ${g}`))
   if (target.blurb) lines.push("", String(target.blurb))
-  return lines.join("\n")
+  return [lines.join("\n"), assets].filter(Boolean).join("\n\n")
 }
 
 // The env a run's agent worker gets for its scope. Empty values are left out.
@@ -527,7 +536,11 @@ export function prepareWorkspace(target, { modules = [] } = {}) {
     writeTouchstone(ws, { kind: "local-source", solc: "auto", pack, modules })
     return ws
   }
-  if (target.kind === "scope") return prepareScopeWorkspace(target, { modules })
+  if (target.kind === "scope") {
+    const ws = prepareScopeWorkspace(target, { modules })
+    writeTouchstone(ws, { ...readTouchstone(ws), contracts: target.contracts ?? [] })
+    return ws
+  }
   if (target.kind === "brief") {
     const ws = makeBriefWorkspace()
     // The pasted markdown is the scope brief: it reaches the agent through
@@ -535,6 +548,7 @@ export function prepareWorkspace(target, { modules = [] } = {}) {
     writeTouchstone(ws, { kind: "brief", solc: "auto", pack, modules, links: Array.isArray(target.links) ? target.links : [] })
     return ws
   }
+  if (target.kind === "live" && ["contracts", "review"].includes(pack) && (target.members?.length || target.contracts?.length)) return prepareWorkspace({ ...target, kind: "scope" }, { modules })
   if (target.kind === "live") {
     // No code to copy. The agent learns the exact websites and their base URLs
     // from scopeEnv; the request tool reads where to aim from the config.
@@ -554,7 +568,7 @@ export function prepareWorkspace(target, { modules = [] } = {}) {
     // (the tool reads it) and in the agent's instructions (scopeEnv).
     const mcp = target.mcp ?? null
     const ws = makeBriefWorkspace()
-    const live = { kind: "live", pack, modules, hosts, origins, baseUrl, ...(mcp ? { mcp } : {}) }
+    const live = { kind: "live", pack, modules, hosts, origins, baseUrl, contracts: target.contracts ?? [], ...(mcp ? { mcp } : {}) }
     // The domain packs capture one root domain into a pinned snapshot. They read
     // `domain` and `reach`; the network is the egress one (their tools resolve
     // DNS over UDP, which an HTTP proxy cannot carry), and the grant is asserted
@@ -714,7 +728,7 @@ export async function prepareMultiWorkspace(target, { packs = [], modules = [] }
       }
     }
     const links = [...new Set(ids.flatMap((id) => readTouchstone(memberDir(ws, id)).links ?? []))]
-    writeTouchstone(ws, { kind: target.kind, pack: MULTI, packs: ids, modules, links })
+    writeTouchstone(ws, { kind: target.kind, pack: MULTI, packs: ids, modules, links, contracts: target.contracts ?? [] })
     return ws
   } catch (err) {
     rmSync(ws, { recursive: true, force: true })

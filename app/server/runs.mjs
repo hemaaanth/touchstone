@@ -147,7 +147,7 @@ export function listScopes() {
 //   { kind: "live", title, hosts, pack?, permission: true }
 //       real websites. `permission` is the operator's checkbox; it becomes the
 //       grant that lets a run reach these hosts.
-export function addScope({ kind, title, brief, blurb, files, repo, members, pack, hosts, permission, token, tokens, toolScope, assistant, allowPrivate, networkPolicy } = {}) {
+export function addScope({ kind, title, brief, blurb, files, repo, members, contracts, pack, hosts, permission, token, tokens, toolScope, assistant, allowPrivate, networkPolicy } = {}) {
   if (kind === "live") {
     // Checked before the grant is written, so an unknown module saves nothing.
     // `pack` is one module or the list the operator ticked.
@@ -159,11 +159,11 @@ export function addScope({ kind, title, brief, blurb, files, repo, members, pack
     const refusal = liveHostsRefusal(hosts, { pack })
     if (refusal) throw new Error(refusal)
     // allowPrivate reaches the store only on this live path, and only `true` opts in.
-    const live = addLiveScope({ title, hosts, pack, blurb, permission, token, tokens, toolScope, assistant, allowPrivate: allowPrivate === true, networkPolicy })
+    const live = addLiveScope({ title, hosts, members: members === undefined ? undefined : readLocalFolders(members), contracts, pack, blurb, permission, token, tokens, toolScope, assistant, allowPrivate: allowPrivate === true, networkPolicy })
     return { ...targetSummary(live), runnable: true }
   }
-  const scope = members !== undefined
-    ? addMembersScope({ title, members: readLocalFolders(members), pack, blurb })
+  const scope = members !== undefined || contracts !== undefined
+    ? addMembersScope({ title, members: readLocalFolders(members ?? []), contracts, pack, blurb })
     : files ? addSourceScope({ title, files }) : repo ? addRepoScope({ title, repo }) : addBriefScope({ title, brief, blurb })
   return { ...targetSummary(scope), runnable: true }
 }
@@ -260,7 +260,7 @@ function readLocalFolders(members) {
 // A run reads a local folder fresh from its path, so an edit since the scope
 // was added is what the run sees. A folder that is gone fails the run start.
 export function withFreshFolders(target) {
-  if (target?.kind !== "scope" || !target.members?.some((m) => m.kind === "folder" && m.path)) return target
+  if (!["scope", "live"].includes(target?.kind) || !target.members?.some((m) => m.kind === "folder" && m.path)) return target
   return { ...target, members: validateMembers(readLocalFolders(target.members)) }
 }
 

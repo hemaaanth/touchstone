@@ -345,6 +345,7 @@ export interface TargetScope {
   entry: string
   files?: string[]
   links?: string[]
+  contracts?: { chainId: number; address: string }[]
   members?: TargetScopeMember[]
   // The operator's scope brief: text every run of the scope gets in the agent's
   // instructions. Only the scope list carries it; a run's scope event does not

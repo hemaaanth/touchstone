@@ -25,20 +25,20 @@ const modulesOf = (t: TargetChoice) => t.packs ?? [packOf(t)]
 type Item = { kind: "site" | "repo" | "folder" | "file"; text: string; href?: string; note?: string }
 const short = (url: string) => url.replace(/^https?:\/\/(www\.)?(github\.com\/)?/, "")
 function contents(t: TargetChoice): Item[] {
+  const deployments: Item[] = (t.contracts ?? []).map((c) => ({ kind: "file", text: `eip155:${c.chainId}:${c.address}` }))
   const sites = t.origins?.length ? t.origins : (t.hosts ?? [])
-  if (sites.length) {
-    return sites.map((origin) => {
-      const e = siteEntry(origin)
-      return e.wildcard ? { kind: "site", text: e.text, note: "all subdomains" } : { kind: "site", text: e.text }
-    })
-  }
+  const websites: Item[] = sites.map((origin) => {
+    const e = siteEntry(origin)
+    return e.wildcard ? { kind: "site", text: e.text, note: "all subdomains" } : { kind: "site", text: e.text }
+  })
   if (t.members?.length) {
-    return t.members.map((m) =>
+    return [...websites, ...deployments, ...t.members.map((m): Item =>
       m.kind === "repo"
         ? { kind: "repo", text: short(m.url), href: m.url }
         : { kind: "folder", text: m.path ?? `${m.name}/`, note: plural(m.files, "file") },
-    )
+    )]
   }
+  if (websites.length || deployments.length) return [...websites, ...deployments]
   if (t.links?.length) return t.links.map((l) => ({ kind: "repo", text: short(l), href: l }))
   const entry = scopeMeta(t)
   return entry ? [{ kind: "file", text: entry }] : []
@@ -97,7 +97,7 @@ export function ScopesPage({
   return (
     <ListPage
       title="Scopes"
-      description="What a run may test: a website, a GitHub repository or a local folder. A run picks one scope and some of its modules."
+      description="Combine repositories, websites, folders and contract deployments in one scope. A run picks one scope and some of its modules."
       action={catalog === "loading" || (catalog === "error" && targets.length === 0) ? null : add}
     >
       {storeErrors.length ? (
@@ -189,7 +189,7 @@ export function ScopesPage({
         <DialogContent className="max-h-[calc(100svh-2rem)] grid-cols-[minmax(0,1fr)] overflow-y-auto sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>Add scope</DialogTitle>
-            <DialogDescription>Type a GitHub URL, a website address or a folder path, then press Enter. One scope holds code or websites, not both.</DialogDescription>
+            <DialogDescription>Type a GitHub URL, a website address or a folder path, then press Enter. Combine repositories, websites and contracts in one scope. Enter contracts as eip155:chainId:address.</DialogDescription>
           </DialogHeader>
           <AddScopeForm
             packs={packs}

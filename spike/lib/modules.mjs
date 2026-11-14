@@ -19,14 +19,14 @@
 // A scope does when one of its folders has Solidity: those are the only files
 // the Solidity engines can scan.
 function hasLocalSource(target) {
-  if (target.kind === "scope") return (target.members ?? []).some((m) => m.kind === "folder" && m.files?.some((f) => String(f.path ?? f).endsWith(".sol")));
+  if (target.kind === "scope" || target.members?.length) return (target.members ?? []).some((m) => m.kind === "folder" && m.files?.some((f) => String(f.path ?? f).endsWith(".sol")));
   return target.kind === "lab" || target.kind === "local-source";
 }
 
 // Does the run fetch code at run time? A brief fetches its links; a scope
 // fetches its repo members.
 function fetches(target) {
-  return target.kind === "brief" || (target.kind === "scope" && (target.links ?? []).length > 0);
+  return target.kind === "brief" || ((target.kind === "scope" || target.kind === "live") && (target.links ?? []).length > 0);
 }
 
 // Compute the plan. `requested`, when given, is the set of toggleable module ids

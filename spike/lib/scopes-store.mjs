@@ -427,14 +427,30 @@ export function scopeOutline(scope) {
   return lines.join("\n") + "\n";
 }
 
+// Contract deployment identities use an explicit EVM chain ID; they never grant network access.
+export function validateContracts(contracts = []) {
+  if (!Array.isArray(contracts) || contracts.length > 200) throw new Error("Use at most 200 contract deployments.");
+  const seen = new Set();
+  return contracts.map((c) => {
+    if (!c || !Number.isSafeInteger(c.chainId) || c.chainId < 1 || typeof c.address !== "string" || !/^0x[0-9a-fA-F]{40}$/.test(c.address)) throw new Error("A contract needs a positive EVM chain ID and a 0x address with 40 hex digits.");
+    return { chainId: c.chainId, address: c.address.toLowerCase() };
+  }).filter((c) => {
+    const key = `${c.chainId}:${c.address}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 // Add a scope with members. `pack` is only a hint: it counts only for repos,
 // whose content is not known yet (see scopePack). Returns the stored scope.
-export function addScope({ title, members, pack: declared, blurb } = {}) {
-  const list = validateMembers(members);
+export function addScope({ title, members, contracts, pack: declared, blurb } = {}) {
+  const deployments = validateContracts(contracts);
+  const list = deployments.length && Array.isArray(members) && !members.length ? [] : validateMembers(members);
   const label = (m) => (m.kind === "repo" ? new URL(m.url).pathname.split("/")[2] : m.name);
-  const t = String(title || "").trim() || list.map(label).join(" + ").slice(0, 120);
+  const t = String(title || "").trim() || (list.map(label).join(" + ") || `Contracts on chain ${deployments[0]?.chainId}`).slice(0, 120);
   if (!t || t.length > 120) throw new Error("Use a scope name of 1 to 120 characters.");
-  const pack = scopePack(list, declared);
+  const pack = deployments.length ? "contracts" : scopePack(list, declared);
   const files = memberFilePaths(list);
   const links = list.filter((m) => m.kind === "repo").map((m) => m.url);
   const scope = {
@@ -446,6 +462,7 @@ export function addScope({ title, members, pack: declared, blurb } = {}) {
     entry: files[0]?.path ?? links[0],
     signal: pack === "contracts" && files.some((f) => isSolidity(f.path)) ? "static" : "agent",
     members: list,
+    contracts: deployments,
     links,
     proofSurface: SCOPE_PACKS[pack],
     createdAt: Date.now(),
@@ -511,9 +528,11 @@ export function liveAssistant(a) {
 // loopback name or a loopback/private IP (privateLabHostError), so an opted-in
 // grant never covers a public host. The HTTP route still requires the console
 // grant token for any live scope (runs-http.mjs).
-export function addLiveScope({ title, hosts, pack, blurb, permission, token, tokens, toolScope, assistant, allowPrivate, networkPolicy } = {}) {
+export function addLiveScope({ title, hosts, members, contracts, pack, blurb, permission, token, tokens, toolScope, assistant, allowPrivate, networkPolicy } = {}) {
   if (permission !== true) throw new Error("Tick the box to confirm you have permission to test these sites.");
   if (networkPolicy != null && !["strict", "public"].includes(networkPolicy)) throw new Error("Unknown network policy");
+  const code = members === undefined || (Array.isArray(members) && !members.length) ? [] : validateMembers(members);
+  const deployments = validateContracts(contracts);
   const chat = liveAssistant(assistant);
   const list = (Array.isArray(hosts) ? hosts : [hosts]).map((h) => String(h ?? "").trim()).filter(Boolean);
   if (!list.length) throw new Error("A live scope needs at least one website.");
@@ -571,6 +590,9 @@ export function addLiveScope({ title, hosts, pack, blurb, permission, token, tok
   const scope = {
     id,
     kind: "live",
+    members: code,
+    links: code.filter((m) => m.kind === "repo").map((m) => m.url),
+    contracts: deployments,
     title: t,
     blurb: String(blurb || "").trim(),
     pack: packId,

@@ -344,7 +344,7 @@ export async function handleScopes(req, res) {
     // cannot add either.
     const body = await readBody(req)
     try {
-      send(res, 201, addScope({ kind: body.kind, title: body.title, brief: body.brief, blurb: body.blurb, files: body.files, repo: body.repo, members: body.members, pack: body.pack, hosts: body.hosts, permission: body.permission, token: body.token, tokens: body.tokens, toolScope: body.toolScope, assistant: body.assistant, allowPrivate: body.allowPrivate, networkPolicy: body.networkPolicy }))
+      send(res, 201, addScope({ kind: body.kind, title: body.title, brief: body.brief, blurb: body.blurb, files: body.files, repo: body.repo, members: body.members, contracts: body.contracts, pack: body.pack, hosts: body.hosts, permission: body.permission, token: body.token, tokens: body.tokens, toolScope: body.toolScope, assistant: body.assistant, allowPrivate: body.allowPrivate, networkPolicy: body.networkPolicy }))
     } catch (err) {
       send(res, 400, { error: String(err?.message ?? err) })
     }

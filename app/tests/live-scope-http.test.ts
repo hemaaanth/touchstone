@@ -204,3 +204,96 @@ test("private labs refuse public access on creation and update", async () => {
   expect(created.status).toBe(201)
   expect((await post({ networkPolicy: "public" }, headers, `/api/scopes/${created.json.id}/network-policy`)).status).toBe(400)
 })
+
+test("one scope preserves repositories, websites and deployments through a joined run workspace", async () => {
+  const members = [{ kind: "repo", url: "https://github.com/sparkdotfi/sparklend" }]
+  const contracts = [{ chainId: 1, address: "0x00000000000000000000000000000000000000AB" }]
+  const r = await post({ ...live, members, contracts }, { ...CONSOLE, "x-touchstone-grant-token": TOKEN })
+  expect(r.status).toBe(201)
+  expect(r.json.members[0].url).toBe(members[0].url)
+  expect(r.json.origins).toEqual(["https://app.example.com"])
+  expect(r.json.contracts).toEqual([{ chainId: 1, address: contracts[0].address.toLowerCase() }])
+  expect(r.json.packs).toContain("review")
+  expect(r.json.packs).toContain("contracts")
+  // @ts-expect-error — plain .mjs module
+  const { getUserScope, removeScope } = await import("../../spike/lib/scopes-store.mjs")
+  // @ts-expect-error — plain .mjs module
+  const { pickTarget, prepareMultiWorkspace, scopeEnv } = await import("../../spike/lib/targets.mjs")
+  // @ts-expect-error — plain .mjs module
+  const { memberDir } = await import("../../spike/packs/multi.mjs")
+  // @ts-expect-error — plain .mjs module
+  const { planModules } = await import("../../spike/lib/modules.mjs")
+  const target = pickTarget({ id: r.json.id, pack: "review" })
+  const plan = planModules(target, undefined, undefined, ["review", "web", "contracts"])
+  expect(plan.find((m: { id: string }) => m.id === "fetch").on).toBe(true)
+  const notes = scopeEnv(target).SCOPE_NOTES
+  expect(notes).toContain(members[0].url)
+  expect(notes).toContain("https://app.example.com")
+  expect(notes).toContain(`eip155:1:${contracts[0].address.toLowerCase()}`)
+  const ws = await prepareMultiWorkspace(target, { packs: ["review", "web", "contracts"], modules: plan })
+  try {
+    const cfg = (dir: string) => JSON.parse(readFileSync(path.join(dir, ".touchstone.json"), "utf8"))
+    expect(cfg(memberDir(ws, "web")).origins).toEqual(["https://app.example.com"])
+    expect(cfg(memberDir(ws, "review")).links).toEqual([members[0].url])
+    expect(cfg(memberDir(ws, "contracts")).contracts).toEqual(r.json.contracts)
+    expect(cfg(ws).links).toEqual([members[0].url])
+    expect(cfg(ws).contracts).toEqual(r.json.contracts)
+    expect(getUserScope(r.json.id).permission.grantId).toBe(grants()[0].id)
+  } finally { rmSync(ws, { recursive: true, force: true }) }
+  removeScope(r.json.id)
+  expect(grants()).toEqual([])
+})
+
+test("malformed mixed assets save neither a scope nor a grant", async () => {
+  for (const assets of [
+    { members: [{ kind: "repo", url: "https://evil.example/repo" }] },
+    { contracts: [{ chainId: 0, address: "0x123" }] },
+    { contracts: [{ chainId: 1, address: "0x123" }] },
+    { contracts: "not a list" },
+  ]) {
+    const r = await post({ ...live, ...assets }, { ...CONSOLE, "x-touchstone-grant-token": TOKEN })
+    expect(r.status).toBe(400)
+    expect(grants()).toEqual([])
+    expect(existsSync(SCOPES)).toBe(false)
+  }
+})
+
+test("a contract-only scope retains chain identity and can prepare a contract workspace", async () => {
+  const contracts = [1, 10].map((chainId) => ({ chainId, address: "0x0000000000000000000000000000000000000001" }))
+  const r = await post({ title: "Deployments", contracts }, { ...CONSOLE, "x-touchstone-grant-token": TOKEN })
+  expect(r.status).toBe(201)
+  expect(r.json.contracts).toEqual(contracts)
+  // @ts-expect-error — plain .mjs module
+  const { pickTarget, prepareRunWorkspace, scopeEnv } = await import("../../spike/lib/targets.mjs")
+  const target = pickTarget({ id: r.json.id, pack: "contracts" })
+  expect(scopeEnv(target).SCOPE_NOTES).toContain("eip155:10:")
+  const ws = await prepareRunWorkspace(target)
+  try {
+    expect(JSON.parse(readFileSync(path.join(ws, ".touchstone.json"), "utf8")).contracts).toEqual(contracts)
+  } finally { rmSync(ws, { recursive: true, force: true }) }
+  expect(grants()).toEqual([])
+})
+
+test("mixed scopes preserve the explicit network policy when selecting code and web modules", async () => {
+  // @ts-expect-error — plain .mjs module
+  const { pickTarget, targetSummary } = await import("../../spike/lib/targets.mjs")
+  const headers = { ...CONSOLE, "x-touchstone-grant-token": TOKEN }
+  for (const networkPolicy of ["strict", "public"]) {
+    const created = await post({
+      ...live, networkPolicy,
+      members: [{ kind: "repo", url: "https://github.com/sparkdotfi/sparklend" }],
+      contracts: [{ chainId: 1, address: "0x0000000000000000000000000000000000000001" }],
+    }, headers)
+    expect(created.status).toBe(201)
+    expect(created.json.networkPolicy).toBe(networkPolicy)
+    for (const pack of ["review", "contracts", "web"]) {
+      const target = pickTarget({ id: created.json.id, pack })
+      expect(target.networkPolicy).toBe(networkPolicy)
+      const summary = targetSummary(target)
+      expect(summary.networkPolicy).toBe(networkPolicy)
+      expect(summary.members.length).toBe(1)
+      expect(summary.contracts.length).toBe(1)
+      expect(summary.origins).toEqual(["https://app.example.com"])
+    }
+  }
+})

@@ -371,12 +371,13 @@ const repoName = (url: string) => new URL(url).pathname.split("/")[2] ?? url
 // default), or files uploaded from the browser (the fallback).
 type Source =
   | { kind: "repo"; url: string }
+  | { kind: "contract"; chainId: number; address: string }
   | { kind: "folder"; name: string; path: string }
   | { kind: "folder"; name: string; files: { path: string; content: string }[] }
   | { kind: "site"; host: string; origin: string }
 
 const sourceKey = (s: Source) =>
-  s.kind === "repo" ? s.url : s.kind === "site" ? `site:${s.origin}` : "path" in s ? `path:${s.path}` : `folder:${s.name}`
+  s.kind === "contract" ? `eip155:${s.chainId}:${s.address.toLowerCase()}` : s.kind === "repo" ? s.url.replace(/\/+$/, "").replace(/\.git$/, "") : s.kind === "site" ? `site:${s.origin}` : "path" in s ? `path:${s.path}` : `folder:${s.name}`
 
 // A folder path the operator typed: "/..." or "~/...". The server expands "~",
 // resolves the path, and reads the folder. The name is its last part, made
@@ -388,7 +389,7 @@ function localPath(raw: string): { name: string; path: string } | null {
   const name = base === "~" ? "home" : base.replace(/[^\w.-]+/g, "-").replace(/^[.-]+/, "").slice(0, 64) || "folder"
   return { name, path: text }
 }
-const sourceLabel = (s: Source) => (s.kind === "repo" ? repoName(s.url) : s.kind === "site" ? s.host : s.name)
+const sourceLabel = (s: Source) => (s.kind === "contract" ? `eip155:${s.chainId}:${s.address}` : s.kind === "repo" ? repoName(s.url) : s.kind === "site" ? s.host : s.name)
 
 // A wildcard entry the operator typed, "*.example.com": a grant pattern that
 // covers every subdomain of example.com (never example.com itself). Returns the
@@ -449,7 +450,7 @@ function labHost(hostname: string): boolean {
 // list of modules the operator ticked, and the checkbox is the operator saying
 // they may test the websites. The server records it as a grant.
 function scopeBody(sources: Source[], name: string, modules: string[], permission: boolean, token: string, chat: { path: string; budget: string }, allowPrivate: boolean, publicNetwork: boolean): Parameters<typeof attachScope>[0] {
-  const title = name || sources.map(sourceLabel).join(" + ")
+  const title = name || sources.map(sourceLabel).join(" + ").slice(0, 120)
   // Plain websites first: a run sends its requests to the first one, and a
   // wildcard entry is a grant pattern, not a website.
   const ordered = [...sources.filter((s) => !isWildSite(s)), ...sources.filter(isWildSite)]
@@ -458,14 +459,15 @@ function scopeBody(sources: Source[], name: string, modules: string[], permissio
   // garak runs only with a chat path and a budget. The server checks both.
   const chatPath = chat.path.trim()
   const assistant = chatPath || chat.budget.trim() ? { path: chatPath, budget: Number(chat.budget) } : null
+  const contracts = sources.flatMap((s) => s.kind === "contract" ? [{ chainId: s.chainId, address: s.address }] : [])
+  const members = sources.flatMap((s): ScopeMember[] =>
+    s.kind === "site" || s.kind === "contract" ? [] : s.kind === "folder" && "path" in s ? [{ kind: "folder", name: s.name, path: s.path }] : [s],
+  )
   if (sites.length) {
     const mcp = modules.includes("ai-mcp")
-    return { kind: "live", title, hosts: sites, permission, pack: modules, networkPolicy: publicNetwork && !allowPrivate ? "public" : "strict", ...(bearer && mcp ? { token: bearer } : {}), ...(assistant && mcp ? { assistant } : {}), ...(allowPrivate ? { allowPrivate: true } : {}) }
+    return { kind: "live", title, members, contracts, hosts: sites, permission, pack: modules, networkPolicy: publicNetwork && !allowPrivate ? "public" : "strict", ...(bearer && mcp ? { token: bearer } : {}), ...(assistant && mcp ? { assistant } : {}), ...(allowPrivate ? { allowPrivate: true } : {}) }
   }
-  const members = sources.flatMap((s): ScopeMember[] =>
-    s.kind === "site" ? [] : s.kind === "folder" && "path" in s ? [{ kind: "folder", name: s.name, path: s.path }] : [s],
-  )
-  return { title, members }
+  return { title, members, contracts }
 }
 
 // A module every website scope allows, with nothing to tick. Same rule as
@@ -477,7 +479,7 @@ const tickable = (p: PackChoice) => p.live === true && p.proof === "http" && !p.
 
 // The add row over the scope list. Closed, it is one quiet row. Open, the same
 // row becomes the input in place: same height, padding, and text start, so
-// nothing moves. A scope holds GitHub repos and local folders, or websites.
+// nothing moves. A scope can combine code, websites and contract deployments.
 // Each one added shows in a list under the row, and the scope is saved as one
 // unit. Under the list: its name, then the modules it allows.
 // `defaultOpen` starts with the form open (the Scopes page dialog). `onClose`
@@ -542,9 +544,9 @@ export function AddScope({
     onClose?.()
   }
   const add = (s: Source) => {
-    // One scope is either code (repos, folders) or live websites, not both.
-    if (sources.length && (s.kind === "site") !== live) {
-      return onError("A scope holds code or live websites, not both. Add the other kind as its own scope.")
+    if (sources.some((x) => sourceKey(x) === sourceKey(s))) {
+      onError("Already added. This entry is in the scope.")
+      return false
     }
     onError(null)
     // The tick covers the websites listed when it was ticked. A new one needs a new tick.
@@ -552,14 +554,20 @@ export function AddScope({
       setPermission(false)
       setAllowPrivate(false)
     }
-    setSources((list) => (list.some((x) => sourceKey(x) === sourceKey(s)) ? list : [...list, s]))
+    setSources((list) => [...list, s])
+    return true
   }
   const addUrl = () => {
     const text = url.trim()
+    if (/^(eip155:|0x)/i.test(text)) {
+      const match = /^eip155:([1-9][0-9]*):(0x[0-9a-fA-F]{40})$/.exec(text)
+      if (!match || !Number.isSafeInteger(Number(match[1]))) return onError("Use eip155:CHAIN_ID:ADDRESS, for example eip155:1:0x followed by 40 hex digits.")
+      if (add({ kind: "contract", chainId: Number(match[1]), address: match[2].toLowerCase() })) setUrl("")
+      return
+    }
     const local = localPath(text)
     if (local) {
-      add({ kind: "folder", ...local })
-      setUrl("")
+      if (add({ kind: "folder", ...local })) setUrl("")
       return
     }
     // A star is never parsed as a URL: the parser would encode it, and the
@@ -579,8 +587,7 @@ export function AddScope({
       if (/^\*\.[a-z0-9-]+\.?$/i.test(text)) return onError(`"${text}" is too broad: a wildcard needs a domain name of at least two labels after "*.", so *.example.com, never *.com.`)
       const base = wildcardBase(text)
       if (!base) return onError(`"${text}" is not a wildcard entry Touchstone accepts. Write it as *.example.com: a star, a dot and a domain name, with no scheme, port or path.`)
-      add({ kind: "site", host: `*.${base}`, origin: `*.${base}` })
-      setUrl("")
+      if (add({ kind: "site", host: `*.${base}`, origin: `*.${base}` })) setUrl("")
       return
     }
     // A user name or password in the address: say so, and never keep it.
@@ -601,8 +608,7 @@ export function AddScope({
       return onError("Use a GitHub repository URL like https://github.com/owner/repo.")
     }
     if (!href && !origin) return onError("Use a GitHub repository URL, a website address, or a folder path like ~/project.")
-    add(href ? { kind: "repo", url: href } : { kind: "site", host: host!, origin: origin! })
-    setUrl("")
+    if (add(href ? { kind: "repo", url: href } : { kind: "site", host: host!, origin: origin! })) setUrl("")
   }
   // The Add button stays clickable. A click with something missing says what.
   const save = async () => {
@@ -684,8 +690,8 @@ export function AddScope({
               else save()
             }
           }}
-          placeholder={sources.length ? (live ? "Add another website" : "Add another GitHub URL or folder path") : "GitHub URL, website, or folder path"}
-          aria-label="GitHub repository URL, website address, or local folder path"
+          placeholder="GitHub URL, website, folder, or eip155:chainId:address"
+          aria-label="GitHub URL, website, folder, or contract (eip155:chainId:address)"
           className="h-full min-w-0 flex-1 bg-transparent leading-none outline-none placeholder:text-muted-foreground"
         />
         <button
@@ -724,7 +730,7 @@ export function AddScope({
                   {s.kind === "repo" ? <FolderGit2 /> : s.kind === "site" ? <Globe /> : <Folder />}
                 </span>
                 <span className="min-w-0 flex-1 truncate font-mono text-[11.5px]">
-                  {s.kind === "repo"
+                  {s.kind === "contract" ? `eip155:${s.chainId}:${s.address}` : s.kind === "repo"
                     ? s.url.replace(/^https:\/\/github\.com\//, "")
                     : s.kind === "site"
                       ? s.origin
@@ -809,7 +815,7 @@ export function AddScope({
                 </div>
                 {included.length ? (
                   <span className="text-[11px] leading-relaxed text-muted-foreground">
-                    Always included: {included.map((p) => p.title).join(", ")}.
+                    Always included: {[...included.map((p) => p.title), ...(sources.some((s) => s.kind === "repo" || s.kind === "folder") ? [title("review", "Code review")] : []), ...(sources.some((s) => s.kind === "repo" || s.kind === "contract") ? [title("contracts", "Contracts")] : [])].join(", ")}.
                   </span>
                 ) : null}
               </div>

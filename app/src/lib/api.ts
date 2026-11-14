@@ -281,6 +281,7 @@ export function attachScope(body: {
   toolScope?: Record<string, string>
   // The assistant's chat path and request budget for garak (ai-mcp only).
   assistant?: { path: string; budget: number }
+  contracts?: { chainId: number; address: string }[]
   members?: ScopeMember[]
   // A live scope takes the list of modules the operator ticked.
   pack?: string | string[]
