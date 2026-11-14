@@ -19,10 +19,14 @@ const DEMO_SCOPE = "vault-reentrancy"
 const DEMO_BUDGET = 0.5
 
 export function SetupStart({
+  configured,
   onSaved,
   onStarted,
 }: {
-  // The key is stored. The caller refreshes models so the app leaves this screen.
+  // A provider is already usable (a key in the server environment counts), so
+  // step 1 starts done and the screen stays until the first run exists.
+  configured: boolean
+  // The key is stored. The caller refreshes models so the app can leave this screen.
   onSaved: () => void
   // A run exists. The caller opens it.
   onStarted: (id: string) => void
@@ -30,7 +34,7 @@ export function SetupStart({
   const [key, setKey] = useState("")
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [ready, setReady] = useState(false)
+  const [ready, setReady] = useState(configured)
   const [running, setRunning] = useState(false)
 
   const save = useCallback(async () => {

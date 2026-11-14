@@ -234,8 +234,9 @@ export function App() {
             actions={demo ? undefined : <Button size="sm" onClick={() => select({ kind: "page", id: "settings" })}>Set up provider</Button>}
           />
         ) : null}
-        {!demo && setupError && catalog === "ready" && rows.length === 0 ? (
+        {!demo && catalog === "ready" && rows.length === 0 ? (
           <SetupStart
+            configured={!setupError}
             onSaved={refreshModels}
             onStarted={(id) => {
               fetchRuns().then(setRuns).catch(() => {})
