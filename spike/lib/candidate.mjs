@@ -14,7 +14,7 @@
 //                             from, and the root-cause key for the dup guard
 import { defineTool } from "@earendil-works/pi-durable";
 import { arr, obj, str } from "@earendil-works/pi-schema";
-import { event } from "./event.mjs";
+import { currentAgent, event } from "./event.mjs";
 import { sha256 } from "./proof-evidence.mjs";
 import { redactSecrets } from "../../app/server/redact.mjs";
 import { proofDelta } from "./proof.mjs";
@@ -532,15 +532,18 @@ export async function checkCandidate({ pack, state, lookup, args, scrub = scrubV
 }
 
 // The submit_candidate tool. `poc` names the pack's attempt id (label, test
-// contract or lead id) and how to describe it to the agent.
-export function candidateTool({ pack, state, lookup, poc, scrub, scrubLine, packText = false }) {
+// contract or lead id) and how to describe it to the agent. `name` and
+// `description` are for a second candidate tool beside a pack's own (the
+// free-roam session tool); the packs pass neither.
+const DESCRIPTION = `Record a CANDIDATE: a serious problem your own attempt showed, that this pack's proof checks do not cover. It is stored as unproven and agent-asserted, and queued for human review. It never counts as a finding. Use it only after an attempt that captured evidence but did not prove. If the attempt proved, use submit_finding. At most ${CANDIDATE_CAP} per run.`;
+export function candidateTool({ pack, state, lookup, poc, scrub, scrubLine, packText = false, name = "submit_candidate", description = DESCRIPTION }) {
   const prose = packText ? {} : {
     title: str({ description: "short title" }),
     explanation: str({ description: "plain-language write-up: what happened, why it is harmful, why the checks miss it, ending with a line starting \"Fix:\"" }),
   };
   return defineTool({
-    name: "submit_candidate",
-    description: `Record a CANDIDATE: a serious problem your own attempt showed, that this pack's proof checks do not cover. It is stored as unproven and agent-asserted, and queued for human review. It never counts as a finding. Use it only after an attempt that captured evidence but did not prove. If the attempt proved, use submit_finding. At most ${CANDIDATE_CAP} per run.`,
+    name,
+    description,
     parameters: obj({
       ...prose,
       severity: str({ description: "critical | high | medium | low | informational" }),
@@ -646,3 +649,132 @@ export function evidenceLookup(state, findingPoc = (id) => id) {
 }
 
 export const EVIDENCE_POC = "the id of a lead whose evidence replay ran in this session and did not pass";
+
+// ---------------------------------------------------------------- session
+// A free-roam child (Wave 4). It has no pack tool and no proof model. Its
+// attempt is its session: each shell command it ran on its own machine, and
+// each request the machine's proxy log reported. The entries are kept per
+// agent, in memory only (state.session: agent -> entries; audit-state.mjs
+// does not save them, so a follow-up worker starts with an empty session).
+//
+// Nothing a free-roam child ran is a proof. sessionLookup has no `proved`
+// path, and makeCandidate sets `proven: false`.
+
+// The description text of the `poc` argument. `shell` prints the id.
+export const SESSION_POC = "the session id from the first line of your last shell result, like session:a-12:3";
+
+// The description of submit_session_candidate. A free-roam child has no
+// submit_finding, so the text does not name it.
+export const SESSION_DESCRIPTION = `Record a CANDIDATE from your shell session: a serious problem your own commands showed. It is stored as unproven and agent-asserted, and queued for human review. It never counts as a finding: nothing in a free-roam session is a proof. Cite exact lines from your shell results. A second candidate needs a new shell command first. At most ${CANDIDATE_CAP} per run.`;
+
+const SESSION_OUTPUT = 16_000;
+const SESSION_HOSTS = 60;
+const EGRESS_NOTE = "proxy log; a request that does not use the proxy is not listed";
+
+const shellsOf = (list) => list.filter((e) => e.kind === "shell");
+const sessionId = (agent, list) => `session:${agent}:${shellsOf(list).length}`;
+
+// The last 16 000 characters. A cut can split a secret, and half a secret has
+// no shape a rule knows. So the first line after the cut, a partial one, is
+// dropped too.
+// shortcut: an output that is one line of more than 16 000 characters keeps
+// its cut head; upgrade when a real run shows such output with secrets in it.
+function lastOutput(output) {
+  const all = String(output ?? "");
+  if (all.length <= SESSION_OUTPUT) return all;
+  const cut = all.slice(-SESSION_OUTPUT);
+  const lineEnd = cut.indexOf("\n");
+  return lineEnd < 0 ? cut : cut.slice(lineEnd + 1);
+}
+
+// The host of one logged request. A tunnel's url is "<host>:<port>".
+function hostOf(method, url) {
+  if (method === "CONNECT") return url.replace(/:\d+$/, "");
+  try { return new URL(url).hostname; } catch { return ""; }
+}
+
+// Store one entry of a free-roam child's session, scrubbed. Returns the
+// session id after this entry and, for a shell entry, the scrubbed output.
+//   entry: { agent, kind: "shell",  t, sandbox, command, exit_code, output }
+//        | { agent, kind: "egress", t, method, url, status }
+//
+// THE SCRUB IS A SAFETY RULE, AND IT IS NOT COMPLETE. The server does not
+// scrub a candidate's evidence again (app/server/candidates.mjs), and `shell`
+// shows the model only the text returned here. So nothing unscrubbed may
+// leave this function, in the return value or in state.
+//
+// The four-step scrub masks known secret shapes. It is not complete. The
+// engine's own secrets cannot be in a session: nothing from the host goes to
+// the machine (I1). A secret the child finds on the open web can stay if it
+// has no known shape. The record is shown only in the owner's console.
+//
+// Known to pass unmasked today (test/candidate-session.test.mjs lists each):
+// a value in a header with no secret name, a token in a URL path, a reset
+// link, `sshpass -p <value>`, a bare value on an output line, a base64 form.
+//
+// The steps, after the output is cut to its last 16 000 characters:
+//   1. Known secret values (state.sessionSecrets; empty until I5 fills it).
+//      shortcut: exact copies only. capture.mjs's holdsSecret (parts and
+//      encoded forms) is not used: capture.mjs loads the grant store. Upgrade
+//      when I5 puts a first value in the list.
+//   2. redactSecrets over the entry as an object, so it masks by name too.
+//   3. Its 64 KB rule: a longer string is masked whole.
+//   4. The candidate's own rules (scrubValue does 2 to 4).
+export function recordSession(state, entry) {
+  const agent = String(entry?.agent ?? "");
+  if (!agent) throw new Error("a session entry needs an agent");
+  const known = (state.sessionSecrets ?? []).filter(Boolean).map(String);
+  const clean = (v) => known.reduce((s, secret) => s.split(secret).join(MARK), String(v ?? ""));
+  const t = Number(entry.t) || 0;
+  let e;
+  if (entry.kind === "shell") {
+    const code = Number(entry.exit_code);
+    e = { kind: "shell", t, sandbox: clean(entry.sandbox), command: clean(entry.command), exit_code: Number.isFinite(code) ? code : null, output: clean(lastOutput(entry.output)) };
+  } else if (entry.kind === "egress") {
+    const method = String(entry.method ?? "").toUpperCase();
+    const url = String(entry.url ?? "");
+    e = { kind: "egress", t, method: clean(method), url: clean(url), host: clean(hostOf(method, url)), status: Number.isInteger(entry.status) ? entry.status : null };
+  } else {
+    throw new Error(`unknown session entry kind: ${String(entry.kind).slice(0, 40)}`);
+  }
+  e = scrubValue(e);
+  state.session ??= new Map();
+  if (!state.session.has(agent)) state.session.set(agent, []);
+  const list = state.session.get(agent);
+  list.push(e);
+  return { poc: sessionId(agent, list), output: e.kind === "shell" ? e.output : "" };
+}
+
+// The lines a candidate may cite. They are built from the stored entries, so
+// they are the same scrubbed text `shell` showed the model.
+const sessionLines = (e) => (e.kind === "shell"
+  ? `$ ${e.command}\nexit ${e.exit_code}\n${e.output}`
+  : `> ${e.method} ${e.url} ${e.status ?? (e.method === "CONNECT" ? "tunnel" : "no status")}`);
+
+// The lookup of submit_session_candidate. The caller is the fleet's agent tag
+// (currentAgent), never an argument, so an agent reads only its own entries.
+// Only the current id is taken: "session:<agent>:<its shell entries now>".
+// It returns null or { evidence, text }. It never returns { proved: true }.
+export function sessionLookup(state) {
+  return (poc) => {
+    const agent = currentAgent();
+    const list = agent ? state.session?.get(String(agent)) : null;
+    const shells = shellsOf(list ?? []);
+    if (!shells.length || poc !== sessionId(agent, list)) return null;
+    const requests = list.filter((e) => e.kind === "egress");
+    const hosts = [...new Set(requests.map((e) => e.host).filter(Boolean))].slice(0, SESSION_HOSTS);
+    return {
+      evidence: {
+        kind: "session",
+        agent: String(agent),
+        sandbox: shells.at(-1).sandbox,
+        shell: { commands: shells.length, sha256: sha256(shells.map(sessionLines).join("\n")) },
+        // "requests" are the requests seen by the log, not all requests.
+        egress: { requests: requests.length, hosts, note: EGRESS_NOTE },
+        har: null,
+        screenshots: [],
+      },
+      text: list.map(sessionLines).join("\n"),
+    };
+  };
+}
