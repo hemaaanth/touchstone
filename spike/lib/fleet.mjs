@@ -96,7 +96,8 @@ export function createFleet({ system, costOf, max = process.env.FLEET_MAX ?? 8, 
   if (!freeRoam) roamTools = [];
   max = Number(max);
   if (!Number.isInteger(max) || max < 1) throw new Error("FLEET_MAX must be a positive integer.");
-  let harness;
+  let harness, boardObservation, trustedBoard;
+  let closed = false;
   let packQueue = Promise.resolve();
   // The coordinator's pack calls before its first spawn, for the fleet-run gate.
   let spawned = false;
@@ -349,6 +350,7 @@ export function createFleet({ system, costOf, max = process.env.FLEET_MAX ?? 8, 
     extension: defineExtension({ name: "fleet", tasks: [Anchor, Reporter], tools: [...[spawn, message, post, read, ...roam].map((t) => tag(t)), ...sharedTools] }),
     wrapTools: (tools) => tools.map((t) => tag(t, true)),
     agentForSession: (sessionId) => sessions.get(sessionId),
+    isRoamAgent: (id) => !closed && freeRoam && trustedBoard?.agents.some((a) => a.id === id && a.loadout === "free-roam" && Number.isSafeInteger(a.conv) && a.conv > ROOT_CONVERSATION_ID && a.id === who(a.conv)) === true,
     async options(agent, api, ctx) {
       if (!freeRoam || api.conversationId === ROOT_CONVERSATION_ID || agent !== who(api.conversationId)) throw new Error("Roam options require the calling free-roam child.");
       const board = await api.snapshot(Fleet, ROOT_CONVERSATION_ID, ctx);
@@ -358,7 +360,15 @@ export function createFleet({ system, costOf, max = process.env.FLEET_MAX ?? 8, 
     },
     async attach(value, ctx) {
       harness = value;
-      const board = await harness.snapshot(Fleet, ROOT_CONVERSATION_ID, ctx) ?? empty();
+      // observeDoc publishes synchronously with commits; watchDoc callbacks can lag
+      // behind gate dispatch. Create the empty board so first spawns are observed.
+      await harness.commit((tx) => tx.doc(Fleet, ROOT_CONVERSATION_ID), ctx);
+      boardObservation = await harness.observeDoc(Fleet, ROOT_CONVERSATION_ID, {
+        advance(call) { trustedBoard = call.kind === "value" && !call.retired ? call.value : undefined; },
+        end() { trustedBoard = undefined; },
+      }, ctx);
+      trustedBoard = boardObservation?.value;
+      const board = trustedBoard ?? empty();
       spawned = board.agents.length > 0;
       // Saved free-roam children have exact allow lists from their first worker.
       // Add only shared tools; never widen their pack or roam permissions here.
@@ -404,6 +414,9 @@ export function createFleet({ system, costOf, max = process.env.FLEET_MAX ?? 8, 
       }
     },
     async close() {
+      closed = true;
+      trustedBoard = undefined;
+      boardObservation?.detach();
       for (const pending of watches.values()) {
         const watch = await pending;
         watch.cognition?.stop();

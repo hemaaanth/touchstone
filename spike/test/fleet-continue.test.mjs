@@ -38,8 +38,8 @@ async function open(db, route, brief = {}) {
   registry.install(fleet.extension);
   const reports = [];
   const harness = await Harness.open(await openNodeSqliteStorage(db), { models, registry, settings: { retry: { maxRetries: 5, baseDelayMs: 20 } }, onReport: (r) => reports.push(r.kind) }, ctx);
-  await fleet.attach(harness, ctx);
   const root = await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" }, instructions: COORDINATOR_INSTRUCTIONS } });
+  await fleet.attach(harness, ctx);
   return { harness, fleet, root, reports };
 }
 

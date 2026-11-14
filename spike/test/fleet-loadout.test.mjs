@@ -13,6 +13,7 @@ import { obj } from "@earendil-works/pi-schema";
 import { createFleet, FREE_ROAM_INSTRUCTIONS } from "../lib/fleet.mjs";
 import { currentAgent } from "../lib/event.mjs";
 import { askHumanTool, answerAsk } from "../lib/ask.mjs";
+import { createRoamControl } from "../lib/roam-control.mjs";
 import { roamTools } from "../lib/roam.mjs";
 import { EGRESS_ENV, startEgressLog, pullEgressLog } from "../lib/roam-egress.mjs";
 import { candidateTool, recordSession, sessionLookup, SESSION_DESCRIPTION, SESSION_POC } from "../lib/candidate.mjs";
@@ -68,8 +69,8 @@ async function runtime(t, route, { env = ON, required = false, survey, hooks = {
   if (fleet) registry.install(fleet.extension);
   else registry.install(defineExtension({ name: "shared", tools: sharedTools }));
   const harness = await Harness.open(storage, { models, registry, settings: { retry: { maxRetries: 0 } }, onReport: (r) => reports.push(r) }, ctx);
-  await fleet?.attach(harness, ctx);
   const root = await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" }, instructions: fleet ? fleet.instructions : "Audit the lab only." } });
+  await fleet?.attach(harness, ctx);
   let closed = false;
   const close = async () => { if (closed) return; closed = true; await fleet?.close(); await harness.close(ctx); };
   t.after(close);
@@ -566,4 +567,49 @@ test("saved free-roam allow lists gain shared Ask but no new pack tool", async (
   await w.run("go on");
   assert.deepEqual(w.lists.Beta.toSorted(), ["ask_human", "bulletin_post", "bulletin_read", "message_agent", "shell", "submit_session_candidate"]);
   assert.equal(w.events.find((e) => e.ev === "ask-human").agent, beta.id);
+});
+
+test("the gate sees trusted membership before a first action and immediately after a board commit", async (t) => {
+  const r = await runtime(t, (s) => s.who === "coordinator" ? coordinator(s, [spawnCall("Alpha"), spawnCall("Beta", "free-roam")]) : answer("Done."));
+  assert.equal(r.fleet.isRoamAgent("coordinator"), false);
+  assert.equal(r.fleet.isRoamAgent("a-99999"), false);
+  await r.run("start");
+  const beta = r.spawned("Beta"), alpha = r.spawned("Alpha");
+  assert.deepEqual(r.ran, [], "no machine tool has run");
+  assert.equal(r.fleet.isRoamAgent(beta.id), true);
+  assert.equal(r.fleet.isRoamAgent(alpha.id), false);
+  const pauses = [];
+  const gate = createRoamControl({ epoch: "test-worker", isAgent: r.fleet.isRoamAgent, emit() {}, remote: {
+    pause: async (id) => pauses.push(id), resume: async () => {}, close: async () => {},
+  } });
+  t.after(() => gate.dispose());
+  assert.deepEqual(await gate.pause(beta.id, "lease1"), { state: "paused", lease: "lease1" });
+  assert.deepEqual(pauses, [beta.id]);
+  await gate.resume(beta.id, "lease1");
+  let release;
+  const first = gate.run(beta.id, () => new Promise((resolve) => { release = resolve; }));
+  const queued = gate.run(beta.id, () => assert.fail("revoked child must not dispatch"));
+  const refused = assert.rejects(queued, /ROAM_AGENT/);
+  await r.harness.commit(async (tx) => { (await tx.doc(Roster, ROOT_CONVERSATION_ID)).agents.find((a) => a.id === beta.id).loadout = "confined"; }, ctx);
+  assert.equal(r.fleet.isRoamAgent(beta.id), false, "no observer tick or tool call is needed");
+  release("done");
+  await first;
+  await refused;
+  await r.harness.commit(async (tx) => { (await tx.doc(Roster, ROOT_CONVERSATION_ID)).agents.find((a) => a.id === beta.id).loadout = "free-roam"; }, ctx);
+  assert.equal(r.fleet.isRoamAgent(beta.id), true);
+  await r.close();
+  assert.equal(r.fleet.isRoamAgent(beta.id), false);
+});
+
+test("gate membership restores before any model turn and rejects a mismatched conversation", async (t) => {
+  const open = await shared(t);
+  let w = await runtime(t, () => answer("Done."), { storage: await open() });
+  await w.run("start");
+  const child = w.spawned("FreeRoam");
+  await w.close();
+  w = await runtime(t, () => assert.fail("no model turn"), { storage: await open() });
+  assert.equal(w.fleet.isRoamAgent(child.id), true);
+  await w.harness.commit(async (tx) => { (await tx.doc(Roster, ROOT_CONVERSATION_ID)).agents[0].conv = ROOT_CONVERSATION_ID; }, ctx);
+  assert.equal(w.fleet.isRoamAgent(child.id), false);
+  await w.close();
 });

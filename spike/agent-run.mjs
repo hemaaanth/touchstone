@@ -111,10 +111,10 @@ async function openHarness(db, ws, state) {
     onReport: (r) => reports.push({ kind: r.kind, reason: r.reason, msg: String(r.error?.message ?? r.error ?? "").slice(0, 200) }),
   }, ctx);
   try {
-    await fleet?.attach(harness, ctx);
     const root = await harness.root(ctx, {
       agent: { model: { provider: PROVIDER_ID, modelId: MODELS[ALIAS].id }, instructions: system + (fleet ? `\n\n${fleet.instructions}` : "") },
     });
+    await fleet?.attach(harness, ctx);
     return { harness, root, reports, pack, fleet };
   } catch (error) {
     disposeAsks();
@@ -181,7 +181,7 @@ async function chargeUsage(harness, base = {}) {
 // whenBusy:"steer" (pi-durable native steering), so it rides into the running
 // generation instead of queuing a fresh run. "operator-message" is emitted only
 // once the steer is admitted, so the transcript shows it when it really landed.
-function readSteers(root) {
+function readSteers(root, control) {
   let steerSeq = 0;
   let stdinBuf = "";
   process.stdin.setEncoding("utf8");
@@ -195,6 +195,12 @@ function readSteers(root) {
       let message;
       try { message = JSON.parse(line); } catch { continue; }
       if (!message || typeof message !== "object" || Array.isArray(message)) continue;
+      if (Object.hasOwn(message, "roamControl")) {
+        // Do not await: resume/cancel and Ask replies must pass a draining pause.
+        // Tagged input never becomes model text, including before gate attachment.
+        void control?.handle(message).catch(() => {});
+        continue;
+      }
       if (Object.hasOwn(message, "ask")) { answerAsk(message); continue; }
       const { text, id } = message;
       if (typeof text !== "string" || !text.trim()) continue;
@@ -217,7 +223,7 @@ function readSteers(root) {
 // workspace had to be built again, the server sends the true state in
 // WORKSPACE_NOTE instead. Findings it proves now continue the run's numbering.
 const KEPT_NOTE = "Operator follow-up. Your workspace is the one you left: the files you wrote and the sources you fetched are still there.";
-async function chat({ harness, root, reports, state, fleet }) {
+async function chat({ harness, root, reports, state, fleet, control }) {
   const text = String(process.env.FOLLOWUP ?? "").trim();
   if (!text) throw new Error("FOLLOWUP is empty");
   for (const f of JSON.parse(process.env.PRIOR_FOUND || "[]")) state.found.push(f);
@@ -227,7 +233,7 @@ async function chat({ harness, root, reports, state, fleet }) {
   const priorCandidates = new Set(state.candidates.map((c) => c.poc));
   const before = (await harness.usage(ctx)).models ?? {};
   await streamCognition(harness, Number(process.env.ATTEMPT_BASE ?? 0));
-  readSteers(root);
+  readSteers(root, control);
   const sub = await root.submit({
     type: "input", requestId: `followup-${Date.now()}`,
     // BRIEF_CHANGE: the scope brief changed since the session started (targets.mjs briefChange).
@@ -244,8 +250,11 @@ async function chat({ harness, root, reports, state, fleet }) {
 
 // ---- Child worker: one process runs the whole audit.
 async function child([, , , mode, db, ws]) {
+  let opened, completed = false;
   // Preserve immediate stop: a dead parent must not leave model work running.
-  const stop = (code) => { try { disposeAsks(); } finally { process.exit(code); } };
+  const stop = (code) => {
+    try { opened?.control?.dispose(); disposeAsks(); } finally { process.exit(code); }
+  };
   process.once("SIGTERM", () => stop(143));
   process.once("SIGINT", () => stop(130));
   // The server owns this worker. A closed parent pipe means a restart; do not
@@ -254,14 +263,13 @@ async function child([, , , mode, db, ws]) {
     process.stdin.on("end", () => stop(1));
     process.stdin.resume();
   }
-  let opened, completed = false;
   try {
     const state = auditState(mode === "run" && process.env.TOUCHSTONE_PARENT_PIPE === "1" ? `${db}.audit.json` : null);
     opened = await openHarness(db, ws, state);
-    const { harness, root, reports, pack, fleet } = opened;
+    const { harness, root, reports, pack, fleet, control } = opened;
     event("opened", { mode });
     if (mode === "chat") {
-      await chat({ harness, root, reports, state, fleet });
+      await chat({ harness, root, reports, state, fleet, control });
       completed = true;
       return;
     }
@@ -271,7 +279,7 @@ async function child([, , , mode, db, ws]) {
       // Stream the agent's thinking and prose to the UI for the whole live turn.
       // In CLI mode stdin is /dev/null, so the steer reader never fires.
       await streamCognition(harness, Number(process.env.ATTEMPT_BASE ?? 0));
-      readSteers(root);
+      readSteers(root, control);
     }
 
     let settled = await sub.wait(ctx);
@@ -292,6 +300,7 @@ async function child([, , , mode, db, ws]) {
     event("settled", { status: settled.status, reason: settled.reason, detail: settled.detail, summary: s, findings: state.found, candidates: state.candidates, usage, reports });
     completed = true;
   } finally {
+    opened?.control?.dispose();
     disposeAsks();
     try { await opened?.fleet?.close(); } finally { await opened?.harness.close(ctx); }
     if (completed) exitAfterEvents(0);

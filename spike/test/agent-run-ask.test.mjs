@@ -87,6 +87,30 @@ test("stop and parent-pipe end dispose pending asks before exit", async () => {
   }
 });
 
+test("worker passes gate to follow-ups and disposes it before other cleanup", async () => {
+  let received;
+  const w = worker({ chat: async (args) => { received = args.control; } });
+  const control = { dispose: () => w.order.push("gate-dispose") };
+  w.opened.control = control;
+  await w.run([null, null, null, "chat"]);
+  assert.equal(received, control);
+  assert.deepEqual(w.order, ["gate-dispose", "dispose", "fleet-close", "harness-close", "exit:0"]);
+});
+
+test("stop disposes an attached gate before pending asks", async () => {
+  let finish, entered;
+  const ready = new Promise((resolve) => { entered = resolve; });
+  const wait = new Promise((resolve) => { finish = resolve; });
+  const w = worker({ chat: () => { entered(); return wait; } });
+  w.opened.control = { dispose: () => w.order.push("gate-dispose") };
+  const running = w.run([null, null, null, "chat"]);
+  await ready;
+  w.proc.emit("SIGTERM");
+  assert.deepEqual(w.order, ["gate-dispose", "dispose", "exit:143"]);
+  finish();
+  await running;
+});
+
 test("runner supplies shared Ask separately from pack and roam tools", () => {
   assert.match(source, /import \{ askHumanTool, answerAsk, disposeAsks \} from "\.\/lib\/ask\.mjs"/);
   assert.match(source, /createFleet\(\{[^\n]*sharedTools: \[askHumanTool\]/);

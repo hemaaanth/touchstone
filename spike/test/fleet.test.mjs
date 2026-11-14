@@ -43,8 +43,8 @@ async function runtime(t, route, { max = 4, budgeted = false, required = false, 
   registry.install(defineExtension({ name: "pack", tools: fleet ? fleet.wrapTools([read]) : [read] }));
   if (fleet) registry.install(fleet.extension);
   const harness = await Harness.open(new MemoryStorage(), { models, registry, settings: { retry: { maxRetries: 0 } }, onReport: (r) => reports.push(r) }, ctx);
-  await fleet?.attach(harness, ctx);
   const root = await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" }, instructions: fleet ? COORDINATOR_INSTRUCTIONS : "Audit the lab only." } });
+  await fleet?.attach(harness, ctx);
   t.after(async () => { await fleet?.close(); await harness.close(ctx); });
   async function run(content, drain) {
     let settled = await (await root.submit({ type: "input", content }, ctx)).wait(ctx);
@@ -258,8 +258,8 @@ async function worker(t, storage, { brief, changed = "", briefChange }, seen) {
   const registry = createRegistry();
   registry.install(fleet.extension);
   const harness = await Harness.open(storage, { models, registry, settings: { retry: { maxRetries: 0 } } }, ctx);
-  await fleet.attach(harness, ctx);
   const root = await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" }, instructions: COORDINATOR_INSTRUCTIONS } });
+  await fleet.attach(harness, ctx);
   return {
     harness,
     async say(content) {
