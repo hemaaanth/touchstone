@@ -34,11 +34,12 @@ export const CandidateListRow = memo(function CandidateListRow({
   // The run's start, as the finding rows show it (findings-page.tsx).
   when?: (ms: number) => string
 }) {
-  const c = f.candidate!
+  const c = f.agentFinding ?? f.candidate!
+  const agentFinding = Boolean(f.agentFinding)
   const open = () => run && onOpenRun(run.id, `${CANDIDATE_FOCUS}${c.poc}`)
   const pack = f.pack ?? ""
   return (
-    <li data-slot="finding-row" data-candidate onClick={open} className={cn(cols, rowClass(Boolean(run)))}>
+    <li data-slot="finding-row" data-candidate={!agentFinding || undefined} data-agent-finding={agentFinding || undefined} onClick={open} className={cn(cols, rowClass(Boolean(run)))}>
       <span aria-hidden className="flex size-8 items-center justify-center rounded-lg bg-muted text-muted-foreground [&_svg]:size-4">
         <ShieldQuestionMark className="size-4" />
       </span>
@@ -49,9 +50,9 @@ export const CandidateListRow = memo(function CandidateListRow({
             is left behind. On a phone the state is one short word that never
             shrinks; from sm up, the full words, the places count and the date. */}
         <div data-slot="candidate-meta" className="flex min-w-0 items-center gap-1.5 text-xs leading-5 text-muted-foreground">
-          <span data-slot="candidate-state" className="flex min-w-0 shrink-0 sm:shrink" title={candidateState(c)}>
-            <span className="whitespace-nowrap sm:hidden">{candidateShortState(c)}</span>
-            <span className="hidden min-w-0 truncate sm:inline">{candidateState(c)}</span>
+          <span data-slot="candidate-state" className="flex min-w-0 shrink-0 sm:shrink" title={agentFinding ? "Finding · agent-evidenced · unverified" : candidateState(f.candidate!)}>
+            <span className="whitespace-nowrap sm:hidden">{agentFinding ? "Unverified" : candidateShortState(f.candidate!)}</span>
+            <span className="hidden min-w-0 truncate sm:inline">{agentFinding ? "Finding · agent-evidenced · unverified" : candidateState(f.candidate!)}</span>
           </span>
           {c.measured && c.measured.count > 1 ? (
             <span data-slot="candidate-count" className="flex shrink-0 items-center gap-1.5 whitespace-nowrap tabular-nums max-sm:hidden">

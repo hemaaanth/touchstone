@@ -54,10 +54,10 @@ describe("reduceEvents", () => {
   })
 
   test("the transcript notes each candidate as unproven, tagged with its agent", () => {
-    const notes = s.steps.filter((x) => x.label.startsWith("Recorded a candidate"))
+    const notes = s.steps.filter((x) => x.label.startsWith("Recorded an investigation candidate"))
     expect(notes.map((x) => x.label)).toEqual([
-      "Recorded a candidate (unproven, needs review): Export leaks rows (a)",
-      "Recorded a candidate (unproven, needs review): Export leaks rows (b)",
+      "Recorded an investigation candidate: Export leaks rows (a)",
+      "Recorded an investigation candidate: Export leaks rows (b)",
     ])
     expect(notes[1].agent).toBe("child-1")
   })
@@ -81,7 +81,7 @@ test("reduceEvents drops a candidate once it is superseded, not when its poc is 
 // note is always a run-phase note.
 test("a candidate sent during the decide pass keeps its chat note", () => {
   const s = reduceEvents([{ t: 0, ev: "opened", mode: "decide" }, ev(cand("a"))])
-  const note = s.steps.find((x) => x.label.startsWith("Recorded a candidate"))
+  const note = s.steps.find((x) => x.label.startsWith("Recorded an investigation candidate"))
   expect(note?.phase).toBe("run")
 })
 
@@ -89,7 +89,7 @@ test("a candidate sent during the decide pass keeps its chat note", () => {
 // what it holds, not "Recon & static analysis".
 test("a run of candidate notes gets its own label, and any other run keeps main's", () => {
   const notes = reduceEvents([ev(cand("a")), ev(cand("b"))]).steps.filter((x) => x.kind === "note").map((x) => x.label)
-  expect(candidateGroupLabel(notes)).toBe("Recorded 2 candidates (unproven, needs review)")
+  expect(candidateGroupLabel(notes)).toBe("Recorded 2 candidates (ideas to test)")
   expect(candidateGroupLabel([notes[0]])).toBeNull()
   expect(candidateGroupLabel([notes[0], "Read the static analyzer report"])).toBeNull()
 })
@@ -101,9 +101,9 @@ describe("the Candidates group", () => {
   // replay proved it. A candidate is neither, so it is neutral, with no accent.
   test("a row reads as needs review, unproven and agent-asserted, and is neutral", () => {
     const html = renderToStaticMarkup(<CandidateList items={[c]} />)
-    expect(html).toContain("Needs review")
-    expect(html).toContain("unproven / agent-asserted")
-    expect(html).toContain('aria-label="Candidate, not proven"')
+    expect(html).toContain("Idea to test")
+    expect(html).not.toContain("unproven / agent-asserted")
+    expect(html).toContain('aria-label="Investigation candidate"')
     for (const tone of ["text-ok", "text-bad", "text-warn", "bg-ok", "bg-bad", "bg-warn", "border-warn", "text-destructive", "text-red", "text-green", "text-amber"]) {
       expect([tone, html.includes(tone)]).toEqual([tone, false])
     }
@@ -113,7 +113,7 @@ describe("the Candidates group", () => {
 
   test("the detail shows the why line, write-up, PoC and cited lines; the raw evidence is one fold deeper, closed", () => {
     const html = renderToStaticMarkup(<CandidateDetail candidate={c} />)
-    expect(html).toContain("Why this isn&#x27;t proven: no check covers this class yet.")
+    expect(html).toContain("Investigation candidate. Test the hypothesis before reporting a vulnerability.")
     expect(html).toMatch(/<strong[^>]*>export<\/strong>/)
     expect(html).toContain("GET /admin/export/1 -&gt; 200")
     expect(html).toContain("/admin/export/1")
@@ -151,7 +151,7 @@ describe("the Candidates group", () => {
     expect(html).toContain("Findings &amp; Proofs")
     expect(html).toContain("0</span> findings")
     expect(html).toContain("1</span> candidate")
-    expect(html.indexOf("Findings &amp; Proofs")).toBeLessThan(html.indexOf(">Candidates<"))
+    expect(html.indexOf(">Candidates<")).toBeLessThan(html.indexOf("Findings &amp; Proofs"))
   })
 
   test("a run with no candidates shows no Candidates group", () => {
@@ -225,7 +225,7 @@ describe("a measured candidate in the run view (N3)", () => {
       "Recorded as a candidate (measurement repeated): weak-csp",
       "Recorded as a candidate (measurement repeated): weak-csp",
     ])
-    expect(candidateGroupLabel(s.steps.filter((x) => x.kind === "note").map((x) => x.label))).toBe("Recorded 2 candidates (unproven)")
+    expect(candidateGroupLabel(s.steps.filter((x) => x.kind === "note").map((x) => x.label))).toBe("Recorded 2 candidates (observations)")
     // With no submitted card to replace (an older run), one note says it.
     const alone = reduceEvents([ev(measured())])
     expect(alone.steps.map((x) => x.label)).toEqual(["Recorded as a candidate (measurement repeated): The Content-Security-Policy allows unsafe sources"])
@@ -236,8 +236,8 @@ describe("a measured candidate in the run view (N3)", () => {
     const row = renderToStaticMarkup(<CandidateList items={[c]} />)
     expect(row).toContain("Measurement repeated")
     expect(row).toContain("2 places")
-    expect(row).toContain("unproven / measured")
-    expect(row).not.toContain("Needs review")
+    expect(row).not.toContain("unproven / measured")
+    expect(row).not.toContain("Idea to test")
     for (const tone of ["text-ok", "text-bad", "text-warn", "bg-ok", "bg-bad", "bg-warn"]) expect([tone, row.includes(tone)]).toEqual([tone, false])
     const fold = renderToStaticMarkup(<CandidateDetail candidate={c} />)
     expect(fold).toContain("Measurement repeated: the replay found the same fact again. It shows no harm.")
@@ -275,18 +275,18 @@ describe("candidates in the run view, repair 1", () => {
     expect(html).toContain("flex-wrap")
     const title = html.indexOf(meas.title.replace(/'/g, "&#x27;"))
     const chevron = html.indexOf("lucide-chevron-right")
-    const badge = html.indexOf("unproven / measured")
+    const badge = html.indexOf("Measurement repeated")
     expect(title).toBeGreaterThan(0)
     expect(chevron).toBeGreaterThan(title)
     expect(chevron).toBeLessThan(badge)
   })
 
   test("m2: the section and the chat label say one true word per kind", () => {
-    expect(candidatesStatus([agent])).toBe("Needs review")
-    expect(candidatesStatus([meas])).toBe("Unproven")
-    expect(candidatesStatus([agent, meas])).toBe("Unproven · some need review")
+    expect(candidatesStatus([agent])).toBe("Ideas to test")
+    expect(candidatesStatus([meas])).toBe("Observations")
+    expect(candidatesStatus([agent, meas])).toBe("Ideas and observations")
     const notes = reduceEvents([ev(cand("a")), ev(measured())]).steps.filter((x) => x.kind === "note").map((x) => x.label)
-    expect(candidateGroupLabel(notes)).toBe("Recorded 2 candidates (unproven, some need review)")
+    expect(candidateGroupLabel(notes)).toBe("Recorded 2 candidates (ideas and observations)")
   })
 })
 

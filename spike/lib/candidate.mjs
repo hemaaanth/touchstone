@@ -1,10 +1,8 @@
 // The candidate tier (docs/candidate-tier.md).
 //
-// A candidate sits between a proven finding and a lead. The agent ran a real
-// attempt and saw harm, but the pack's proof model did not fire. The record
-// keeps the captured evidence, says the agent asserted it, and waits for a
-// human. A candidate is never proven: makeCandidate sets the fixed fields last,
-// so no input can change them.
+// Candidates hold investigation ideas and captured observations. A structured
+// report promotes demonstrated harm to a separate agent-evidenced finding.
+// Only the existing deterministic proof path can mark a finding proven.
 //
 // Each proving pack gives `candidateTool` one `lookup(poc)`:
 //   null                      no recorded attempt with that id: refused
@@ -13,7 +11,7 @@
 //                             the captured evidence, the text the agent may cite
 //                             from, and the root-cause key for the dup guard
 import { defineTool } from "@earendil-works/pi-durable";
-import { arr, obj, str } from "@earendil-works/pi-schema";
+import { arr, obj, opt, str } from "@earendil-works/pi-schema";
 import { currentAgent, event } from "./event.mjs";
 import { sha256 } from "./proof-evidence.mjs";
 import { redactSecrets } from "../../app/server/redact.mjs";
@@ -24,16 +22,14 @@ import { MEASURED_WORDS, proofClass, proofClassOf } from "./proof-class.mjs";
 import { readableTitle } from "./check-titles.mjs";
 import { LangEn } from "ethers";
 
-export const CANDIDATE_CAP = 3;
+export { AGENT_FINDING_CAP } from "./agent-report.mjs";
+import { AGENT_FINDING_CAP, REPORT_FIELDS, agentReport } from "./agent-report.mjs";
 export const WHY_UNPROVEN = "No check covers this class yet.";
 export const SEVERITIES = ["critical", "high", "medium", "low", "informational"];
 
 // The line each pack adds to its "no proof" message.
-export const CANDIDATE_HINT = `If you are confident this is a real, serious vulnerability that this pack's checks do not cover, record it with submit_candidate. It is marked unproven and queued for human review, not dropped. Use it rarely: at most ${CANDIDATE_CAP} per run.`;
-
-// The line each wired pack's system prompt ends with. A run's instructions
-// name every tool it has (multi.mjs renames it per module in a joined run).
-export const CANDIDATE_SYSTEM = `Rare case: if an attempt you ran showed serious harm that this pack's proof checks do not cover, record it with submit_candidate, citing that attempt. It stays unproven and goes to a human for review. At most ${CANDIDATE_CAP} per run.`;
+export const CANDIDATE_HINT = "Record investigation candidates freely with record_candidate. A symptom, version, open endpoint, spam, or missing check is a lead, not a demonstrated vulnerability. If your captured attempt demonstrates an attacker capability and harm outside the oracle's coverage, use submit_candidate with report to submit an agent-evidenced finding. Include exact evidence, reproduction steps, and limitations. It remains unverified by the framework. Deterministic matches still use submit_finding.";
+export const CANDIDATE_SYSTEM = `${CANDIDATE_HINT} Candidates have no count limit. At most ${AGENT_FINDING_CAP} agent-evidenced findings per run; deterministic findings have no count limit. Do not promote observations of an existing compromise unless you demonstrate the vulnerability and attacker capability. Explain observed harm separately from potential harm. Never claim oracle verification for an agent report.`;
 export const withCandidateLine = (system) => (ws) => `${system(ws)}\n\n${CANDIDATE_SYSTEM}`;
 
 // ---------------------------------------------------------------- scrub
@@ -265,6 +261,44 @@ export function makeCandidate({ n, pack, title, severity, poc, evidence, explana
   };
 }
 
+// Stored separately from candidates and oracle findings. All readers preserve
+// the verification boundary, including on reload and follow-up turns.
+export function makeAgentFinding(value) {
+  const report = agentReport(scrubValue(value?.report));
+  if (!report) return null;
+  return { ...makeCandidate({ ...value, origin: "agent" }), report,
+    kind: "agent-finding", candidate: false, verification: "agent", proven: false, provedBy: null };
+}
+
+export function agentFindingsState(saved = [], save = () => {}) {
+  const list = (Array.isArray(saved) ? saved : []).map(makeAgentFinding).filter(Boolean);
+  const push = list.push.bind(list);
+  list.push = (...items) => { const n = push(...items); save(); return n; };
+  Object.defineProperty(list, "save", { value: save });
+  return list;
+}
+
+export function ideaTool(state) {
+  return defineTool({
+    name: "record_candidate",
+    description: "Record an investigation idea or observation. Candidates are unlimited and are not findings. State the hypothesis and the next test. Spam, exposed endpoints, scanner warnings, and coverage gaps belong here until a test demonstrates an attacker capability and harm.",
+    parameters: obj({ title: str(), hypothesis: str(), next_test: str() }), replay: "safe",
+    execute: async ({ title, hypothesis, next_test }) => {
+      if ([title, hypothesis, next_test].some((v) => typeof v !== "string" || v.trim().length < 8 || v.length > 4000)) return text("Provide a title, hypothesis, and concrete next test (8–4000 characters each).", true);
+      state.candidates ??= [];
+      const clean = (v) => scrubText(state.sessionSecrets?.length ? scrubSessionValue(v, state.sessionSecrets) : v);
+      const explanation = clean(`Hypothesis: ${hypothesis}\n\nNext test: ${next_test}`);
+      const cleanTitle = clean(title);
+      if (state.candidates.some((c) => c.title === cleanTitle && c.explanation === explanation)) return text("This investigation candidate is already recorded.");
+      const n = Math.max(0, ...state.candidates.map((c) => c.n)) + 1;
+      const candidate = makeCandidate({ n, title: cleanTitle, explanation, severity: "informational", poc: `idea:${currentAgent() ?? "root"}:${n}` });
+      state.candidates.push(candidate);
+      event("candidate-submitted", { candidate });
+      return text(`Recorded investigation candidate #${n}. Test it before reporting a finding.`);
+    },
+  });
+}
+
 // The "measurement repeated" fact a measured candidate carries: why it is not
 // proven, the words for it, and the pins a reviewer can check.
 function measuredBlock(m) {
@@ -440,6 +474,12 @@ export function supersededBy(candidates, findings) {
 }
 
 function supersede(state, f) {
+  const reports = state.agentFindings ?? [];
+  for (const report of [...reports]) if (isProven(f) && takesPlace(f, report)) {
+    reports.splice(reports.indexOf(report), 1);
+    reports.save?.();
+    event("agent-finding-superseded", { poc: report.poc, pack: report.pack, by: f.poc ?? null });
+  }
   const list = state.candidates ?? [];
   const gone = list.filter((c) => takesPlace(f, c));
   for (const c of gone) {
@@ -471,16 +511,18 @@ export async function checkCandidate({ pack, state, lookup, args, scrub = scrubV
     event("candidate-rejected", { poc: known(poc), reason });
     return { refused: known(message), reason };
   };
-  // The cap is the agent's: a measured candidate (made by the engine) never counts.
-  if (state.candidates.filter((c) => c.origin !== "measured").length >= CANDIDATE_CAP) {
-    return refuse("cap", `Cannot record this candidate: this run already has ${CANDIDATE_CAP} candidates, the most a run may hold. A candidate costs a human's attention. Keep auditing for proven findings, or write the coverage summary.`);
-  }
+  const reporting = args.report !== undefined;
+  state.agentFindings ??= [];
+  const report = reporting ? agentReport(args.report) : null;
+  if (reporting && !report) return refuse("bad-report", "A finding report requires 2–12 reproduction_steps, attacker_capability, observed_result, harm, and limitations. Demonstrate a vulnerability, not just an observed problem. Each report field must explain the evidence in at least 20 characters.");
+  const sourceCandidate = reporting && args.candidate_poc ? state.candidates.find((c) => c.poc === args.candidate_poc && (!c.pack || c.pack === pack)) : null;
+  if (reporting && args.candidate_poc && !sourceCandidate) return refuse("no-candidate", "The candidate_poc does not identify an investigation candidate in this module.");
   if (!poc) return refuse("no-attempt", "Cannot record this candidate: name the recorded attempt it comes from.");
   const samePoc = (p) => {
-    const finding = state.found.find((f) => f.poc === p);
+    const finding = [...state.found, ...state.agentFindings].find((f) => f.poc === p);
     if (finding) return refuse("duplicate", `"${p}" is already recorded as finding #${finding.n} ("${finding.title}"). A candidate cannot repeat a finding.`);
     const twin = state.candidates.find((c) => c.poc === p);
-    if (twin) return refuse("duplicate", `"${p}" is already recorded as candidate #${twin.n} ("${twin.title}").`);
+    if (twin && !reporting) return refuse("duplicate", `"${p}" is already recorded as candidate #${twin.n} ("${twin.title}").`);
     return null;
   };
   const dup = samePoc(poc);
@@ -492,16 +534,19 @@ export async function checkCandidate({ pack, state, lookup, args, scrub = scrubV
   if (attempt.proved) return refuse("proved", `Not a candidate: the attempt "${poc}" met this pack's proof model. It is a real finding. Call submit_finding with "${poc}" instead.`);
   // The poc a finding for this attempt would carry (evidence packs prefix the
   // lead id). The candidate is stored under it, so the guards see the pair.
+  const repeated = samePoc(poc);
+  if (repeated) return repeated;
+  if (reporting && state.agentFindings.length >= AGENT_FINDING_CAP) return refuse("finding-cap", `This run already has ${AGENT_FINDING_CAP} agent-evidenced findings. Keep recording investigation candidates; deterministic findings remain uncapped.`);
   const recordPoc = String(attempt.poc ?? poc);
   const dupRecord = recordPoc === poc ? null : samePoc(recordPoc);
   if (dupRecord) return dupRecord;
   const rootCause = attempt.rootCause ?? null;
   if (rootCause) {
-    const sameRoot = state.found.find((f) => f.rootCause === rootCause) ?? state.candidates.find((c) => c.rootCause === rootCause);
+    const sameRoot = [...state.found, ...state.agentFindings].find((f) => f.rootCause === rootCause) ?? (!reporting ? state.candidates.find((c) => c.rootCause === rootCause) : null);
     if (sameRoot) return refuse("duplicate-root-cause", `This root cause is already recorded as ${sameRoot.candidate ? "candidate" : "finding"} #${sameRoot.n} ("${sameRoot.title}"). One record per root cause.`);
   }
   const evidenceHash = sha256(JSON.stringify(attempt.evidence ?? null));
-  const sameEvidence = state.candidates.find((c) => c.evidenceHash === evidenceHash);
+  const sameEvidence = [...(reporting ? state.agentFindings : state.candidates)].find((c) => c.evidenceHash === evidenceHash);
   if (sameEvidence) return refuse("duplicate-evidence", `This evidence is already recorded as candidate #${sameEvidence.n} ("${sameEvidence.title}").`);
   const severity = String(args.severity ?? "").trim().toLowerCase();
   if (!SEVERITIES.includes(severity)) return refuse("bad-input", `Severity must be one of: ${SEVERITIES.join(", ")}.`);
@@ -527,6 +572,18 @@ export async function checkCandidate({ pack, state, lookup, args, scrub = scrubV
     cites: line(cites.join("\n")).split("\n"),
     evidence: scrubValue(scrub(known(attempt.evidence))),
   });
+  if (reporting) {
+    const finding = makeAgentFinding({ ...candidate, n: state.agentFindings.length + 1, report: scrubValue(scrub(known(report))) });
+    if (!finding) return refuse("bad-report", "The report could not be retained after redaction. Rephrase it without secrets.");
+    state.agentFindings.push(finding);
+    event("agent-finding-submitted", { finding });
+    for (const c of [...state.candidates]) if (takesPlace(finding, c) || c === sourceCandidate) {
+      state.candidates.splice(state.candidates.indexOf(c), 1);
+      state.candidates.save?.();
+      event("candidate-superseded", { poc: c.poc, by: finding.poc });
+    }
+    return { finding };
+  }
   state.candidates.push(candidate);
   event("candidate-submitted", { candidate });
   return { candidate };
@@ -536,7 +593,7 @@ export async function checkCandidate({ pack, state, lookup, args, scrub = scrubV
 // contract or lead id) and how to describe it to the agent. `name` and
 // `description` are for a second candidate tool beside a pack's own (the
 // free-roam session tool); the packs pass neither.
-const DESCRIPTION = `Record a CANDIDATE: a serious problem your own attempt showed, that this pack's proof checks do not cover. It is stored as unproven and agent-asserted, and queued for human review. It never counts as a finding. Use it only after an attempt that captured evidence but did not prove. If the attempt proved, use submit_finding. At most ${CANDIDATE_CAP} per run.`;
+const DESCRIPTION = "Record evidence for an investigation candidate (uncapped). To report a demonstrated vulnerability outside the deterministic checks, include report with reproduction steps, captured attacker capability, observed result, harm, and limitations. This creates an agent-evidenced finding, unverified by the framework (at most three per run). An open endpoint or existing spam alone is not a vulnerability. Oracle-proven attempts must use submit_finding.";
 export function candidateTool({ pack, state, lookup, poc, scrub, scrubLine, packText = false, name = "submit_candidate", description = DESCRIPTION }) {
   const prose = packText ? {} : {
     title: str({ description: "short title" }),
@@ -547,6 +604,8 @@ export function candidateTool({ pack, state, lookup, poc, scrub, scrubLine, pack
     description,
     parameters: obj({
       ...prose,
+      candidate_poc: opt(str({ description: "Optional investigation candidate poc to promote after a successful test. The report still requires the current captured attempt in poc." })),
+      report: opt(obj({ reproduction_steps: arr(str()), ...Object.fromEntries(REPORT_FIELDS.map((key) => [key, str()])) }, { description: "Only include this to report a demonstrated vulnerability. State what you actually reproduced, the attacker capability gained, actual versus potential harm, and limitations. Do not use it for suspicions, spam observations, versions or missing checks." })),
       severity: str({ description: "critical | high | medium | low | informational" }),
       poc: str({ description: poc }),
       evidence_lines: arr(str(), { description: "1 to 6 exact lines copied from that attempt's output that show the harm" }),
@@ -555,8 +614,9 @@ export function candidateTool({ pack, state, lookup, poc, scrub, scrubLine, pack
     execute: async (args) => {
       const r = await checkCandidate({ pack, state, lookup, args, scrub, scrubLine, packText });
       if (r.refused) return text(r.refused, true);
+      if (r.finding) return text(`Recorded agent-evidenced finding #${r.finding.n}: ${r.finding.title}. Unverified by the framework; the evidence and reproduction report are saved. Continue investigating.`);
       const c = r.candidate;
-      return text(`Recorded candidate #${c.n}: ${c.title} (${c.severity}). It is UNPROVEN and queued for human review. It is not a finding. Keep auditing for proven findings.`);
+      return text(`Recorded candidate #${c.n}: ${c.title} (${c.severity}). It is an investigation candidate. Test the hypothesis, then submit a structured report with report if you demonstrate a vulnerability, or use submit_finding if the oracle verifies it.`);
     },
   });
 }
@@ -666,7 +726,7 @@ export const SESSION_POC = "the session id from the line that starts with \"sess
 
 // The description of submit_session_candidate. A free-roam child has no
 // submit_finding, so the text does not name it.
-export const SESSION_DESCRIPTION = `Record a CANDIDATE from your shell session: a serious problem your own commands showed. It is stored as unproven and agent-asserted, and queued for human review. It never counts as a finding: nothing in a free-roam session is a proof. Cite exact lines from your shell results. A second candidate needs a new shell, browser or ask action first. At most ${CANDIDATE_CAP} per run.`;
+export const SESSION_DESCRIPTION = `${DESCRIPTION.replace("Oracle-proven attempts must use submit_finding.", "Report any deterministic match to the coordinator.")} Cite the current session id and exact captured evidence lines. A new report needs a new shell, browser or ask action first.`;
 
 const SESSION_OUTPUT = 16_000;
 const SESSION_HOSTS = 60;

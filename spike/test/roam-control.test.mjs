@@ -1,3 +1,4 @@
+import { roamError } from "../lib/roam-errors.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createRoamControl } from "../lib/roam-control.mjs";
@@ -353,4 +354,13 @@ test("late pause and resume success after cancel cannot reopen the closed latch"
     await gate.handle(line("status"));
     assert.equal(events[1].state, "closed");
   }
+});
+
+
+test("the gate preserves trusted diagnostic codes but hides remote and forged errors", async () => {
+  const { gate } = fixture();
+  await rejects(gate.run("a-1", () => { throw roamError("ROAM_SHELL_OUTCOME_UNKNOWN"); }),
+    roamError("ROAM_SHELL_OUTCOME_UNKNOWN").message);
+  await rejects(gate.run("a-1", () => { throw Object.assign(new Error("private token"), { code: "ROAM_SHELL_OUTCOME_UNKNOWN" }); }), "ROAM_RUN_FAILED");
+  assert.equal(await gate.run("a-1", () => 42), 42);
 });

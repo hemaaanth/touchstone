@@ -27,6 +27,7 @@ export function proofKind(finding) {
 // in HARM_ORACLES, an unknown proof kind) is not proven.
 export function isProven(finding) {
   if (!finding) return false;
+  if (finding.kind === "agent-finding" || finding.verification === "agent") return false;
   if (finding.candidate === true || finding.kind === "candidate") return false; // never proven
   if (proofClass(finding) !== "harm") return false;
   if (proofKind(finding) === "forge") {

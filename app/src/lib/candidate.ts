@@ -39,15 +39,39 @@ export interface Candidate {
   provedBy: null
 }
 
-export const WHY_UNPROVEN = "Why this isn't proven: no check covers this class yet."
+export interface AgentReport {
+  reproduction_steps: string[]
+  attacker_capability: string
+  observed_result: string
+  harm: string
+  limitations: string
+}
+export interface AgentFinding extends Omit<Candidate, "kind" | "candidate" | "origin" | "measured"> {
+  kind: "agent-finding"
+  candidate: false
+  origin: "agent"
+  measured: null
+  verification: "agent"
+  report: AgentReport
+}
+export function agentFindingFrom(e: RunEvent): AgentFinding | null {
+  if (e.ev !== "agent-finding-submitted" || !e.finding || typeof e.finding !== "object") return null
+  const value = e.finding as Record<string, unknown>
+  const r = value.report as AgentReport | undefined
+  if (!r || !Array.isArray(r.reproduction_steps) || r.reproduction_steps.length < 2 || r.reproduction_steps.length > 12 || r.reproduction_steps.some((s) => typeof s !== "string" || s.trim().length < 8) || [r.attacker_capability, r.observed_result, r.harm, r.limitations].some((v) => typeof v !== "string" || v.trim().length < 20)) return null
+  const c = candidateFrom({ ...e, ev: "candidate-submitted", candidate: value })
+  return c ? { ...c, kind: "agent-finding", candidate: false, origin: "agent", measured: null, verification: "agent", report: r } : null
+}
+
+export const WHY_UNPROVEN = "Investigation candidate. Test the hypothesis before reporting a vulnerability."
 // A candidate keeps agent prose and raw traces, so its scrub is stricter than
 // a report's (spike/lib/candidate.mjs). This line says why a hash is gone.
-export const MASK_NOTE = "In a candidate, long hex values (a tx hash too) and any value after a secret-like label are shown as [REDACTED]."
+export const MASK_NOTE = "In captured evidence, long hex values (a tx hash too) and any value after a secret-like label are shown as [REDACTED]."
 
 // The chat note for each candidate, and the label of a run of such notes. The
 // chat folds a run of notes into one row; without its own label that row
 // would read "Recon & static analysis".
-export const CANDIDATE_NOTE = "Recorded a candidate (unproven, needs review)"
+export const CANDIDATE_NOTE = "Recorded an investigation candidate"
 // The short state of a measured candidate, for its row and its chat note.
 export const MEASURED_SHORT: Record<MeasuredReason, string> = {
   repeated: "Measurement repeated",
@@ -62,7 +86,7 @@ const NOTE_PREFIXES = [`${CANDIDATE_NOTE}: `, "Recorded as a candidate ("]
 export function candidateGroupLabel(labels: string[]): string | null {
   if (labels.length < 2 || !labels.every((l) => NOTE_PREFIXES.some((p) => l.startsWith(p)))) return null
   const agent = labels.filter((l) => l.startsWith(NOTE_PREFIXES[0])).length
-  const tail = agent === labels.length ? "unproven, needs review" : agent === 0 ? "unproven" : "unproven, some need review"
+  const tail = agent === labels.length ? "ideas to test" : agent === 0 ? "observations" : "ideas and observations"
   return `Recorded ${labels.length} candidates (${tail})`
 }
 
@@ -132,9 +156,9 @@ export function candidateFrom(e: RunEvent): Candidate | null {
 export function candidatesStatus(items: Candidate[]): string {
   if (!items.length) return ""
   const measured = items.filter((c) => c.measured).length
-  if (measured === 0) return "Needs review"
-  if (measured === items.length) return "Unproven"
-  return "Unproven · some need review"
+  if (measured === 0) return "Ideas to test"
+  if (measured === items.length) return "Observations"
+  return "Ideas and observations"
 }
 
 // ── Landing on a candidate (N3, M2) ─────────────────────────────────────────

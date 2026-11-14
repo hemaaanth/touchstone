@@ -461,17 +461,19 @@ export function RunChat({
     ? focus.finding.slice(CANDIDATE_FOCUS.length)
     : nowCandidate && nowCandidate.focus === focus ? nowCandidate.poc : null
   const [candidateOpen, setCandidateOpen] = useState<{ poc: string; at: number } | null>(null)
-  const hasCandidate = Boolean(focusCandidate && state?.candidates.some((c) => c.poc === focusCandidate))
+  const focusAgentFinding = Boolean(focusCandidate && state?.agentFindings?.some((f) => f.poc === focusCandidate))
+  const hasCandidate = focusAgentFinding || Boolean(focusCandidate && state?.candidates.some((c) => c.poc === focusCandidate))
   // Once per focus, after the render, as the finding focus below does.
   const candidateDone = useRef<FocusFinding | null>(null)
   useEffect(() => {
     if (!focus || !focusCandidate || !hasCandidate || candidateDone.current === focus) return
     const t = setTimeout(() => {
       candidateDone.current = focus
-      applyCandidateFocus({ panelOpen: setPanelOpen, section: setSection, candidateOpen: setCandidateOpen }, focusCandidate, focus.at)
+      if (focusAgentFinding) { setPanelOpen(true); setSection("findings"); setCandidateOpen({ poc: focusCandidate, at: focus.at }) }
+      else applyCandidateFocus({ panelOpen: setPanelOpen, section: setSection, candidateOpen: setCandidateOpen }, focusCandidate, focus.at)
     }, 0)
     return () => clearTimeout(t)
-  }, [focus, focusCandidate, hasCandidate, setPanelOpen, setSection])
+  }, [focus, focusCandidate, focusAgentFinding, hasCandidate, setPanelOpen, setSection])
   const target = focus && state && !focusCandidate ? findingTarget(state, status, focus.finding) : null
   const targetSig = target ? `${target.key}|${target.agent}|${target.proofId}` : null
   const focusRef = useRef({ target, openFile, openPeek, setPanelOpen })

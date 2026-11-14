@@ -40,7 +40,7 @@ export function formatNum(n: number | null): string {
 }
 
 // A run is live while it is still doing work; terminal once it has settled.
-const TERMINAL: RunStatus[] = ["recorded", "denied", "no-finding", "error"]
+const TERMINAL: RunStatus[] = ["recorded", "reported", "denied", "no-finding", "error"]
 export const isTerminal = (s: RunStatus): boolean => TERMINAL.includes(s)
 
 // The one-word station a status reads as, for a sidebar row or header chip.
@@ -58,6 +58,8 @@ export function statusLabel(s: RunStatus): string {
       return "Proven"
     case "denied":
       return "Denied"
+    case "reported":
+      return "Reported"
     case "no-finding":
       return "No finding"
     case "error":
@@ -74,7 +76,7 @@ export type Tone = "green" | "amber" | "red" | "neutral"
 export function statusTone(s: RunStatus): Tone {
   if (s === "recorded") return "green"
   if (s === "error" || s === "denied") return "red"
-  if (s === "no-finding") return "neutral"
+  if (s === "no-finding" || s === "reported") return "neutral"
   return "amber"
 }
 

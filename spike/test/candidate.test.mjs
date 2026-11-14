@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CANDIDATE_CAP, CANDIDATE_HINT, candidateTool, checkCandidate, makeCandidate, scrubExtras, scrubText, scrubValue } from "../lib/candidate.mjs";
+import { CANDIDATE_HINT, candidateTool, checkCandidate, makeCandidate, scrubExtras, scrubText, scrubValue } from "../lib/candidate.mjs";
 import { REVIEW_INPUTS } from "./helpers/scrub-review-inputs.mjs";
 import { isProven } from "../lib/proof-view.mjs";
 
@@ -119,21 +119,18 @@ test("cited lines must appear in the attempt's evidence", async () => {
   assert.ok(loose.candidate);
 });
 
-test(`the cap is ${CANDIDATE_CAP} per run; the next is refused with a clear message`, async () => {
+test("investigation candidates have no three-item cap", async () => {
   const state = fresh();
-  for (const poc of ["a1", "a2", "a3"]) assert.ok((await checkCandidate({ pack: "web", state, lookup, args: args(poc) })).candidate);
-  const r = await checkCandidate({ pack: "web", state, lookup, args: args("a4") });
-  assert.equal(r.reason, "cap");
-  assert.match(r.refused, /already has 3 candidates/);
-  assert.equal(state.candidates.length, 3);
+  for (const poc of ["a1", "a2", "a3", "a4"]) assert.ok((await checkCandidate({ pack: "web", state, lookup, args: args(poc) })).candidate);
+  assert.equal(state.candidates.length, 4);
 });
 
-test("prior candidates from earlier turns count toward the cap and the guards", async () => {
+test("prior candidates from earlier turns keep duplicate guards without a cap", async () => {
   const state = { ...fresh(), candidates: [{ n: 1, poc: "a1", title: "old", rootCause: "script:a1" }, { n: 2, poc: "a2", title: "old2" }] };
   assert.equal((await checkCandidate({ pack: "web", state, lookup, args: args("sameRoot") })).reason, "duplicate-root-cause");
   const r = await checkCandidate({ pack: "web", state, lookup, args: args("a3") });
   assert.equal(r.candidate.n, 3);
-  assert.equal((await checkCandidate({ pack: "web", state, lookup, args: args("a4") })).reason, "cap");
+  assert.equal((await checkCandidate({ pack: "web", state, lookup, args: args("a4") })).candidate.n, 4);
 });
 
 test("secrets in the evidence and write-up are scrubbed", async () => {
@@ -167,7 +164,7 @@ test("the tool records through the same checks and says the record is unproven",
   assert.equal(tool.name, "submit_candidate");
   const ok = await tool.execute(args("a1"));
   assert.ok(!ok.isError);
-  assert.match(ok.output[0].text, /UNPROVEN and queued for human review/);
+  assert.match(ok.output[0].text, /investigation candidate/);
   const no = await tool.execute(args("never"));
   assert.equal(no.isError, true);
   assert.match(CANDIDATE_HINT, /submit_candidate/);
@@ -331,8 +328,8 @@ test("candidateState saves each new candidate and restores the guards on resume"
   assert.equal((await checkCandidate({ pack: "web", state: after, lookup, args: args("sameRoot") })).reason, "duplicate-root-cause");
   assert.equal((await checkCandidate({ pack: "web", state: after, lookup, args: args("same") })).reason, "duplicate-evidence");
   assert.equal((await checkCandidate({ pack: "web", state: after, lookup, args: args("a3") })).candidate.n, 3);
-  assert.equal((await checkCandidate({ pack: "web", state: after, lookup, args: args("a4") })).reason, "cap");
-  assert.equal(JSON.parse(disk).length, 3);
+  assert.equal((await checkCandidate({ pack: "web", state: after, lookup, args: args("a4") })).candidate.n, 4);
+  assert.equal(JSON.parse(disk).length, 4);
 
   const forged = candidateState([{ n: 1, poc: "f", proven: true, provedBy: "oracle", kind: "finding" }]);
   assert.equal(forged[0].proven, false, "a saved file cannot make a candidate proven");
@@ -430,8 +427,7 @@ test("auditState saves the candidates and a restarted worker gets them back", as
   for (const poc of ["a1", "a2", "a3"]) assert.ok((await checkCandidate({ pack: "web", state: first, lookup, args: args(poc) })).candidate);
   const second = auditState(file);
   assert.deepEqual(second.candidates.map((c) => [c.n, c.poc, c.proven, c.candidate]), [[1, "a1", false, true], [2, "a2", false, true], [3, "a3", false, true]]);
-  assert.equal((await checkCandidate({ pack: "web", state: second, lookup, args: args("a4") })).reason, "cap");
-  assert.equal((await checkCandidate({ pack: "web", state: second, lookup, args: args("sameRoot") })).reason, "cap");
+  assert.equal((await checkCandidate({ pack: "web", state: second, lookup, args: args("sameRoot") })).reason, "duplicate-root-cause");
   // A finding proven at submit takes a1's place; the removal is saved too.
   second.found.push({ n: 1, title: "proven a1", poc: "a1" });
   const third = auditState(file);

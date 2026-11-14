@@ -1,3 +1,4 @@
+import { REPORT } from "./helpers/agent-report.mjs";
 // submit_candidate in the harm-execution packs (contracts, keys, chain-watch).
 // forge is mocked: run_poc and the replay return fixed results, so no
 // compiler or EVM runs.
@@ -127,7 +128,7 @@ for (const pack of [contracts, keys, chainWatch]) {
     } finally { done(); }
   });
 
-  test(`${pack.id}: duplicate guards and the cap of 3`, async () => {
+  test(`${pack.id}: duplicate guards and uncapped investigation candidates`, async () => {
     const { state, tools, runPoc, done } = setup();
     try {
       replay = noHarmDelta;
@@ -140,8 +141,14 @@ for (const pack of [contracts, keys, chainWatch]) {
       assert.ok(!(await tools.submit_candidate.execute(candidateArgs("PauseB"))).isError);
       assert.ok(!(await tools.submit_candidate.execute(candidateArgs("PauseC"))).isError);
       const fourth = await tools.submit_candidate.execute(candidateArgs("PauseD"));
-      assert.match(fourth.output[0].text, /already has 3 candidates/);
-      assert.equal(state.candidates.length, 3);
+      assert.match(fourth.output[0].text, /Recorded candidate #4/);
+      assert.equal(state.candidates.length, 4);
+      const report = await tools.submit_candidate.execute({ ...candidateArgs("PauseD"), report: REPORT });
+      assert.ok(!report.isError, report.output[0].text);
+      assert.equal(state.agentFindings.length, 1);
+      assert.equal(state.agentFindings[0].proven, false);
+      assert.equal(state.agentFindings[0].verification, "agent");
+      assert.equal(state.candidates.length, 3, "the promoted candidate leaves the investigation queue");
     } finally { done(); }
   });
 

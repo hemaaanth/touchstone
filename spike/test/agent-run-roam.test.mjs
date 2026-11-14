@@ -13,6 +13,7 @@ import { fauxAssistantMessage as answer, fauxProvider, fauxToolCall as call } fr
 import { createRegistry, defineExtension, Harness, MemoryStorage } from "@earendil-works/pi-durable";
 import { createFleet } from "../lib/fleet.mjs";
 import { currentAgent, withAgent } from "../lib/event.mjs";
+import { roamError } from "../lib/roam-errors.mjs";
 import { createRoamControl } from "../lib/roam-control.mjs";
 import { roamTools, pauseRoamShell, resumeRoamShell, closeRoamShell } from "../lib/roam.mjs";
 import { roamBrowserTools, pauseRoamBrowser, resumeRoamBrowser, closeRoamBrowser } from "../lib/roam-browser.mjs";
@@ -61,7 +62,7 @@ function runtime(t, { hooks = {}, isAgent = (id) => id === "a-1" } = {}) {
   };
   const env = { ROAM_CONTROL_EPOCH: "worker-test", SESSION_ARTIFACT_DIR: root };
   const create = runInNewContext(`${body}; createRuntimeRoam`, {
-    process: { env }, path, randomUUID, currentAgent,
+    process: { env }, path, randomUUID, currentAgent, roamError,
     createRoamControl, roamTools, roamBrowserTools, pauseRoamShell, resumeRoamShell, closeRoamShell,
     pauseRoamBrowser, resumeRoamBrowser, closeRoamBrowser, candidateTool, recordSession, sessionLookup,
     SESSION_DESCRIPTION, SESSION_POC, captureSessionArtifacts,
@@ -69,7 +70,7 @@ function runtime(t, { hooks = {}, isAgent = (id) => id === "a-1" } = {}) {
     roamMachine: async () => { steps.push("machine"); await hooks.machine?.(); return machine; },
     event: (ev, data) => { const e = { ev, ...data }; events.push(e); hooks.event?.(e); },
   });
-  const r = create("run-fixture.sqlite", "unused-workspace", state, { pack: "web", isAgent });
+  const r = create("run-fixture.v4.sqlite", "unused-workspace", state, { pack: "web", isAgent });
   t.after(() => r.control.dispose());
   const execute = (name, args = {}, agent = "a-1") => withAgent(agent, () => r.tools.find((tool) => tool.name === name).execute(args, {}, ctx));
   return { ...r, root, state, events, steps, execute, env };
@@ -181,7 +182,7 @@ test("session submission snapshots under the gate and rejection does not close b
   assert.match(accepted.output[0].text, /Recorded candidate/);
   assert.equal(r.state.candidates.length, 1);
   assert.equal(r.state.candidates[0].proven, false);
-  const manifest = listSessionArtifacts(r.root, { run: "fixture", agent: "a-1", poc: "session:a-1:2" });
+  const manifest = listSessionArtifacts(r.root, { run: "fixture.v4", agent: "a-1", poc: "session:a-1:2" });
   assert.deepEqual(manifest.files.map((f) => f.kind), ["transcript"]);
   assert.equal(r.state.candidates[0].evidence.artifacts.poc, "session:a-1:2");
 });
@@ -244,7 +245,7 @@ test("missing session artifact root refuses submission without accepting a candi
   const r = runtime(t);
   await r.execute("browse", { action: "read" });
   delete r.env.SESSION_ARTIFACT_DIR;
-  await assert.rejects(r.execute("submit_session_candidate", submission("session:a-1:1")), /ROAM_RUN_FAILED/);
+  await assert.rejects(r.execute("submit_session_candidate", submission("session:a-1:1")), /ROAM_SESSION_SNAPSHOT_UNAVAILABLE/);
   assert.equal(r.state.candidates.length, 0);
   r.env.SESSION_ARTIFACT_DIR = r.root;
   await r.execute("submit_session_candidate", submission("session:a-1:1"));
@@ -267,14 +268,15 @@ for (const outcome of ["resume", "revoke-fails", "worker-loss"]) test(`APP viewe
   const run = { id: "fixture", owner: true, status: "running", ws: "fake", roamEpoch: "worker-test", events: [{ ev: "subagent-spawned", id: "a-1", loadout: "free-roam", t: 1 }] };
   const r = runtime(t, { hooks: { event: (e) => api.consume(run, run.child, run.roamEpoch, e), "browser:resume": () => { order.push("resume"); } } });
   run.child = { stdin: { writable: true, write(line, callback) { void r.control.handle(JSON.parse(line)); callback?.(); } } };
+  const expires = Date.now() + 60000;
   const machine = {
     request: async (bytes) => {
       const q = JSON.parse(bytes);
-      if (q.action === "configure") return { kind: "configured", port: 6080, expires: Date.now() + 60000 };
-      if (q.action === "open") return { kind: "open", viewOnly: q.viewOnly, expires: Date.now() + 60000 };
+      if (q.action === "configure") return { kind: "configured", port: 6080, expires };
+      if (q.action === "open") return { kind: "open", port: 6080, viewOnly: q.viewOnly, expires };
       assert.equal(q.action, "close"); order.push("viewer-close"); return { kind: "closed" };
     },
-    previewGrant: async () => ({ url: "https://preview.example.test/", expires: Date.now() + 60000, revokeToken: "fake-revoke" }),
+    previewGrant: async () => ({ url: "https://preview.example.test/", expires, revokeToken: "fake-revoke" }),
     expirePreview: async () => {
       if (cleanup) { revoked.resolve(); await release.promise; if (outcome === "revoke-fails") throw new Error("fake revocation failure"); }
       order.push("revoked");
@@ -283,10 +285,10 @@ for (const outcome of ["resume", "revoke-fails", "worker-loss"]) test(`APP viewe
   api = createRoamControlApi({ getRun: () => run, emit: () => {}, machine: async () => machine });
   api.begin(run, run.child, run.roamEpoch);
   t.after(() => api.invalidate(run).catch(() => {}));
-  await api.desktop(run.id, "a-1", true, "https://console.example.test");
-  await api.desktop(run.id, "a-1", false, "https://console.example.test");
+  await api.desktop(run.id, "a-1", true, "https://console.example.test", { id: "desktop-test" });
+  await api.desktop(run.id, "a-1", false, "https://console.example.test", { id: "desktop-test" });
   order.length = 0; cleanup = true;
-  const closing = outcome === "worker-loss" ? api.invalidate(run) : api.close(run.id, "a-1");
+  const closing = outcome === "worker-loss" ? api.invalidate(run) : api.close(run.id, "a-1", { id: "desktop-test" });
   const checked = outcome === "revoke-fails" ? assert.rejects(closing, /cleanup failed/) : closing;
   await revoked.promise;
   assert.ok(order.includes("viewer-close"));
@@ -301,4 +303,20 @@ for (const outcome of ["resume", "revoke-fails", "worker-loss"]) test(`APP viewe
     assert.ok(!order.includes("resume"));
     await assert.rejects(r.execute("browse", { action: "read" }), /ROAM_PAUSED/);
   }
+});
+
+
+test("a failed initial machine open can be retried by the same child", async (t) => {
+  let opens = 0;
+  const r = runtime(t, { hooks: { machine: () => { if (++opens === 1) throw new Error("private provider detail"); } } });
+  await assert.rejects(r.execute("shell", { command: "true" }), /ROAM_MACHINE_UNAVAILABLE/);
+  assert.match((await r.execute("shell", { command: "true" })).output[0].text, /exit 0/);
+  assert.equal(opens, 2);
+});
+
+test("each action resolves the machine again so provider health checks are not bypassed", async (t) => {
+  const r = runtime(t);
+  await r.execute("shell", { command: "true" });
+  await r.execute("shell", { command: "true" });
+  assert.equal(r.steps.filter((s) => s === "machine").length, 2);
 });

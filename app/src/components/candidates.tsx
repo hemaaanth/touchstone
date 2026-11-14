@@ -5,7 +5,7 @@ import { Markdown } from "@/components/markdown"
 import { Badge } from "@/components/ui/badge"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { Hint, SeverityMark } from "@/components/assistant-ui/elements/indicators"
-import { MASK_NOTE, MEASURED_SHORT, WHY_UNPROVEN, rowFocusStep, scheduleRowFocus, type Candidate } from "@/lib/candidate"
+import { MASK_NOTE, MEASURED_SHORT, WHY_UNPROVEN, rowFocusStep, scheduleRowFocus, type AgentFinding, type Candidate } from "@/lib/candidate"
 import { SessionEvidence } from "@/components/session-evidence"
 
 // The run's candidates. A candidate is unproven. Either the agent saw harm the
@@ -18,7 +18,7 @@ import { SessionEvidence } from "@/components/session-evidence"
 // the cited lines, and (one fold deeper) the raw evidence.
 // `focus`: a candidate the Findings page opened the run at. Its row opens,
 // scrolls into view and is marked for a moment (a quiet surface step).
-export function CandidateList({ items, focus = null, runId }: { items: Candidate[]; focus?: { poc: string; at: number } | null; runId?: string }) {
+export function CandidateList({ items, focus = null, runId }: { items: (Candidate | AgentFinding)[]; focus?: { poc: string; at: number } | null; runId?: string }) {
   if (!items.length) return <p className="px-3 py-2.5 text-xs text-muted-foreground">No candidates.</p>
   return (
     <div className="flex flex-col py-1">
@@ -41,11 +41,11 @@ export function UnprovenBadge({ measured = false, className }: { measured?: bool
 
 // The row's short state: what the agent's candidate waits for, or why the
 // measured one is not proven.
-const stateOf = (c: Candidate) => (c.measured ? MEASURED_SHORT[c.measured.reason] : "Needs review")
+const stateOf = (c: Candidate | AgentFinding) => c.kind === "agent-finding" ? "Agent-evidenced · unverified" : c.measured ? MEASURED_SHORT[c.measured.reason] : "Idea to test"
 
 const ROW = "flex w-full gap-2.5 px-3 py-[7px] text-left outline-none transition-colors hover:bg-foreground/[0.03] focus-visible:bg-foreground/[0.03] focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
 
-function CandidateRow({ candidate: c, focusAt = null, runId }: { candidate: Candidate; focusAt?: number | null; runId?: string }) {
+function CandidateRow({ candidate: c, focusAt = null, runId }: { candidate: Candidate | AgentFinding; focusAt?: number | null; runId?: string }) {
   const [open, setOpen] = useState(false)
   const [marked, setMarked] = useState(false)
   // A new focus opens and marks the row, set while rendering (React's way to
@@ -69,7 +69,7 @@ function CandidateRow({ candidate: c, focusAt = null, runId }: { candidate: Cand
   return (
     <Collapsible ref={row} open={open} onOpenChange={setOpen} data-focused={marked || undefined} className={cn("transition-colors duration-700 motion-reduce:transition-none", open && "bg-foreground/[0.03]", marked && "bg-foreground/[0.07]")}>
       <CollapsibleTrigger className={ROW}>
-        <Hint label="Candidate, not proven" tip={`Candidate · not proven · ${stateOf(c).toLowerCase()}`} className="mt-px">
+        <Hint label={c.kind === "agent-finding" ? "Agent-evidenced finding, unverified" : "Investigation candidate"} tip={stateOf(c)} className="mt-px">
           <ShieldQuestionMark aria-hidden className="size-3.5 text-muted-foreground" />
         </Hint>
         <span className="flex min-w-0 flex-1 flex-col gap-[3px]">
@@ -81,7 +81,6 @@ function CandidateRow({ candidate: c, focusAt = null, runId }: { candidate: Cand
           <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] leading-4 text-muted-foreground">
             <span className="shrink-0">{stateOf(c)}</span>
             {c.measured && c.measured.count > 1 ? <span className="shrink-0 tabular-nums">{c.measured.count} places</span> : null}
-            <UnprovenBadge measured={Boolean(c.measured)} />
           </span>
         </span>
       </CollapsibleTrigger>
@@ -92,11 +91,18 @@ function CandidateRow({ candidate: c, focusAt = null, runId }: { candidate: Cand
   )
 }
 
-export function CandidateDetail({ candidate: c, runId }: { candidate: Candidate; runId?: string }) {
+export function CandidateDetail({ candidate: c, runId }: { candidate: Candidate | AgentFinding; runId?: string }) {
   const m = c.measured
   return (
     <div className="flex flex-col gap-2.5 px-3 pt-0.5 pb-3 pl-9 text-xs">
-      <p className="text-muted-foreground">{m ? m.words : WHY_UNPROVEN}</p>
+      <p className="text-muted-foreground">{c.kind === "agent-finding" ? "The agent reports a demonstrated vulnerability. The framework has not independently verified this report." : m ? m.words : WHY_UNPROVEN}</p>
+      {c.kind === "agent-finding" ? <>
+        <Field label="Reproduction steps"><ol className="list-decimal pl-4">{c.report.reproduction_steps.map((step, i) => <li key={i}>{step}</li>)}</ol></Field>
+        <Field label="Attacker capability"><Markdown text={c.report.attacker_capability} /></Field>
+        <Field label="Observed result"><Markdown text={c.report.observed_result} /></Field>
+        <Field label="Harm"><Markdown text={c.report.harm} /></Field>
+        <Field label="Limitations"><Markdown text={c.report.limitations} /></Field>
+      </> : null}
       {c.explanation ? <Markdown text={c.explanation} className="text-xs" /> : null}
       {m ? <MeasuredFacts candidate={c} /> : (
         <Field label="PoC">

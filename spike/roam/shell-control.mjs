@@ -38,13 +38,13 @@ function members(job) {
   return readdirSync("/proc").filter((p) => /^\d+$/.test(p)).map(proc)
     .filter((p) => p && p.group === job.pid && p.state !== "Z");
 }
-function check(s) {
-  if (!s || s.version !== 1 || !Array.isArray(s.jobs) || !["active", "paused", "closed"].includes(s.mode) ||
+function check(s, recovering = false) {
+  if (!s || s.version !== 1 || !Array.isArray(s.jobs) || !["active", "paused", "closed", ...(recovering ? ["unknown"] : [])].includes(s.mode) ||
       typeof s.generation !== "string" || !Number.isSafeInteger(s.epoch) || s.epoch < 0) fail();
   for (const j of s.jobs) {
     if (!j || !Number.isSafeInteger(j.pid) || j.pid <= 0 || !/^\d+$/.test(j.birth) ||
         typeof j.drained !== "boolean" || !Number.isFinite(j.deadline)) fail();
-    if (!j.drained) {
+    if (!j.drained && !recovering) {
       if (Date.now() >= j.deadline) fail();
       members(j);
     }
@@ -63,8 +63,40 @@ async function control(q) {
       save(s);
     }
     if (q.op !== "init" && q.generation !== s.generation) fail();
+    if (q.op === "status") { check(s, true); return ack(s); }
+    // A delayed recovery must never kill work admitted by a newer epoch.
+    if (q.op === "recover" && (q.epoch !== s.epoch || !["active", "unknown"].includes(s.mode))) fail();
+    if (q.op === "block" && (q.epoch !== s.epoch || s.mode === "closed")) fail();
     if (q.op === "block") { s.mode = "unknown"; s.epoch++; save(s); fail(); }
     try {
+      if (q.op === "recover") {
+        check(s, true);
+        if (!["unknown", "active"].includes(s.mode)) fail();
+        // Fence old requests before draining. Never replay their commands.
+        s.mode = "unknown"; s.epoch++; save(s);
+        for (const j of s.jobs) {
+          if (j.drained) continue;
+          const census = () => readdirSync("/proc").filter((p) => /^\d+$/.test(p)).map(proc)
+            .filter((p) => p && p.group === j.pid && p.state !== "Z");
+          if (census().length) {
+            const leader = proc(j.pid);
+            // A poison handler may already be killing this group. Without a
+            // live matching leader, only observe disappearance; never signal it.
+            if (leader && leader.birth === j.birth && leader.group === j.pid && leader.session === j.pid && leader.state !== "Z") {
+              try { process.kill(-j.pid, "SIGKILL"); } catch (e) { if (e.code !== "ESRCH") throw e; }
+            }
+            let gone = false;
+            for (let i = 0; i < 100; i++) {
+              if (!census().length) { gone = true; break; }
+              await sleep(20);
+            }
+            if (!gone) fail();
+          }
+          j.drained = true;
+        }
+        s.mode = "active"; save(s);
+        return ack(s);
+      }
       check(s);
       if (q.op === "init") return ack(s);
       if (s.mode === "closed") { if (q.op === "close") return ack(s); fail(); }

@@ -264,7 +264,7 @@ test("with FLEET=0 and FREE_ROAM=0 the tool list has no shell", { timeout: 15000
   assert.deepEqual(src.match(/registry\.install\([^\n]*/g), [
     "registry.install(defineExtension({ name: pack.id, tools: fleet ? fleet.wrapTools(tools) : tools }));",
     "registry.install(fleet.extension);",
-    'registry.install(defineExtension({ name: "shared", tools: [askHumanTool] }));',
+    'registry.install(defineExtension({ name: "shared", tools: [askHumanTool, ideaTool(state)] }));',
   ]);
 });
 
@@ -363,14 +363,14 @@ test("agent-run always offers the slice tools and uses the session contracts", (
   assert.match(src, /import \{ roamTools, pauseRoamShell, resumeRoamShell, closeRoamShell \} from "\.\/lib\/roam\.mjs"/);
   assert.match(src, /import \{ roamBrowserTools, pauseRoamBrowser, resumeRoamBrowser, closeRoamBrowser \} from "\.\/lib\/roam-browser\.mjs"/);
   assert.match(src, /import \{ EGRESS_ENV, startEgressLog, pullEgressLog \} from "\.\/lib\/roam-egress\.mjs"/);
-  assert.match(src, /import \{ candidateTool, recordSession, sessionLookup, SESSION_DESCRIPTION, SESSION_POC, [^}]+\} from "\.\/lib\/candidate\.mjs"/);
+  assert.match(src, /import \{ [^}]*candidateTool, recordSession, sessionLookup, SESSION_DESCRIPTION, SESSION_POC, [^}]+\} from "\.\/lib\/candidate\.mjs"/);
   assert.ok(src.includes('const session = candidateTool({ name: "submit_session_candidate", description: SESSION_DESCRIPTION, pack, state, lookup: sessionLookup(state), poc: SESSION_POC });'));
   assert.ok(src.includes('const record = (entry) => recordSession(state, entry);'));
   assert.ok(src.includes('const egress = { env: EGRESS_ENV, start: startEgressLog, pull: pullEgressLog };'));
   assert.ok(src.includes('const tools = [...roamTools(ws, { record, egress, machine }), ...roamBrowserTools(ws, { record, egress, machine }), session].map((tool) => ({'));
   assert.ok(src.includes('execute: (args, api, context) => gate.run(currentAgent(), async () => {'));
   assert.ok(src.includes('const { tools: offered, control } = createRuntimeRoam(db, ws, state, { pack: pack.id, isAgent: (id) => fleet?.isRoamAgent(id) === true });'));
-  assert.match(src, /fleet = createFleet\(\{ system, [^\n]+roamTools: offered, sharedTools: \[askHumanTool\] \}\);/);
+  assert.match(src, /fleet = createFleet\(\{ system, [^\n]+roamTools: offered, sharedTools: \[askHumanTool, ideaTool\(state\)\] \}\);/);
   assert.match(src, /agent: \{ model:[^\n]+tools: \{ remove: offered \} \}/);
   assert.ok(!src.includes("process.env.FREE_ROAM"), "only createFleet gates the tools, never their construction");
 });

@@ -1,3 +1,4 @@
+import { publicRoamError } from "./roam-errors.mjs";
 const token = (value) => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value);
 const agentId = (value) => typeof value === "string" && /^a-[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value);
 const failure = (code) => new Error(code);
@@ -62,10 +63,10 @@ export function createRoamControl({ epoch, remote, emit, isAgent = () => false }
     const done = new Promise((resolve) => { drained = resolve; });
     slot.active = { work, done };
     let result;
-    try { result = work.fn(); } catch { result = Promise.reject(failure("ROAM_RUN_FAILED")); }
+    try { result = work.fn(); } catch (error) { result = Promise.reject(error); }
     Promise.resolve(result).then(
       (value) => work.finish(null, value),
-      () => work.finish("ROAM_RUN_FAILED"),
+      (error) => work.finish(publicRoamError(error)),
     ).finally(() => {
       slot.active = null;
       drained();

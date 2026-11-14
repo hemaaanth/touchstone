@@ -1,3 +1,4 @@
+import { REPORT } from "./helpers/agent-report.mjs";
 // submit_candidate in the oracle-replay packs (web, ai-mcp). The lab is
 // mocked: runRequestScript returns a fixed transcript, so no container runs.
 import "./helpers/isolated-env.mjs";
@@ -102,7 +103,7 @@ for (const [pack, proved] of [[web, replay], [aiMcp, scopeBypass]]) {
     } finally { done(); }
   });
 
-  test(`${pack.id}: duplicate guards and the cap of 3`, async () => {
+  test(`${pack.id}: duplicate guards and uncapped investigation candidates`, async () => {
     const { state, tools, run, done } = setup();
     try {
       for (const n of [1, 2, 3, 4]) await run(`exp-${n}`, harmless(n));
@@ -117,9 +118,15 @@ for (const [pack, proved] of [[web, replay], [aiMcp, scopeBypass]]) {
       assert.ok(!(await tools.submit_candidate.execute(candidateArgs("exp-2", 2))).isError);
       assert.ok(!(await tools.submit_candidate.execute(candidateArgs("exp-3", 3))).isError);
       const fourth = await tools.submit_candidate.execute(candidateArgs("exp-4", 4));
-      assert.equal(fourth.isError, true);
-      assert.match(fourth.output[0].text, /already has 3 candidates/);
-      assert.equal(state.candidates.length, 3);
+      assert.ok(!fourth.isError);
+      assert.match(fourth.output[0].text, /Recorded candidate #4/);
+      assert.equal(state.candidates.length, 4);
+      const report = await tools.submit_candidate.execute({ ...candidateArgs("exp-4", 4), report: REPORT });
+      assert.ok(!report.isError, report.output[0].text);
+      assert.equal(state.agentFindings.length, 1);
+      assert.equal(state.agentFindings[0].proven, false);
+      assert.equal(state.agentFindings[0].verification, "agent");
+      assert.equal(state.candidates.length, 3, "the promoted candidate leaves the investigation queue");
       assert.equal(state.found.length, 0);
     } finally { done(); }
   });

@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 process.env.EVENTS_FILE = join(mkdtempSync(join(tmpdir(), "measured-")), "events.jsonl");
-const { CANDIDATE_CAP, checkCandidate, makeCandidate, splitMeasured } = await import("../lib/candidate.mjs");
+const { checkCandidate, makeCandidate, splitMeasured } = await import("../lib/candidate.mjs");
 const { isProven } = await import("../lib/proof-view.mjs");
 const { MEASURED_WORDS } = await import("../lib/proof-class.mjs");
 
@@ -78,7 +78,7 @@ test("splitMeasured never drops a finding: each input is in exactly one place", 
 });
 
 test("a measured candidate does not count toward the agent's cap of 3", async () => {
-  const measured = splitMeasured(owners).candidates.slice(0, CANDIDATE_CAP);
+  const measured = splitMeasured(owners).candidates.slice(0, 3);
   const text = "1. GET /x -> 200 the harmful line here";
   const state = { poc: 0, passed: new Map(), found: [], candidates: [...measured] };
   const r = await checkCandidate({ pack: "web", state, lookup: () => ({ evidence: { kind: "transcript" }, text, rootCause: "r1" }), args: { title: "t", severity: "high", poc: "a1", evidence_lines: ["the harmful line here"], explanation: "x\nFix: y" } });

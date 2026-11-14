@@ -44,6 +44,7 @@ export interface FindingSummary {
   id: string
   // Set only on a candidate row (the page lists candidates in the same grid).
   candidate?: CandidateSummary
+  agentFinding?: Omit<CandidateSummary, "kind"> & { kind: "agent-finding" }
   // The run that produced this finding. Lets findings be scoped to their own
   // run instead of a global rail. Optional for back-compat with recorded
   // findings written before the engine stamped it (server/findings.mjs).
@@ -286,6 +287,7 @@ export type RunStatus =
   | "awaiting-approval"
   | "deciding"
   | "recorded"
+  | "reported"
   | "denied"
   | "no-finding"
   | "error"

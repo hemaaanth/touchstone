@@ -1,3 +1,4 @@
+import { REPORT } from "./helpers/agent-report.mjs";
 // submit_candidate in the evidence-replay packs (supply-chain, infra-cloud,
 // domains). The replay and the domains scan are mocked, so no snapshot,
 // scanner or Docker runs.
@@ -139,7 +140,7 @@ for (const { pack, report, finding, findingPoc } of SPECS) {
     } finally { done(); }
   });
 
-  test(`${pack.id}: duplicate guards and the cap of 3`, async () => {
+  test(`${pack.id}: duplicate guards and uncapped investigation candidates`, async () => {
     const { state, tools, attempt, done } = setup();
     try {
       for (const id of ["L1", "L1twin", "L2", "L4", "L5"]) await attempt(id);
@@ -152,9 +153,15 @@ for (const { pack, report, finding, findingPoc } of SPECS) {
       assert.ok(!(await tools.submit_candidate.execute(candidateArgs("L2"))).isError);
       assert.ok(!(await tools.submit_candidate.execute(candidateArgs("L4"))).isError);
       const fourth = await tools.submit_candidate.execute(candidateArgs("L5"));
-      assert.equal(fourth.isError, true);
-      assert.match(fourth.output[0].text, /already has 3 candidates/);
-      assert.equal(state.candidates.length, 3);
+      assert.ok(!fourth.isError);
+      assert.match(fourth.output[0].text, /Recorded candidate #4/);
+      assert.equal(state.candidates.length, 4);
+      const report = await tools.submit_candidate.execute({ ...candidateArgs("L5"), report: REPORT });
+      assert.ok(!report.isError, report.output[0].text);
+      assert.equal(state.agentFindings.length, 1);
+      assert.equal(state.agentFindings[0].proven, false);
+      assert.equal(state.agentFindings[0].verification, "agent");
+      assert.equal(state.candidates.length, 3, "the promoted candidate leaves the investigation queue");
       assert.equal(state.found.length, 0);
     } finally { done(); }
   });

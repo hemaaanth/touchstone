@@ -8,7 +8,7 @@ import { createHash } from "node:crypto"
 import { fileURLToPath } from "node:url"
 import { modulesEvent } from "../../spike/lib/modules.mjs"
 import { isProven, proofKind, proofView } from "../../spike/lib/proof-view.mjs"
-import { isCandidate, isMeasured, makeCandidate, measuredRule } from "../../spike/lib/candidate.mjs"
+import { isCandidate, isMeasured, makeAgentFinding, makeCandidate, measuredRule } from "../../spike/lib/candidate.mjs"
 import { readableTitle } from "../../spike/lib/check-titles.mjs"
 import { measuredOfRecord, recordRowOf } from "./candidates.mjs"
 import { PACKS } from "../../spike/packs/index.mjs"
@@ -497,12 +497,37 @@ export async function listCandidates() {
   return out
 }
 
+// Agent reports are findings with a separate verification method. They never
+// enter the oracle replay/export path or acquire a proven badge.
+export async function listAgentFindings() {
+  let files
+  try { files = await readdir(resultsDir()) } catch { return [] }
+  const out = []
+  for (const file of files.filter((f) => f.startsWith("run-") && f.endsWith(".json"))) {
+    try {
+      const raw = JSON.parse(await readFile(path.join(resultsDir(), file), "utf8"))
+      const r = raw.result ?? {}, runId = file.slice(4, -5)
+      const at = await runStartedAt(runId)
+      for (const value of r.agentFindings ?? []) {
+        const f = makeAgentFinding(value)
+        if (!f) continue
+        const id = `${runId}.a-${createHash("sha256").update(`${f.pack}\0${f.poc}`).digest("hex").slice(0, 12)}`
+        const summary = { id, runId, kind: "agent-finding", title: f.title, severity: f.severity,
+          module: moduleOf(f.pack), pack: f.pack || null, target: r.target?.title ?? "Unknown",
+          scope: r.target?.title ?? null, at, poc: f.poc, origin: "agent", measured: null, proven: false }
+        out.push({ ...summary, stages: { hypothesis: true, reproduced: true, proven: false, accepted: false }, dismissed: false, ms: null, agentFinding: summary })
+      }
+    } catch { /* A malformed report cannot become a finding. */ }
+  }
+  return out
+}
+
 export async function listFindings() {
   const all = await readRuns()
   const started = new Map()
   for (const f of all) if (!started.has(f.runId)) started.set(f.runId, await runStartedAt(f.runId))
   // The list shows only the few fields a row needs.
-  return all.map((f) => ({
+  return [...await listAgentFindings(), ...all.map((f) => ({
     id: f.id,
     runId: f.runId,
     title: f.title,
@@ -517,7 +542,7 @@ export async function listFindings() {
     proven: f.stages.proven,
     dismissed: f.dismissed,
     ms: f.ms,
-  }))
+  }))]
 }
 
 // The agent's own step-by-step transcript, persisted beside the result as one

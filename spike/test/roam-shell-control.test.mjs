@@ -325,3 +325,63 @@ test("a reused machine with no supervisor state fails closed", async (t) => {
   await assert.rejects(f.run("true"));
   assert.equal(f.ops.filter((q) => q.op === "run").length, 0);
 });
+
+
+test("lost command response recovers on the same machine without replay or lost files", async (t) => {
+  const f = fixture(t), exec = f.m.exec;
+  let lose = true;
+  const file = join(f.dir, "kept");
+  f.m.exec = async (command, seconds) => {
+    const r = await exec(command, seconds);
+    if (f.ops.at(-1).op === "run" && lose) { lose = false; throw new Error("lost reply"); }
+    return r;
+  };
+  await assert.rejects(f.run(`printf once >> '${file}'; sleep 20 >/dev/null 2>&1 &`), /ROAM_SHELL_OUTCOME_UNKNOWN/);
+  assert.equal(f.state().mode, "unknown");
+  await assert.rejects(pauseRoamShell(f.m));
+  assert.match((await f.run(`cat '${file}'`)).output[0].text, /exit 0\nonce/);
+  assert.equal(readFileSync(file, "utf8"), "once");
+  assert.ok(f.ops.filter((q) => q.op === "recover").length >= 1);
+  assert.equal(f.ops.filter((q) => q.op === "run").length, 2);
+  assert.ok(f.state().jobs.filter((j) => !j.drained).length <= 1);
+  await pauseRoamShell(f.m);
+  await resumeRoamShell(f.m);
+});
+
+test("recovery retries a lost recovery response without replaying the command", async (t) => {
+  const f = fixture(t), exec = f.m.exec;
+  let loseRun = true, loseRecovery = true;
+  f.m.exec = async (command, seconds) => {
+    const r = await exec(command, seconds);
+    const op = f.ops.at(-1).op;
+    if (op === "run" && loseRun) { loseRun = false; throw new Error("lost command reply"); }
+    if (op === "recover" && loseRecovery) { loseRecovery = false; throw new Error("lost recovery reply"); }
+    return r;
+  };
+  await assert.rejects(f.run("printf first"), /ROAM_SHELL_OUTCOME_UNKNOWN/);
+  assert.match((await f.run("printf recovered")).output[0].text, /exit 0\nrecovered/);
+  assert.equal(f.ops.filter((q) => q.op === "run").length, 2);
+});
+
+test("a delayed recovery request cannot stop work from a newer epoch", async (t) => {
+  const f = fixture(t), exec = f.m.exec;
+  let lost = false;
+  f.m.exec = async (command, seconds) => {
+    const result = await exec(command, seconds);
+    if (!lost && f.ops.at(-1).op === "run") { lost = true; throw new Error("lost response"); }
+    return result;
+  };
+  await assert.rejects(f.run("printf first"));
+  const old = f.state();
+  await f.run("sleep 20 >/dev/null 2>&1 & printf new-job");
+  const before = f.state();
+  const id = randomUUID();
+  await f.m.upload(`/tmp/touchstone-shell-${id}.json`, Buffer.from(JSON.stringify({
+    id, op: "recover", generation: old.generation, epoch: old.epoch,
+  })));
+  const result = await exec(`node /tmp/touchstone-shell-control.mjs ${id}`, 10);
+  assert.equal(result.exitCode, 1);
+  assert.deepEqual(f.state(), before);
+  await pauseRoamShell(f.m);
+  await resumeRoamShell(f.m);
+});

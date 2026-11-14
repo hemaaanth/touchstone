@@ -47,7 +47,7 @@ describe("the candidate row", () => {
     expect(out).toContain(FINDING_ROW_COLS.split(" ")[1])
     expect(out).not.toContain("Proven")
     for (const tone of ["text-ok", "text-bad", "text-warn", "bg-ok", "bg-bad"]) expect([tone, out.includes(tone)]).toEqual([tone, false])
-    expect(candidateState(cand("x", { origin: "agent", measured: null }))).toBe("Candidate · needs review")
+    expect(candidateState(cand("x", { origin: "agent", measured: null }))).toBe("Candidate · idea to test")
     expect(candidateState(cand("x", { measured: { reason: "harm-not-judged", words: "", count: 1, check: null } }))).toBe("Candidate · harm not judged")
   })
 })

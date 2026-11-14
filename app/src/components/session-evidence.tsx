@@ -4,7 +4,7 @@ import type { SessionArtifact, SessionManifest } from "@/lib/types"
 import { downloadSessionArtifact, fetchSessionArtifacts } from "@/lib/api"
 import { Button } from "@/components/ui/button"
 
-export function SessionEvidence({ runId, candidate }: { runId?: string; candidate: Candidate }) {
+export function SessionEvidence({ runId, candidate }: { runId?: string; candidate: Pick<Candidate, "evidence" | "poc"> }) {
   const [manifest, setManifest] = useState<SessionManifest | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)

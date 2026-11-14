@@ -5,7 +5,7 @@
 import "./helpers/isolated-env.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { CANDIDATE_CAP, SESSION_DESCRIPTION, SESSION_POC, candidateTool, recordSession, sessionLookup } from "../lib/candidate.mjs";
+import { SESSION_DESCRIPTION, SESSION_POC, candidateTool, recordSession, sessionLookup } from "../lib/candidate.mjs";
 import { sha256 } from "../lib/proof-evidence.mjs";
 import { withAgent } from "../lib/event.mjs";
 
@@ -306,7 +306,7 @@ test("a session lookup never returns { proved: true }", async () => {
   assert.ok(!JSON.stringify(got).includes("proved"));
   assert.ok(!JSON.stringify([...state.session]).includes("proved"), "an entry keeps only its own fields");
   const r = await submit(state, "a-1", args(poc, "uid=0(root) gid=0(root)"));
-  assert.match(said(r), /UNPROVEN/);
+  assert.match(said(r), /investigation candidate/);
   assert.equal(state.candidates[0].proven, false);
   assert.equal(state.found.length, 0);
 });
@@ -352,7 +352,7 @@ test("agent a-1 and agent a-11 do not share a session", async () => {
   assert.equal((await lookupAs(state, "a-11", eleven.poc)).text, "$ cat /root/eleven\nexit 0\nonly agent a-11 saw this\n");
 });
 
-test("a second candidate needs a new command; a fourth candidate in one run is refused", async () => {
+test("a second candidate needs a new command; a fourth investigation candidate is accepted", async () => {
   const state = newState();
   const first = shell(state, "a-1", "probe 1", "harm line number one\n");
   assert.match(said(await submit(state, "a-1", args(first.poc, "harm line number one", 1))), /Recorded candidate #1/);
@@ -365,13 +365,13 @@ test("a second candidate needs a new command; a fourth candidate in one run is r
   // The cap is the run's, not the agent's.
   const other = shell(state, "a-2", "probe 3", "harm line number three\n");
   assert.match(said(await submit(state, "a-2", args(other.poc, "harm line number three", 3))), /Recorded candidate #3/);
-  assert.equal(state.candidates.length, CANDIDATE_CAP);
+  assert.equal(state.candidates.length, 3);
 
   const fourth = shell(state, "a-2", "probe 4", "harm line number four\n");
   const refused = await submit(state, "a-2", args(fourth.poc, "harm line number four", 4));
-  assert.equal(refused.isError, true);
-  assert.match(said(refused), /already has 3 candidates/);
-  assert.equal(state.candidates.length, CANDIDATE_CAP);
+  assert.ok(!refused.isError);
+  assert.match(said(refused), /Recorded candidate #4/);
+  assert.equal(state.candidates.length, 4);
   assert.ok(state.candidates.every((c) => c.proven === false && c.candidate === true));
 });
 
@@ -379,15 +379,15 @@ test("candidateTool: the name and the description are optional, and the packs' t
   const state = newState();
   const packTool = candidateTool({ pack: "web", state, lookup: () => null, poc: "the label" });
   assert.equal(packTool.name, "submit_candidate");
-  assert.match(packTool.description, /^Record a CANDIDATE: a serious problem your own attempt showed/);
-  assert.match(packTool.description, /If the attempt proved, use submit_finding\. At most 3 per run\.$/);
+  assert.match(packTool.description, /^Record evidence for an investigation candidate/);
+  assert.match(packTool.description, /Oracle-proven attempts must use submit_finding/);
 
   const tool = sessionTool(state);
   assert.equal(tool.name, "submit_session_candidate");
   assert.equal(tool.description, SESSION_DESCRIPTION);
   // A free-roam child has no submit_finding.
   assert.ok(!tool.description.includes("submit_finding"));
-  assert.match(tool.description, /unproven/);
+  assert.match(tool.description, /unverified/);
   assert.equal(tool.parameters.properties.poc.description, SESSION_POC);
   assert.equal(SESSION_POC, 'the session id from the line that starts with "session" in your last shell result, like session:a-12:3');
 });

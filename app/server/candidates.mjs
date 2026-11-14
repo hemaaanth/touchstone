@@ -8,7 +8,7 @@
 // stream on reload. A candidate is never a finding: it is not in `submitted`,
 // `pending`, `findingIds`, the run status or `result.findings`.
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs"
-import { isMeasured, makeCandidate, priorCandidate, splitMeasured, supersededBy } from "../../spike/lib/candidate.mjs"
+import { isMeasured, makeAgentFinding, makeCandidate, priorCandidate, splitMeasured, supersededBy } from "../../spike/lib/candidate.mjs"
 import { redactSecrets } from "./redact.mjs"
 import { sortFindings } from "../../spike/lib/record.mjs"
 
@@ -57,13 +57,39 @@ export function addCandidate(list, e) {
 // Track one engine event on the live run.
 export function trackCandidate(run, e) {
   run.candidates ??= []
+  run.agentFindings ??= []
+  if (e?.ev === "agent-finding-submitted") {
+    const finding = makeAgentFinding(e.finding)
+    if (!finding || run.agentFindings.some((f) => f.poc === finding.poc && f.pack === finding.pack)) return false
+    run.agentFindings.push(finding)
+    return true
+  }
+  if (e?.ev === "agent-finding-superseded") {
+    const i = run.agentFindings.findIndex((f) => f.poc === e.poc && (!e.pack || f.pack === e.pack))
+    if (i < 0) return false
+    run.agentFindings.splice(i, 1)
+    return true
+  }
   return addCandidate(run.candidates, e)
+}
+
+export function agentFindingsOf(events) {
+  const run = { candidates: [], agentFindings: [] }
+  for (const e of events ?? []) if (e.ev?.startsWith("agent-finding-")) trackCandidate(run, e)
+  return run.agentFindings
 }
 
 // After the final proof: end each candidate a proven finding takes the place
 // of (same poc or root cause, pocProved: true). Call it before the record is
 // written, so the record holds only the candidates that are left.
 export function supersedeProven(run, findings, send) {
+  for (const report of [...(run.agentFindings ?? [])]) {
+    for (const { poc, by } of supersededBy([report], findings)) {
+      const e = { t: Date.now(), ev: "agent-finding-superseded", poc, pack: report.pack, by }
+      trackCandidate(run, e)
+      send(e)
+    }
+  }
   for (const { poc, by } of supersededBy(run.candidates ?? [], findings)) {
     const e = { t: Date.now(), ev: "candidate-superseded", poc, by }
     trackCandidate(run, e)
@@ -133,7 +159,8 @@ export const recordCandidates = (run) => (run.candidates ?? []).filter((c) => c?
 export function writeCandidates(file, run) {
   if (!existsSync(file)) return false
   const rec = JSON.parse(readFileSync(file, "utf8"))
-  rec.result = { ...(rec.result ?? {}), candidates: recordCandidates(run) }
+  rec.result = { ...(rec.result ?? {}), candidates: recordCandidates(run), agentFindings: (run.agentFindings ?? []).map(makeAgentFinding).filter(Boolean) }
+  if (rec.result.outcome === "no-finding" && rec.result.agentFindings.length) rec.result.outcome = "reported"
   writeFileSync(`${file}.tmp`, JSON.stringify(rec, null, 2))
   renameSync(`${file}.tmp`, file)
   return true
@@ -143,10 +170,14 @@ export function writeCandidates(file, run) {
 // holds that the engine events do not already have.
 export function candidateEvents(result, have, t) {
   const seen = candidatesOf(have)
-  return (result?.candidates ?? [])
+  const agentSeen = agentFindingsOf(have)
+  const agentEvents = (result?.agentFindings ?? []).map(makeAgentFinding).filter(Boolean)
+    .filter((f) => !agentSeen.some((x) => x.poc === f.poc && x.pack === f.pack))
+    .map((finding) => ({ t, ev: "agent-finding-submitted", finding }))
+  return [...agentEvents, ...(result?.candidates ?? [])
     .map(normalizeCandidate)
     .filter((c) => !seen.some((x) => x.poc === c.poc))
-    .map((candidate) => ({ t, ev: "candidate-submitted", candidate }))
+    .map((candidate) => ({ t, ev: "candidate-submitted", candidate }))]
 }
 
 // The rows of a run record, each with its ledger id: `<run>.<k>`, or the run
@@ -209,7 +240,7 @@ export function createSessionArtifactsApi({ getRun, rootOf, store }) {
     const refused = () => Object.assign(new Error("Session artifact is not available for this candidate."), { status: 404 })
     const run = getRun(runId)
     if (!run) throw refused()
-    const candidate = run.candidates?.find((c) => c.poc === body?.candidate && c.proven === false)
+    const candidate = [...(run.candidates ?? []), ...(run.agentFindings ?? [])].find((c) => c.poc === body?.candidate && c.proven === false)
     const evidence = candidate?.evidence
     const b = evidence?.artifacts
     const sequence = /^session:([A-Za-z0-9_-]{1,128}):([1-9][0-9]*)$/.exec(candidate?.poc ?? "")

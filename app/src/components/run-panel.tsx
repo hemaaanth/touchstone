@@ -225,23 +225,6 @@ export function RunPanel({
               <LeadList leads={recordedLeads} state={state} onAgent={onAgent} />
             </Section>
           ) : null}
-          <Section
-            icon={ShieldCheck}
-            label="Findings & Proofs"
-            count={found.length ? null : 0}
-            pills={statePills(found)}
-            status={null}
-            expanded={section === "findings"}
-            onToggle={() => toggle("findings")}
-          >
-            <FindingList
-              items={found}
-              loose={loose}
-              openDoc={openDoc}
-              openVersion={openVersion}
-              onFile={onFile}
-            />
-          </Section>
           {state.candidates.length ? (
             <Section
               icon={ShieldQuestionMark}
@@ -254,6 +237,26 @@ export function RunPanel({
               <CandidateList runId={runId} items={state.candidates} focus={candidateOpen ?? null} />
             </Section>
           ) : null}
+          <Section
+            icon={ShieldCheck}
+            label="Findings & Proofs"
+            count={found.length || state.agentFindings?.length ? null : 0}
+            pills={statePills(found)}
+            status={state.agentFindings?.length ? `${state.agentFindings.length} unverified` : null}
+            expanded={section === "findings"}
+            onToggle={() => toggle("findings")}
+          >
+            {state.agentFindings?.length ? <CandidateList runId={runId} items={state.agentFindings} focus={candidateOpen ?? null} /> : null}
+            {state.agentFindings?.length && found.length ? <p className="px-3 py-2 text-xs text-muted-foreground">Deterministic checks</p> : null}
+            {found.length || loose.length || !state.agentFindings?.length ? <FindingList
+              items={found}
+              loose={loose}
+              openDoc={openDoc}
+              openVersion={openVersion}
+              onFile={onFile}
+            /> : null}
+          </Section>
+
           <Section
             icon={Files}
             label="Files"
@@ -338,7 +341,7 @@ function panelSummary(state: RunState, mode: RunMode) {
     showAgents ? counted(state.agents.length, "agent") : { key: "solo", n: null, word: "Solo" },
     showBulletin ? counted(notes.length, "note") : null,
     showLeads ? counted(state.leads.length, "lead") : null,
-    counted(panelFindings(state).length, "finding"),
+    counted(panelFindings(state).length + (state.agentFindings?.length ?? 0), "finding"),
     state.candidates.length ? counted(state.candidates.length, "candidate") : null,
     counted(state.artifacts.filter((d) => d.kind !== "proof").length, "file"),
   ].filter((p) => p != null)
@@ -362,7 +365,7 @@ export function PanelControl({
   ref: React.RefObject<HTMLButtonElement | null>
 }) {
   const summary = panelSummary(state, mode)
-  const findings = panelFindings(state).length
+  const findings = panelFindings(state).length + (state.agentFindings?.length ?? 0)
   return (
     <button
       ref={ref}

@@ -257,7 +257,7 @@ export function FindingsPage({
           ) : (
             <ListCard aria-label="Findings">
               {shown.map((f) =>
-                f.candidate ? (
+                f.candidate || f.agentFinding ? (
                   <CandidateListRow
                     key={f.id}
                     finding={f}

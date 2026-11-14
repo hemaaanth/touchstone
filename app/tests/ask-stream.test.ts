@@ -28,7 +28,7 @@ const fixture = String.raw`
   const allowed = {
     allProviders:()=>({fixture:{id:"fixture",models:{fixture:{id:"test-model"}}}}),
     activeProvider:()=>({id:"fixture",models:{fixture:{id:"test-model"}}}),
-    defaultAlias:()=>"fixture",sortFindings:(rows)=>rows,candidatesOf:()=>[],
+    defaultAlias:()=>"fixture",sortFindings:(rows)=>rows,candidatesOf:()=>[],agentFindingsOf:()=>[],
     dropMeasuredSubmitted:()=>{},createSessionArtifactsApi:()=>()=>{throw Error("Artifact operation forbidden")},
   };
   for(const match of fs.readFileSync(base,"utf8").matchAll(/import\s*\{([^}]+)\}\s*from\s*"([^\"]+)"/g)){

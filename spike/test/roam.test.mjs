@@ -190,7 +190,7 @@ test("shell: no exit code records empty output and throws fixed text", async () 
   const f = fakes();
   f.m.exec = async () => ({ exitCode: undefined, result: RAW });
   await assert.rejects(as("a-1", shellOf(f), { command: "id" }), (e) => {
-    assert.equal(e.message, "The command did not finish on the machine (HTTP no answer). It may still be running.");
+    assert.match(e.message, /^ROAM_SHELL_OUTCOME_UNKNOWN:/);
     assert.equal(e.cause, undefined);
     return true;
   });
@@ -209,7 +209,7 @@ test("roam.mjs starts no host process and reads no host environment", () => {
   assert.ok(!/child_process|process\.env|runTool/.test(src));
   assert.match(src, /readFileSync\(new URL\("\.\.\/roam\/shell-control\.mjs"/);
   const local = [...src.matchAll(/from "(\.[^"]+)"/g)].map((x) => x[1]).sort();
-  assert.deepEqual(local, ["./daytona.mjs", "./event.mjs"]);
+  assert.deepEqual(local, ["./daytona.mjs", "./event.mjs", "./roam-errors.mjs"]);
 });
 
 // ---- Part 2: roamMachine against a fake Daytona API
@@ -380,7 +380,7 @@ test("free-roam never runs on this computer: without Daytona it throws", async (
     const { f, shell } = realShell(ws);
     for (const off of [() => delete process.env.DAYTONA_API_KEY, () => { process.env.DAYTONA_API_KEY = "test-key-not-real"; process.env.TOUCHSTONE_EXEC = "local"; }]) {
       off();
-      await assert.rejects(as("a-1", shell, { command: "id" }), /never runs on this computer/);
+      await assert.rejects(as("a-1", shell, { command: "id" }), /ROAM_MACHINE_UNAVAILABLE/);
     }
     assert.equal(fake.calls.length, 0);
     assert.deepEqual(f.steps, []);
@@ -474,7 +474,7 @@ test("the ready check fails once: the next call still starts the log before the 
     };
     // The error is a fixed text. It holds nothing of what the toolbox answered.
     await assert.rejects(as("a-1", shell, { command: "id" }), (e) => {
-      assert.equal(e.message, "The free-roam machine is not ready (HTTP 404).");
+      assert.match(e.message, /^ROAM_MACHINE_UNAVAILABLE:/);
       return true;
     });
     assert.deepEqual(f.steps, []);
@@ -506,18 +506,18 @@ test("the command call fails: a shell entry is recorded and the model sees a fix
     const { f, shell } = realShell(ws);
     fake.onExec = (body) => (body.command === "true" ? null : new Response("machine text sk-secret-0000 from the toolbox", { status: 500 }));
     await assert.rejects(as("a-1", shell, { command: "sleep 9999" }), (e) => {
-      assert.equal(e.message, "The command did not finish on the machine (HTTP 500). It may still be running.");
+      assert.match(e.message, /^ROAM_SHELL_OUTCOME_UNKNOWN:/);
       assert.equal(e.cause, undefined);
       return true;
     });
     assert.deepEqual(f.steps, ["start m-1", "record shell"]);
     assert.deepEqual({ ...f.entries[0], t: 0 }, { agent: "a-1", kind: "shell", t: 0, sandbox: "m-1", command: "sleep 9999", exit_code: undefined, output: "" });
-    // No answer at all (the connection broke) has no status.
+    // A further call attempts recovery before it can launch another command.
     fake.onExec = (body) => {
       if (body.command !== "true") throw new Error("socket text sk-secret-0000");
     };
     await assert.rejects(as("a-1", shell, { command: "id" }), (e) => {
-      assert.equal(e.message, "The command did not finish on the machine (HTTP no answer). It may still be running.");
+      assert.match(e.message, /^ROAM_SHELL_RECOVERY_FAILED:/);
       return true;
     });
     assert.equal(f.entries.length, 2);
@@ -585,7 +585,7 @@ for (const failure of ["upload", "startup JSON"]) {
         await m.exec("start-log", 5);
       };
       await assert.rejects(as("a-1", shell, { command: "user-command" }), (e) => {
-        assert.equal(e.message, "The request log did not start. No log, no shell.");
+        assert.match(e.message, /^ROAM_EGRESS_UNAVAILABLE:/);
         assert.equal(e.cause, undefined);
         return true;
       });
@@ -677,7 +677,7 @@ test("shell treats a capped answer with no recoverable exit code as a failed com
     fake.onExec = ({ command }) => command === "true" ? null
       : new Response(JSON.stringify({ result: "x".repeat(5 * 1024 * 1024) }));
     await assert.rejects(as("a-1", shell, { command: "id" }), (e) => {
-      assert.equal(e.message, "The command did not finish on the machine (HTTP no answer). It may still be running.");
+      assert.match(e.message, /^ROAM_SHELL_OUTCOME_UNKNOWN:/);
       assert.equal(e.cause, undefined);
       return true;
     });

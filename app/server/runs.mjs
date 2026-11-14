@@ -46,7 +46,7 @@ import { checkRecordedReplays, pruneReplayStore } from "../../spike/lib/replay-b
 import { readableTitle } from "../../spike/lib/check-titles.mjs"
 import { isMeasured } from "../../spike/lib/candidate.mjs"
 import { recordProven } from "./findings.mjs"
-import { candidateEvents, candidatesOf, createSessionArtifactsApi, dropMeasuredSubmitted, measuredAtLoad, priorCandidatesEnv, recordCandidates, recordMeasured, supersedeProven, trackCandidate, writeCandidates } from "./candidates.mjs"
+import { agentFindingsOf, candidateEvents, candidatesOf, createSessionArtifactsApi, dropMeasuredSubmitted, measuredAtLoad, priorCandidatesEnv, recordCandidates, recordMeasured, supersedeProven, trackCandidate, writeCandidates } from "./candidates.mjs"
 import { createRoamControlApi, roamSelection } from "./roam-control.mjs"
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -304,7 +304,7 @@ export async function runSessionArtifacts(id, body, action, artifact) {
   return sessionArtifacts(id, body, action, artifact)
 }
 let seq = 0
-const TERMINAL = ["recorded", "denied", "error", "no-finding"]
+const TERMINAL = ["recorded", "reported", "denied", "error", "no-finding"]
 
 // A SQLite write transaction is a process-owned lock. The OS releases it on a
 // crash, unlike a PID file. Keep it until the run is terminal, not just boot.
@@ -422,6 +422,7 @@ function view(run) {
     findingIds: run.findingIds ?? [],
     // Unproven, agent-asserted records for human review. Never findings.
     candidates: run.candidates ?? [],
+    agentFindings: run.agentFindings ?? [],
     error: run.error,
     // Structured failure for the error card: kind, retryable, real detail, spend
     // and a next step. Null unless the run ended in error.
@@ -460,7 +461,7 @@ export function listRuns() {
       // The modules the run covers, so a list row can name them all.
       packs: r.packs?.length ? r.packs : [scopeOf(r)?.pack ?? "contracts"],
       severity: r.pending?.severity ?? null,
-      findings: r.submitted.length,
+      findings: r.submitted.length + (r.agentFindings?.length ?? 0),
     }))
 }
 
@@ -754,7 +755,7 @@ function endFoundNothing(run, s, { code = null, signal = null } = {}) {
     // Terminal, but not an error: the agent audited and found nothing to prove.
     run.error = null
     if (s.final) broadcast(run, { ev: "no-finding", final: s.final })
-    setRunStatus(run, "no-finding")
+    setRunStatus(run, run.agentFindings?.length ? "reported" : "no-finding")
   } else if (s) {
     // Settled "unanswered" — the inference did not complete. Report the real
     // reason (classified, with the actual spend and a next step) rather than
@@ -860,6 +861,7 @@ function engineEvents(run, child = run.child, epoch = run.roamEpoch) {
         summary: e.summary ?? {},
         findings: e.findings ?? [],
         candidates: e.candidates ?? [],
+        agentFindings: e.agentFindings ?? [],
         usage: e.usage ?? null,
         reports: e.reports ?? [],
       }
@@ -1718,7 +1720,7 @@ function endStopped(run) {
   run.error = null
   run.errorInfo = null
   broadcast(run, { t: Date.now(), ev: "stopped" })
-  setRunStatus(run, coverageGap(run) ? "error" : "no-finding")
+  setRunStatus(run, coverageGap(run) ? "error" : run.agentFindings?.length ? "reported" : "no-finding")
   finalize(run)
   broadcast(run, { ev: "closed" })
 }
@@ -1961,6 +1963,8 @@ export function followUp(run, text, clientId) {
         ...(note ? { WORKSPACE_NOTE: note } : {}),
         PRIOR_FOUND: JSON.stringify(prior),
         PRIOR_CANDIDATES: priorCandidatesEnv(run),
+        PRIOR_AGENT_FINDINGS: JSON.stringify(run.agentFindings ?? []),
+        PRIOR_AGENT_SUPERSEDED: JSON.stringify(run.events.filter((e) => e.ev === "agent-finding-superseded").map(({ poc, pack }) => ({ poc, pack }))),
         ATTEMPT_BASE: attemptBase(run),
       },
       stdio: ["pipe", "pipe", "pipe"],
@@ -1995,12 +1999,13 @@ export function followUp(run, text, clientId) {
         if (run.status === "error" && !more.recorded && (run.stopping || s?.status === "done")) {
           run.error = null
           run.errorInfo = null
-          setRunStatus(run, coverageGap(run) ? "error" : "no-finding")
+          setRunStatus(run, coverageGap(run) ? "error" : run.agentFindings?.length ? "reported" : "no-finding")
           finalize(run)
         }
+        if (s?.status === "done" && run.agentFindings?.length && run.status === "no-finding") setRunStatus(run, "reported")
         // A reply that added candidates, or proved a finding that superseded
         // one, writes the run's candidates into its record.
-        if ((s?.candidates?.length || s?.findings?.length) && !writeCandidates(path.join(RESULTS_DIR, `run-${run.id}.json`), run) && (s?.candidates?.length || more.measured)) persistRun(run, [])
+        if ((s?.candidates?.length || s?.agentFindings?.length || s?.findings?.length) && !writeCandidates(path.join(RESULTS_DIR, `run-${run.id}.json`), run) && (s?.candidates?.length || s?.agentFindings?.length || more.measured)) persistRun(run, [])
       } catch (err) {
         broadcast(run, { t: Date.now(), ev: "reply-error", error: `The reply ended, but its result could not be saved:${String(err?.message ?? err)} Send the message again to retry.` })
       } finally {
@@ -2275,6 +2280,7 @@ function persistRun(run, findings) {
     // Unproven, agent-asserted records with their captured evidence. Kept
     // apart from findings: they never count toward any finding total.
     candidates: recordCandidates(run),
+    agentFindings: run.agentFindings ?? [],
     decision: recorded ? "approved" : null,
     recorded,
     calls: (summary.calls ?? []).map((c) => c.name),
@@ -2401,7 +2407,7 @@ function rebuildEvents(id, record, engineEvents) {
     evs.push({ t: tN, ev: "status", status: "error", error: r.error ?? info.message, errorInfo: info })
   } else if (r.final) {
     evs.push({ t: tN, ev: "no-finding", final: r.final })
-    evs.push({ t: tN, ev: "status", status: "no-finding" })
+    evs.push({ t: tN, ev: "status", status: r.agentFindings?.length ? "reported" : "no-finding" })
   } else {
     evs.push({ t: tN, ev: "status", status: "error", error: "the run did not complete" })
   }
@@ -2590,7 +2596,7 @@ function savedRun(id, events, mtime) {
     events.push({ t: end, ev: "closed" })
   }
   if (TERMINAL.includes(status) && !events.some((e) => e.ev === "closed") && !existsSync(path.join(RESULTS_DIR, `run-${id}.state.json`))) events.push({ t: end, ev: "closed" })
-  const loaded = { submitted, candidates: candidatesOf(events) }
+  const loaded = { submitted, candidates: candidatesOf(events), agentFindings: agentFindingsOf(events) }
   dropMeasuredSubmitted(loaded) // a finding that became a measured candidate is not one of the run's findings
   const request = events.find((e) => e.ev === "run-request") ?? saved ?? {}
   return {
@@ -2614,6 +2620,7 @@ function savedRun(id, events, mtime) {
     submitted: loaded.submitted,
     findingIds,
     candidates: loaded.candidates,
+    agentFindings: loaded.agentFindings,
     decision,
     error,
     errorInfo: errorInfo ?? streamInfo,
@@ -2741,7 +2748,7 @@ async function endRestartedRun(run) {
     run.errorInfo = failureInfo(run)
     run.error = run.errorInfo.message
   }
-  setRunStatus(run, run.settled.status !== "done" || coverageGap(run) ? "error" : "no-finding")
+  setRunStatus(run, run.settled.status !== "done" || coverageGap(run) ? "error" : run.agentFindings?.length ? "reported" : "no-finding")
   finalize(run)
   await endWorkspace(run)
   broadcast(run, { ev: "closed" })

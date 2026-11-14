@@ -197,7 +197,7 @@ export const CANDIDATE_STATE: Record<string, string> = {
 // "Candidate" for both kinds: a repeated measurement is a candidate, not a
 // tier of its own. The full state stays in the row's title at every width.
 export const candidateShortState = (_c: CandidateSummary) => "Candidate"
-export const candidateState = (c: CandidateSummary) => (c.measured ? (CANDIDATE_STATE[c.measured.reason] ?? CANDIDATE_STATE.unknown) : "Candidate · needs review")
+export const candidateState = (c: CandidateSummary) => (c.measured ? (CANDIDATE_STATE[c.measured.reason] ?? CANDIDATE_STATE.unknown) : "Candidate · idea to test")
 
 // The count line's words, before "· N proven" (N3). Candidates are counted
 // apart: "N findings" never includes one. Under the Candidate filter the line

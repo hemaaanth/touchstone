@@ -432,6 +432,7 @@ export function runHeadStatus(state: RunState | null, status: RunStatus): { word
   if (status === "error") return { word: "Failed", tone: "failed" }
   if (status === "denied") return { word: "Denied", tone: "failed" }
   if (status === "recorded") return { word: "Proven", tone: "proven" }
+  if (status === "reported" || (status === "no-finding" && state?.agentFindings?.length)) return { word: "Reported", tone: "neutral" }
   if (status === "no-finding") return { word: "No finding", tone: "neutral" }
   return { word: "Done", tone: "neutral" }
 }
@@ -608,6 +609,7 @@ export function runMarkKind(r: { status: RunStatus; errorKind?: string | null })
       return "replaying"
     case "recorded":
       return "proven"
+    case "reported":
     case "no-finding":
       return "done"
     case "denied":

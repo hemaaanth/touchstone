@@ -25,7 +25,7 @@ import type {
   Verdict,
 } from "./types"
 import { COORDINATOR, isAskPresentation } from "./types"
-import { CANDIDATE_NOTE, candidateFrom, measuredNote, measuredPocs, type Candidate } from "./candidate"
+import { CANDIDATE_NOTE, agentFindingFrom, candidateFrom, measuredNote, measuredPocs, type AgentFinding, type Candidate } from "./candidate"
 
 // The live stream is a flat list of raw engine events. The UI wants an ordered
 // list of meaningful STEPS — and PoC attempts especially need pairing: a
@@ -195,6 +195,7 @@ export interface RunState {
   // Unproven, agent-asserted records waiting for human review, in submit
   // order, one per poc. Never findings: no count or verdict reads them.
   candidates: Candidate[]
+  agentFindings: AgentFinding[]
   // Operator steers across their two-phase life (pending chip → admitted msg).
   steers: SteerEntry[]
   // Workspace documents the agent wrote (the PoC it drafts, the proof it runs),
@@ -256,6 +257,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
   const leads: RunLead[] = []
   const findings: FindingSummary[] = []
   const candidates: Candidate[] = []
+  const agentFindings: AgentFinding[] = []
   const dropCandidate = (poc: string) => {
     const i = poc ? candidates.findIndex((c) => c.poc === poc) : -1
     if (i >= 0) candidates.splice(i, 1)
@@ -768,6 +770,18 @@ export function reduceEvents(events: RunEvent[]): RunState {
         if (e.ev === "approval-pending") status = "awaiting-approval"
         break
       }
+      case "agent-finding-submitted": {
+        const f = agentFindingFrom(e)
+        if (!f || agentFindings.some((x) => x.poc === f.poc && x.pack === f.pack)) break
+        agentFindings.push(f)
+        steps.push({ key, kind: "note", phase: "run", label: `Recorded an agent-evidenced finding (unverified): ${f.title}` })
+        break
+      }
+      case "agent-finding-superseded": {
+        const i = agentFindings.findIndex((f) => f.poc === e.poc && (!e.pack || f.pack === e.pack))
+        if (i >= 0) agentFindings.splice(i, 1)
+        break
+      }
       case "candidate-superseded":
         dropCandidate(str(e.poc))
         break
@@ -895,8 +909,8 @@ export function reduceEvents(events: RunEvent[]): RunState {
         if (e.errorInfo && typeof e.errorInfo === "object") errorInfo = e.errorInfo as RunFailure
         // The run's end status decides if the closing step stays: it does for
         // "no-finding" and for a coverage gap, not for another end.
-        if (closing && ["recorded", "denied", "error", "no-finding"].includes(status)) {
-          const keep = status === "no-finding" || (status === "error" && errorInfo?.kind === "coverage")
+        if (closing && ["recorded", "reported", "denied", "error", "no-finding"].includes(status)) {
+          const keep = status === "no-finding" || status === "reported" || (status === "error" && errorInfo?.kind === "coverage")
           if (!keep) steps.splice(steps.indexOf(closing), 1)
           closing = null
         }
@@ -1035,6 +1049,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
     leads: leads.toSorted((a, b) => severityRank(a.severity ?? undefined) - severityRank(b.severity ?? undefined)),
     findings,
     candidates,
+    agentFindings,
     steers,
     artifacts,
     latestArtifact,

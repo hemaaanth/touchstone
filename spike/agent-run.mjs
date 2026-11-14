@@ -1,3 +1,4 @@
+import { roamError } from "./lib/roam-errors.mjs";
 // Vertical slice of the real agent loop: one Contracts run end to end.
 //
 //   node agent-run.mjs                 run qwen-abl against the planted reentrancy bug
@@ -38,7 +39,7 @@ import { sourceNavTools, NAV_SYSTEM } from "./packs/source-nav/pack.mjs";
 import { DIAGRAM_RULE } from "./lib/diagram-rule.mjs";
 import { resolveCbmBinary } from "./lib/cbm.mjs";
 import { withProven } from "./lib/proof-view.mjs";
-import { candidateTool, recordSession, sessionLookup, SESSION_DESCRIPTION, SESSION_POC, splitMeasured, supersededBy } from "./lib/candidate.mjs";
+import { ideaTool, makeAgentFinding, candidateTool, recordSession, sessionLookup, SESSION_DESCRIPTION, SESSION_POC, splitMeasured, supersededBy } from "./lib/candidate.mjs";
 import { roamTools, pauseRoamShell, resumeRoamShell, closeRoamShell } from "./lib/roam.mjs";
 import { roamBrowserTools, pauseRoamBrowser, resumeRoamBrowser, closeRoamBrowser } from "./lib/roam-browser.mjs";
 import { roamMachine } from "./lib/daytona.mjs";
@@ -82,7 +83,15 @@ function createRuntimeRoam(db, ws, state, { pack, isAgent }) {
   }
   const machine = async (_ws, agent) => {
     const slot = slotFor(agent);
-    const value = await slot.machine;
+    if (disposed || slot.closed || slot.failed) throw unavailable();
+    // Resolve on every action so Daytona can check/replace a lost machine.
+    // Clear failed opens; a rejected promise must not poison this child forever.
+    const pending = slot.machine ??= Promise.resolve().then(() => roamMachine(ws, agent));
+    let value;
+    try { value = await pending; }
+    catch { throw roamError("ROAM_MACHINE_UNAVAILABLE"); }
+    finally { if (slot.machine === pending) slot.machine = null; }
+    slot.current = value;
     if (disposed || slot.closed || slot.failed) throw unavailable();
     return value;
   };
@@ -94,7 +103,7 @@ function createRuntimeRoam(db, ws, state, { pack, isAgent }) {
     return slot.closing ??= (async () => {
       // A late resume must settle before terminal close, never after it.
       await slot.tail;
-      const m = await slot.machine;
+      const m = slot.machine ? await slot.machine : slot.current ?? await (slot.machine = Promise.resolve().then(() => roamMachine(ws, agent)));
       const results = await both(m, closeRoamBrowser, closeRoamShell);
       if (results.some((r) => r.status !== "fulfilled") || results[0].value?.ok !== true || results[0].value?.closed !== true || results[1].value?.ack !== true || results[1].value?.state !== "closed" || results[1].value?.scope !== "managed-shell") throw unavailable();
     })();
@@ -102,7 +111,7 @@ function createRuntimeRoam(db, ws, state, { pack, isAgent }) {
   function operate(agent, paused) {
     const slot = slotFor(agent);
     const job = slot.tail.then(async () => {
-      const m = await slot.machine;
+      const m = slot.machine ? await slot.machine : slot.current ?? await (slot.machine = Promise.resolve().then(() => roamMachine(ws, agent)));
       if (disposed || slot.closed || slot.failed) throw unavailable();
       const results = await both(m, paused ? pauseRoamBrowser : resumeRoamBrowser, paused ? pauseRoamShell : resumeRoamShell);
       const [browser, shell] = results.map((r) => r.status === "fulfilled" ? r.value : null);
@@ -134,10 +143,10 @@ function createRuntimeRoam(db, ws, state, { pack, isAgent }) {
     execute: (args, api, context) => gate.run(currentAgent(), async () => {
       if (tool === session) {
         try {
-          const run = /^run-([A-Za-z0-9_-]+)\.sqlite$/.exec(path.basename(db))?.[1];
+          const run = /^run-([A-Za-z0-9][A-Za-z0-9._-]{0,127})\.sqlite$/.exec(path.basename(db))?.[1];
           if (!run || !process.env.SESSION_ARTIFACT_DIR) throw unavailable();
           captureSessionArtifacts(process.env.SESSION_ARTIFACT_DIR, { run, agent: currentAgent(), poc: args.poc, state });
-        } catch { throw new Error("The session snapshot is unavailable. No candidate was submitted."); }
+        } catch { throw roamError("ROAM_SESSION_SNAPSHOT_UNAVAILABLE"); }
       }
       return tool.execute(args, api, context);
     }),
@@ -185,11 +194,11 @@ async function openHarness(db, ws, state) {
   const { tools: offered, control } = createRuntimeRoam(db, ws, state, { pack: pack.id, isAgent: (id) => fleet?.isRoamAgent(id) === true });
   // A child that a follow-up reopens holds the brief of its spawn. The fleet
   // gives it the current one with its next message (fleet.mjs createFleet).
-  fleet = createFleet({ system, costOf, brief: process.env.SCOPE_BRIEF ?? "", briefChange, changed: process.env.BRIEF_CHANGE ?? "", roamTools: offered, sharedTools: [askHumanTool] });
+  fleet = createFleet({ system, costOf, brief: process.env.SCOPE_BRIEF ?? "", briefChange, changed: process.env.BRIEF_CHANGE ?? "", roamTools: offered, sharedTools: [askHumanTool, ideaTool(state)] });
   const tools = [...pack.tools(ws, state), ...(navy ? sourceNavTools(ws) : [])];
   registry.install(defineExtension({ name: pack.id, tools: fleet ? fleet.wrapTools(tools) : tools }));
   if (fleet) registry.install(fleet.extension);
-  else registry.install(defineExtension({ name: "shared", tools: [askHumanTool] }));
+  else registry.install(defineExtension({ name: "shared", tools: [askHumanTool, ideaTool(state)] }));
   const reports = [];
   const harness = await Harness.open(await openNodeSqliteStorage(db), {
     models: inferenceModels({ agentForSession: fleet?.agentForSession }),
@@ -320,7 +329,17 @@ async function chat({ harness, root, reports, state, fleet, control }) {
   if (!text) throw new Error("FOLLOWUP is empty");
   for (const f of JSON.parse(process.env.PRIOR_FOUND || "[]")) state.found.push(f);
   const prior = state.found.length;
-  for (const c of JSON.parse(process.env.PRIOR_CANDIDATES || "[]")) state.candidates.push(c);
+  for (const c of JSON.parse(process.env.PRIOR_CANDIDATES || "[]")) if (!state.candidates.some((x) => x.poc === c.poc && x.pack === c.pack)) state.candidates.push(c);
+  // Final oracle proof runs in the parent process. Reconcile its retirement
+  // events with the child's older audit file before counting report slots.
+  for (const ended of JSON.parse(process.env.PRIOR_AGENT_SUPERSEDED || "[]")) {
+    for (let i = state.agentFindings.length - 1; i >= 0; i--) if (state.agentFindings[i].poc === ended.poc && (!ended.pack || state.agentFindings[i].pack === ended.pack)) state.agentFindings.splice(i, 1);
+  }
+  state.agentFindings.save?.();
+  for (const value of JSON.parse(process.env.PRIOR_AGENT_FINDINGS || "[]")) {
+    const f = makeAgentFinding(value);
+    if (f && !state.agentFindings.some((x) => x.poc === f.poc && x.pack === f.pack)) state.agentFindings.push(f);
+  }
   // By poc, not by count: a finding this turn may supersede a prior candidate.
   const priorCandidates = new Set(state.candidates.map((c) => c.poc));
   const before = (await harness.usage(ctx)).models ?? {};
@@ -337,7 +356,7 @@ async function chat({ harness, root, reports, state, fleet, control }) {
   const s = await summarize(root);
   flushFinal(s);
   const usage = await chargeUsage(harness, before);
-  event("settled", { status: settled.status, reason: settled.reason, detail: settled.detail, summary: s, findings: state.found.slice(prior), candidates: state.candidates.filter((c) => !priorCandidates.has(c.poc)), usage, reports });
+  event("settled", { status: settled.status, reason: settled.reason, detail: settled.detail, summary: s, findings: state.found.slice(prior), candidates: state.candidates.filter((c) => !priorCandidates.has(c.poc)), agentFindings: state.agentFindings, usage, reports });
 }
 
 // ---- Child worker: one process runs the whole audit.
@@ -396,7 +415,7 @@ async function child([, , , mode, db, ws]) {
     flushFinal(s);
     if (before) ({ settled, final: s.final } = afterNudge(before, { settled, final: s.final, ...tally() }));
     const usage = await chargeUsage(harness);
-    event("settled", { status: settled.status, reason: settled.reason, detail: settled.detail, summary: s, findings: state.found, candidates: state.candidates, usage, reports });
+    event("settled", { status: settled.status, reason: settled.reason, detail: settled.detail, summary: s, findings: state.found, candidates: state.candidates, agentFindings: state.agentFindings, usage, reports });
     completed = true;
   } finally {
     await opened?.control?.dispose();
@@ -524,7 +543,7 @@ async function main() {
     alias: ALIAS, approveMode: "auto", ms: Date.now() - t0,
     status: settled?.status, reason: settled?.reason,
     // How the run ended. An error keeps its reason.
-    outcome: findings.length ? "recorded" : error ? "error" : "no-finding",
+    outcome: findings.length ? "recorded" : error ? "error" : settled?.agentFindings?.length ? "reported" : "no-finding",
     error: findings.length ? null : error,
     prepassError,
     ...prep?.record,
@@ -536,6 +555,7 @@ async function main() {
     findings,
     // Unproven, agent-asserted results. Never findings, never counted as one.
     // A candidate a proven finding took the place of is left out.
+    agentFindings: (settled?.agentFindings ?? []).filter((f) => !supersededBy([f], findings).length),
     candidates: [...(settled?.candidates ?? []).filter((c) => !supersededBy([c], findings).length), ...measured],
     // Back-compat single-finding fields: the worst finding.
     findingSubmitted: findings.length > 0,

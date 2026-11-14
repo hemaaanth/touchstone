@@ -1,11 +1,11 @@
 // Engine-local proof state that pi-durable does not own. A committed tool result
 // must never reopen with its matching proof or attempt counter forgotten.
-//   candidates  unproven, agent-asserted results (lib/candidate.mjs). Saved,
-//               so a resumed run keeps its cap, numbering and duplicate guards.
+//   candidates     uncapped investigation ideas and captured observations.
+//   agentFindings  structured agent reports; their shared cap survives resume.
 //   attempts    attempt id -> what it captured, for submit_candidate. Memory
 //               only: after a restart the agent runs an attempt again to cite it.
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { candidateState, watchFindings } from "./candidate.mjs";
+import { agentFindingsState, candidateState, watchFindings } from "./candidate.mjs";
 
 export function auditState(file) {
   const saved = file && existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
@@ -13,13 +13,14 @@ export function auditState(file) {
   const found = saved.found ?? [];
   const passed = new Map(saved.passed ?? []);
   let candidates = [];
+  let agentFindings = [];
   const validSequence = (agent, n) => typeof agent === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(agent) && Number.isSafeInteger(n) && n >= 0;
   if (saved.sessionSequence !== undefined && (!Array.isArray(saved.sessionSequence) || saved.sessionSequence.some((row) => !Array.isArray(row) || row.length !== 2 || !validSequence(...row)))) throw new Error("invalid saved session sequence");
   const sessionSequence = new Map(saved.sessionSequence ?? []);
   if (sessionSequence.size !== (saved.sessionSequence ?? []).length) throw new Error("invalid saved session sequence");
   // Older audit files kept candidates but no action counters. Never reuse a
   // persisted candidate's session id after upgrading or resuming that file.
-  for (const c of saved.candidates ?? []) {
+  for (const c of [...(saved.candidates ?? []), ...(saved.agentFindings ?? [])]) {
     const match = /^session:([A-Za-z0-9][A-Za-z0-9_-]{0,63}):([1-9][0-9]*)$/.exec(c.poc ?? "");
     if (!match) continue;
     const n = Number(match[2]);
@@ -29,7 +30,7 @@ export function auditState(file) {
   const persist = () => {
     if (!file) return;
     const next = `${file}.tmp`;
-    writeFileSync(next, JSON.stringify({ poc, found, passed: [...passed], candidates, sessionSequence: [...sessionSequence] }), { mode: 0o600 });
+    writeFileSync(next, JSON.stringify({ poc, found, passed: [...passed], candidates, agentFindings, sessionSequence: [...sessionSequence] }), { mode: 0o600 });
     renameSync(next, file);
   };
   const sequenceSet = sessionSequence.set.bind(sessionSequence);
@@ -46,6 +47,7 @@ export function auditState(file) {
     return sessionSequence;
   };
   candidates = candidateState(saved.candidates, persist);
+  agentFindings = agentFindingsState(saved.agentFindings, persist);
   const push = found.push.bind(found);
   found.push = (...items) => { const n = push(...items); persist(); return n; };
   const set = passed.set.bind(passed);
@@ -56,6 +58,7 @@ export function auditState(file) {
     found,
     passed,
     candidates,
+    agentFindings,
     attempts: new Map(),
     sessionSequence,
     session: new Map(),

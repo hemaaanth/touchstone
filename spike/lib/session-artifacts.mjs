@@ -16,7 +16,7 @@ const keys = (o, names) => o && typeof o === "object" && !Array.isArray(o) && Ob
 const mime = { transcript: "text/plain; charset=utf-8", har: "application/json", screenshot: "image/png" };
 
 function owner({ run, agent, poc }) {
-  if (typeof run !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(run) || typeof agent !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(agent)) fail();
+  if (typeof run !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(run) || typeof agent !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(agent)) fail();
   const prefix = `session:${agent}:`;
   if (typeof poc !== "string" || !poc.startsWith(prefix)) fail();
   const suffix = poc.slice(prefix.length);

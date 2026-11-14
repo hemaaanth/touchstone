@@ -1,3 +1,4 @@
+import { roamError } from "./roam-errors.mjs";
 // The tools of a free-roam child (Wave 4, I1). Today there is one: `shell`.
 //
 // `shell` runs a command as root on the child's own Daytona machine
@@ -65,7 +66,8 @@ function ready(m, s) {
     s.generation = a.generation; s.epoch = a.epoch;
   })();
 }
-async function unknown(m, s) {
+async function unknown(m, s, recoverable = false) {
+  s.recoverable = recoverable;
   s.mode = "unknown"; s.local++;
   // Best effort remote latch. No later success may clear this worker's unknown state.
   try { if (s.generation) await exchange(m, s, "block"); } catch { /* already failed closed */ }
@@ -97,8 +99,37 @@ export const pauseRoamShell = (machine) => control(machine, "pause", "paused");
 export const resumeRoamShell = (machine) => control(machine, "resume", "active");
 export const closeRoamShell = (machine) => control(machine, "close", "closed");
 
+async function recover(m, s) {
+  const local = s.local;
+  try {
+    // Re-init is safe if setup failed before a generation was acknowledged.
+    // An existing unknown supervisor will refuse it rather than reset its jobs.
+    if (!s.generation) { s.ready = null; await ready(m, s); }
+    else {
+      let recovered = false;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const status = await exchange(m, s, "status");
+        if (status.ack !== true || status.scope !== "managed-shell" || !["active", "unknown"].includes(status.state) || status.epoch < s.epoch) throw new Error(CONTROL_ERROR);
+        s.epoch = status.epoch;
+        try {
+          const a = await exchange(m, s, "recover");
+          if (a.ack !== true || a.scope !== "managed-shell" || a.state !== "active" || a.epoch <= s.epoch) throw new Error(CONTROL_ERROR);
+          s.epoch = a.epoch;
+          recovered = true;
+          break;
+        } catch { /* A terminating worker can advance the epoch; read it again. */ }
+      }
+      if (!recovered) throw new Error(CONTROL_ERROR);
+    }
+    if (s.local !== local || s.pending || s.mode !== "unknown") throw new Error(CONTROL_ERROR);
+    s.mode = "active";
+  } catch { throw roamError("ROAM_SHELL_RECOVERY_FAILED"); }
+}
+
 async function supervisedShell(m, command, seconds) {
   const s = controller(m);
+  const recovering = s.mode === "unknown" && s.recoverable && !s.pending;
+  if (recovering) await recover(m, s);
   const local = s.local;
   if (s.mode !== "active" || s.pending) throw new Error(CONTROL_ERROR);
   try {
@@ -106,8 +137,8 @@ async function supervisedShell(m, command, seconds) {
     if (s.mode !== "active" || s.local !== local || s.pending) throw Object.assign(new Error(CONTROL_ERROR), { notLaunched: true });
     const a = await exchange(m, s, "run", { command, seconds });
     if (!Number.isInteger(a.exitCode) || typeof a.result !== "string") throw new Error(CONTROL_ERROR);
-    return { exitCode: a.exitCode, result: a.result };
-  } catch (e) { if (!e.notLaunched) await unknown(m, s); throw e; }
+    return { exitCode: a.exitCode, result: a.result, recovered: recovering };
+  } catch (e) { if (!e.notLaunched) await unknown(m, s, true); throw e; }
 }
 
 // Setup exercises the same supervisor used by real children, including its
@@ -126,7 +157,8 @@ export function roamTools(ws, { record, egress, machine = roamMachine }) {
   const owed = new Set(); // agents that have not seen the replaced notice yet
 
   async function run(agent, command, seconds) {
-    const m = await machine(ws, agent);
+    let m;
+    try { m = await machine(ws, agent); } catch { throw roamError("ROAM_MACHINE_UNAVAILABLE"); }
     if (m.replaced) owed.add(agent);
     // No log, no shell. A machine this worker did not start the log on gets it
     // first: a new one, one from the sidecar, one whose last start or pull failed.
@@ -134,7 +166,7 @@ export function roamTools(ws, { record, egress, machine = roamMachine }) {
       try {
         await egress.start(m);
       } catch {
-        throw new Error("The request log did not start. No log, no shell.");
+        throw roamError("ROAM_EGRESS_UNAVAILABLE");
       }
       logged.add(m.id);
     }
@@ -146,7 +178,8 @@ export function roamTools(ws, { record, egress, machine = roamMachine }) {
       // The command may have run, so it gets its entry. The error is a fixed
       // text: what the machine answered is not scrubbed, and the model reads it.
       record({ agent, kind: "shell", t: Date.now(), sandbox: m.id, command, exit_code: undefined, output: "" });
-      throw new Error(`The command did not finish on the machine (HTTP ${Number.isInteger(e?.status) ? e.status : "no answer"}). It may still be running.`);
+      if (e?.code === "ROAM_SHELL_RECOVERY_FAILED") throw e;
+      throw roamError("ROAM_SHELL_OUTCOME_UNKNOWN");
     }
     const s = record({ agent, kind: "shell", t: Date.now(), sandbox: m.id, command, exit_code: r.exitCode, output: r.result });
     let recs = [];
@@ -163,7 +196,7 @@ export function roamTools(ws, { record, egress, machine = roamMachine }) {
       record({ agent, kind: "egress", t: rec.t, method: rec.method, url: rec.url, status: rec.status });
     }
     // The model gets the text that record() returned, never the raw output.
-    return `${owed.delete(agent) ? `${REPLACED_NOTICE}\n` : ""}session ${s.poc}\nexit ${r.exitCode ?? "unknown"}\n${s.output}${note}`;
+    return `${r.recovered ? "Shell recovered on the same machine. Previous managed processes stopped; the earlier command was not replayed.\n" : ""}${owed.delete(agent) ? `${REPLACED_NOTICE}\n` : ""}session ${s.poc}\nexit ${r.exitCode ?? "unknown"}\n${s.output}${note}`;
   }
 
   const shell = defineTool({
