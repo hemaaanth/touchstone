@@ -21,6 +21,7 @@ import {
 import { DEFAULT_SPEND_CAP_USD, ledgerState, spendCapUsd } from "../../spike/lib/inference.mjs"
 import { validateRunBudget } from "../../spike/lib/run-budget.mjs"
 import { DEFAULT_API_URL, DEFAULT_SNAPSHOT, DEFAULT_TARGET, execConfig, hostOf } from "../../spike/lib/daytona.mjs"
+import { rpcState, setRpc } from "../../spike/lib/rpc-store.mjs"
 import { errorText, originOf, publicUrl, scrubUrl } from "../../spike/lib/redact-url.mjs"
 import { consoleToken, rotateConsoleToken, sameToken } from "../../spike/lib/grant-store.mjs"
 // The page gets the token from here (vite.config.ts), read at serve time.
@@ -225,6 +226,9 @@ export function getSettings() {
     spend: { ...totalSpendState(cfg), budgetUsd: appRunBudgetUsd(cfg) },
     fallbackPrice: FALLBACK_PRICE,
     execution: executionState(cfg),
+    // Chain RPCs for forked replays. A URL never leaves the server: each row carries
+    // the chain, whether it is set, and the last 4 characters.
+    rpc: rpcState(cfg),
   }
 }
 
@@ -472,4 +476,17 @@ export async function discoverModels(body = {}) {
     })
     .filter(Boolean)
   return { models, keyUsed: Boolean(key), keyNote }
+}
+
+// Save or clear one chain's RPC for forked replays. The URL is stored beside the
+// provider keys (data/providers.json, 0600) and reaches a run as an environment
+// variable, never as a file in the workspace.
+//
+// Returns the WHOLE settings state, exactly like setRunBudget and setExecution: the
+// page replaces its state with what a write returns, so returning only the rpc rows
+// made it call settings.providers.map on an array and crash. Caught by opening the
+// page in a real browser; the render tests never exercise a write.
+export function setRpcAndState(body) {
+  setRpc(body)
+  return getSettings()
 }

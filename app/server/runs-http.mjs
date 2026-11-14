@@ -10,7 +10,7 @@ import { buildReport, renderReportAgent, renderReportHtml, renderReportMarkdown 
 import { bundleRefusal, loadRecordedReplay, planReplayBundle, UNJUDGED_NOTE } from "./replay-bundle.mjs"
 import { readGrants, addGrant, removeGrant, grantActive } from "../../spike/lib/grant-store.mjs"
 import { setScopeBrief } from "../../spike/lib/scopes-store.mjs"
-import { getSettings, saveProvider, deleteProvider, setDefault, setRunBudget, discoverModels, setExecution, consoleWriteRefusal } from "./settings.mjs"
+import { getSettings, saveProvider, deleteProvider, setDefault, setRunBudget, discoverModels, setExecution, setRpcAndState, consoleWriteRefusal } from "./settings.mjs"
 
 function send(res, status, json) {
   res.statusCode = status
@@ -334,7 +334,7 @@ export async function handleScopes(req, res) {
     // cannot add either.
     const body = await readBody(req)
     try {
-      send(res, 201, addScope({ kind: body.kind, title: body.title, brief: body.brief, blurb: body.blurb, files: body.files, repo: body.repo, members: body.members, pack: body.pack, hosts: body.hosts, permission: body.permission, token: body.token, tokens: body.tokens, toolScope: body.toolScope, assistant: body.assistant, allowPrivate: body.allowPrivate }))
+      send(res, 201, addScope({ kind: body.kind, title: body.title, brief: body.brief, blurb: body.blurb, files: body.files, repo: body.repo, members: body.members, pack: body.pack, hosts: body.hosts, permission: body.permission, token: body.token, tokens: body.tokens, toolScope: body.toolScope, assistant: body.assistant, allowPrivate: body.allowPrivate, fork: body.fork }))
     } catch (err) {
       send(res, 400, { error: String(err?.message ?? err) })
     }
@@ -440,6 +440,7 @@ export function handleModels(req, res) {
 //   POST   /api/settings/default           — { provider, model } for new runs
 //   POST   /api/settings/budget            — { budgetUsd } default per-run budget
 //   POST   /api/settings/execution         — { backend, apiKey?, clearKey? } where tools run
+//   POST   /api/settings/rpc               — { chain, url } an RPC for forked replays
 export async function handleSettings(req, res) {
   const url = new URL(req.url, "http://localhost")
   const parts = url.pathname.split("/").filter(Boolean)
@@ -455,6 +456,7 @@ export async function handleSettings(req, res) {
     if (parts.length === 3 && route === "POST default") return send(res, 200, setDefault(await readBody(req))), true
     if (parts.length === 3 && route === "POST budget") return send(res, 200, setRunBudget((await readBody(req)).budgetUsd)), true
     if (parts.length === 3 && route === "POST execution") return send(res, 200, setExecution(await readBody(req))), true
+    if (parts.length === 3 && route === "POST rpc") return send(res, 200, setRpcAndState(await readBody(req))), true
   } catch (err) {
     send(res, 400, { error: String(err?.message ?? err) })
     return true

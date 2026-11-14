@@ -4,6 +4,7 @@ import { afterAll, describe, expect, test } from "bun:test"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
+import { harmText } from "../src/lib/eth"
 
 // K5: the finding answer carries the proof gate's harm and each transfer's
 // exact wei when the record has them, and an older record reads as before.
@@ -58,5 +59,27 @@ describe("the finding answer and the proof gate's harm (K5)", () => {
     expect(c.origin).toBe("measured")
     expect(c.proven).toBe(false)
     expect(c.measured.words).toBe("Harm not judged: recorded before the harm check.")
+  })
+})
+
+// A locked finding must read as harm in the UI, not as an empty line. Nothing moved in
+// this class, which is why the transfer channels cannot see it, so the sentence has to
+// carry the meaning: the holder kept their claim and could not turn it into assets.
+describe("a locked finding", () => {
+  test("says the holder is locked out, names the call, and shows the claim left behind", () => {
+    const harm = harmText({
+      ok: true,
+      kind: "locked",
+      victim: "0x1111111111111111111111111111111111111111",
+      stillOwed: "1000000000",
+      via: "redeem",
+      targets: [{ address: "0x1111111111111111111111111111111111111111", name: "ShareVault" }],
+    })
+    expect(harm).not.toBeNull()
+    expect(harm!.lead).toContain("ShareVault")
+    expect(harm!.lead).toContain("locked out")
+    expect(harm!.lead).toContain("redeem")
+    expect(harm!.amount?.text).toContain("1,000,000,000")
+    expect(harm!.rest).toContain("cannot turn into assets")
   })
 })

@@ -16,8 +16,10 @@ export type Amount = { text: string; exact: string; approx: boolean }
 // lost, and how much. Null when the record has none.
 export interface Harm {
   ok?: boolean
-  kind: "funds" | "control"
-  asset?: "token"
+  // "locked" is value that is stuck rather than transferred: the holder keeps their
+  // claim and cannot turn it into assets (spike/lib/oracle-locked.mjs).
+  kind: "funds" | "control" | "locked"
+  asset?: "token" | "eth"
   victim?: string
   lostWei?: string
   token?: string
@@ -26,6 +28,9 @@ export interface Harm {
   symbol?: string
   decimals?: number
   writes?: number
+  // A locked finding: the claim left behind, and the withdrawal that reverted.
+  stillOwed?: string
+  via?: string
   targets?: { address: string; name: string }[]
 }
 
@@ -54,6 +59,18 @@ export function harmText(
     return { lead: `${victim} lost `, amount, rest: known ? "." : `${token}.` }
   }
   if (harm.kind === "funds" && harm.lostWei) return { lead: `${victim} lost `, amount: formatWei(String(harm.lostWei)), rest: "." }
+  if (harm.kind === "locked") {
+    // The number is the claim left behind, in the target's own units, and the function
+    // that should have paid it. "Could not withdraw" is the harm; nothing moved, which
+    // is exactly why the transfer channels cannot see it.
+    const owed = typeof harm.stillOwed === "string" && harm.stillOwed ? formatAmount(harm.stillOwed, { decimals: 0, unit: "raw units", baseUnit: "raw units" }) : null
+    const via = typeof harm.via === "string" && harm.via ? `\`${harm.via}\`` : "a withdrawal"
+    return {
+      lead: `${victim} is locked out: ${via} reverted while they still held `,
+      amount: owed,
+      rest: owed ? " they cannot turn into assets." : "a claim they cannot turn into assets.",
+    }
+  }
   if (harm.kind === "control") {
     const n = harm.writes ?? 0
     return { lead: `${victim} was taken over: the replay wrote ${n} control ${n === 1 ? "slot" : "slots"} (owner, admin or implementation).`, amount: null, rest: "" }

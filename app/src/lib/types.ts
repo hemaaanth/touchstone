@@ -378,9 +378,28 @@ export interface PackChoice {
   extraProof?: string
 }
 
+// One thing a module needs before it can run on a target (spike/lib/module-needs.mjs).
+// `kind` says where the operator fixes it: "settings" (an RPC, a key) or "run"
+// (the target's own chain and pinned block). The Modules page and the New run
+// dialog both read this one list, so they cannot disagree.
+export interface ModuleNeed {
+  id: string
+  label: string
+  kind: "settings" | "run"
+  met: boolean
+  detail: string
+}
+
 // A target as the launcher offers it: a scope plus whether it can run right now.
 export interface TargetChoice extends TargetScope {
   runnable: boolean
+  // The unmet needs that make it unrunnable. Absent or empty when there are none.
+  needs?: ModuleNeed[]
+  // The unmet needs of each module on this target, keyed by module id. A target can
+  // be runnable overall while one of its modules is not: a forked scope allows
+  // Contracts (which reads the chain) and Review (which does not), so with no RPC
+  // the target runs under Review and Contracts is the module that cannot start.
+  needsByPack?: Record<string, ModuleNeed[]>
 }
 
 // The active inference gateway (NEAR / Boundless / Lyber) that new runs will
@@ -766,12 +785,26 @@ export interface ProviderSetting {
   models: ProviderModel[]
 }
 
+// One chain RPC for a forked replay. The URL itself never leaves the server: this
+// is the chain, whether a URL is set, where it came from, and its last 4
+// characters, the same rule the provider keys follow.
+export interface RpcSetting {
+  chain: string
+  chainId: number
+  envName: string
+  set: boolean
+  source: "settings" | "env" | null
+  last4: string | null
+  saved: boolean
+}
+
 export interface SettingsState {
   providers: ProviderSetting[]
   default: { provider: string; model: string | null }
   envOverride: string | null
   spend: SpendState
   fallbackPrice: { input: number; output: number }
+  rpc: RpcSetting[]
 }
 
 export interface DiscoveredModel {

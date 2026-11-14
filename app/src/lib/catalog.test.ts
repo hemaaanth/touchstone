@@ -17,7 +17,14 @@ describe("module copy follows the pack", () => {
     const keys = pack({ id: "keys", proof: "forge", offline: true })
     assert.equal(moduleNote(keys), "It runs only in our own offline sandbox.")
     assert.equal(moduleAside(keys), "Passive · Offline")
-    assert.equal(proofKind(keys).detail, "A finding is real only when its Foundry test replays green in the offline sandbox.")
+    // The wording changed on 2026-11-14: a Foundry replay runs in our own sandbox,
+    // and on a forked scope it also reads the chain at the pinned block. The old
+    // sentence promised "offline", which is no longer true of every run
+    // (docs/network.md). The assertion still pins the sentence exactly.
+    assert.equal(
+      proofKind(keys).detail,
+      "A finding is real only when its Foundry test replays green in our own sandbox. On a forked scope the replay also reads the chain, read-only, at the pinned block.",
+    )
   })
 
   test("a passive pack that does not say offline gets no sandbox sentence", () => {

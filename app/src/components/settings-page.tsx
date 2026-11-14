@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react"
-import { Check, Cloud, Container, Info, KeyRound, Loader2, Pencil, Plus, RefreshCw, Star, Trash2 } from "lucide-react"
+import { Check, Cloud, Container, Info, KeyRound, Link2, Loader2, Pencil, Plus, RefreshCw, Star, Trash2 } from "lucide-react"
 import type { DiscoveredModel, ModelDraft, ProviderSetting, SettingsState } from "@/lib/types"
-import { StalePageError, deleteProvider, discoverModels, fetchSettings, rotateConsoleToken, saveProvider, setDefaultModel, setExecution, setRunBudget } from "@/lib/api"
+import { StalePageError, deleteProvider, discoverModels, fetchSettings, rotateConsoleToken, saveProvider, setDefaultModel, setExecution, setRpc, setRunBudget } from "@/lib/api"
 import { cn } from "@/lib/utils"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -156,6 +156,8 @@ export function SettingsPage({ onChanged }: { onChanged: () => void }) {
           onOpenDaytona={(use) => setDaytona({ open: true, use })}
         />
       ) : null}
+
+      <RpcSection settings={settings} onSaved={apply} />
 
       <ConsoleSection />
 
@@ -1055,5 +1057,104 @@ export function SettingsRefusal({ text }: { text: string | null }) {
         </p>
       ) : null}
     </div>
+  )
+}
+
+// A chain RPC for forked replays. A replay that lands on real deployed state reads
+// one chain; without a URL that chain's fork fails loudly rather than quietly
+// testing something else. The URL is a credential, so this row never shows it: it
+// shows which key is set by its last four characters, exactly as a provider key
+// does.
+export function RpcSection({ settings, onSaved }: { settings: SettingsState; onSaved: (s: SettingsState) => void }) {
+  const rows = settings.rpc ?? []
+  const [editing, setEditing] = useState<{ chain: string; open: boolean } | null>(null)
+  const [url, setUrl] = useState("")
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const open = editing?.open === true
+  const row = rows.find((r) => r.chain === editing?.chain) ?? null
+  const save = async () => {
+    if (!editing) return
+    setBusy(true)
+    setError(null)
+    try {
+      onSaved(await setRpc({ chain: editing.chain, url }))
+      setEditing(null)
+      setUrl("")
+    } catch (e) {
+      setError(String((e as Error).message))
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <ListSection
+      title="Chain RPCs"
+      description="A forked replay reads one real chain at a pinned block. Add the chains your targets live on; a run with no RPC for its chain stops and says so."
+    >
+      <ListCard aria-label="Chain RPCs">
+        {rows.map((r) => (
+          <ListRow
+            key={r.chain}
+            icon={<Link2 />}
+            title={r.chain}
+            meta={[
+              r.set
+                ? `${r.source === "env" ? `From ${r.envName}` : "Saved"} · ends ${r.last4 ?? "?"}`
+                : "Not set — a fork on this chain cannot run",
+            ]}
+            trailing={
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setError(null)
+                  setUrl("")
+                  setEditing({ chain: r.chain, open: true })
+                }}
+              >
+                {r.set ? "Replace" : "Add"}
+              </Button>
+            }
+          />
+        ))}
+      </ListCard>
+      <Dialog
+        open={open}
+        onOpenChange={(next) => {
+          if (busy) return
+          if (next) setError(null)
+          setEditing(next ? editing : null)
+        }}
+      >
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>{row?.set ? "Replace the RPC" : "Add an RPC"}</DialogTitle>
+            <DialogDescription>
+              {editing?.chain ? `An https URL for ${editing.chain}. A key in the path or query is fine; a username and password in the URL is not.` : ""}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col gap-2">
+            <Label>RPC URL</Label>
+            <Input
+              id="rpc-url"
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+              placeholder="https://…"
+              autoComplete="off"
+              spellCheck={false}
+            />
+            {error ? <p className="text-sm text-destructive">{error}</p> : null}
+          </div>
+          <DialogFooter>
+            <DialogClose render={<Button variant="outline" disabled={busy} />}>Cancel</DialogClose>
+            <Button onClick={() => void save()} disabled={busy || !url.trim()}>
+              {busy ? <Loader2 className="animate-spin" /> : null}
+              Save
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </ListSection>
   )
 }

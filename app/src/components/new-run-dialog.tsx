@@ -407,7 +407,7 @@ function labHost(hostname: string): boolean {
 // Live websites go as { kind: "live", hosts, pack, permission }: `pack` is the
 // list of modules the operator ticked, and the checkbox is the operator saying
 // they may test the websites. The server records it as a grant.
-function scopeBody(sources: Source[], name: string, modules: string[], permission: boolean, token: string, chat: { path: string; budget: string }, allowPrivate: boolean): Parameters<typeof attachScope>[0] {
+function scopeBody(sources: Source[], name: string, modules: string[], permission: boolean, token: string, chat: { path: string; budget: string }, allowPrivate: boolean, fork: { chain: string; block: string; addresses: string } | null = null): Parameters<typeof attachScope>[0] {
   const title = name || sources.map(sourceLabel).join(" + ")
   // Plain websites first: a run sends its requests to the first one, and a
   // wildcard entry is a grant pattern, not a website.
@@ -424,8 +424,23 @@ function scopeBody(sources: Source[], name: string, modules: string[], permissio
   const members = sources.flatMap((s): ScopeMember[] =>
     s.kind === "site" ? [] : s.kind === "folder" && "path" in s ? [{ kind: "folder", name: s.name, path: s.path }] : [s],
   )
-  return { title, members }
+  // A pin turns this scope into a forked replay. Only sent when the operator filled
+  // the chain and the block in: the server refuses either one alone, and an empty
+  // pin must not become "fork at block 0".
+  const pin = fork && fork.chain.trim() && fork.block.trim()
+    ? {
+        chain: fork.chain.trim(),
+        block: Number(fork.block.trim().replace(/_/g, "")),
+        ...(fork.addresses.trim() ? { addresses: fork.addresses.split(/[\s,]+/).map((a) => a.trim()).filter(Boolean) } : {}),
+      }
+    : null
+  return { title, members, ...(pin ? { fork: pin } : {}) }
 }
+
+// The chains a forked replay can pin, in the server's order (lib/fork.mjs). Hard
+// coded here only because the list is a property of the build, not of the operator's
+// settings: an unknown chain would be refused by the server anyway.
+const FORK_CHAIN_NAMES = ["mainnet", "bsc", "polygon", "optimism", "arbitrum", "base", "avalanche", "gnosis"]
 
 // A module every website scope allows, with nothing to tick. Same rule as
 // alwaysOn in spike/lib/targets.mjs: it can test a live site, it sends no
@@ -466,6 +481,11 @@ export function AddScope({
   // The modules ticked for a website scope. A run picks from them at start.
   const [modules, setModules] = useState<string[]>(["web"])
   const [allowPrivate, setAllowPrivate] = useState(false)
+  // The chain pin (docs/network.md). Empty by default: an unpinned scope is every
+  // scope that exists today and keeps the offline proof path.
+  const [pinChain, setPinChain] = useState("")
+  const [pinBlock, setPinBlock] = useState("")
+  const [pinAddresses, setPinAddresses] = useState("")
   const folderRef = useRef<HTMLInputElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
@@ -570,10 +590,15 @@ export function AddScope({
     }
     if (live && !permission) return onError("Tick the box to confirm you have permission to test these websites.")
     if (lab && !allowPrivate) return onError("Tick the box to confirm this is your own local lab.")
+    // A pin needs both halves. The server refuses one without the other; say it
+    // here so the operator does not lose the form to a round trip.
+    if ((pinChain.trim() && !pinBlock.trim()) || (!pinChain.trim() && pinBlock.trim())) {
+      return onError("A chain pin needs both a chain and a block number.")
+    }
     setBusy(true)
     onError(null)
     try {
-      onAttached(await attachScope(scopeBody(sources, name.trim(), siteModules, permission, token, { path: chatPath, budget: chatBudget }, lab && allowPrivate)))
+      onAttached(await attachScope(scopeBody(sources, name.trim(), siteModules, permission, token, { path: chatPath, budget: chatBudget }, lab && allowPrivate, { chain: pinChain, block: pinBlock, addresses: pinAddresses })))
       close()
     } catch (e) {
       onError((e as Error).message)
@@ -746,6 +771,51 @@ export function AddScope({
               className="h-7 min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground"
             />
           </label>
+          {/* A chain pin turns this scope into a forked replay (docs/network.md).
+              Left empty, the scope is exactly what it is today and keeps the
+              offline proof. Filled, the run must also have that chain's RPC in
+              Settings, or the module is greyed out and the run is refused. */}
+          <div role="group" aria-labelledby="add-scope-pin" className={cn(formRow, "items-start py-2")}>
+            <span id="add-scope-pin" className={cn(formLabel, "leading-7")}>Pin</span>
+            <div className="flex min-w-0 flex-1 flex-col gap-1.5 pt-0.5">
+              <div className="flex min-w-0 items-center gap-2">
+                <select
+                  aria-label="Chain"
+                  value={pinChain}
+                  disabled={busy}
+                  onChange={(e) => setPinChain(e.target.value)}
+                  className="h-7 rounded-md border border-input bg-background px-1.5 text-xs"
+                >
+                  <option value="">No pin</option>
+                  {FORK_CHAIN_NAMES.map((c) => (
+                    <option key={c} value={c}>{c}</option>
+                  ))}
+                </select>
+                <input
+                  aria-label="Block number"
+                  value={pinBlock}
+                  disabled={busy || !pinChain}
+                  onChange={(e) => setPinBlock(e.target.value)}
+                  inputMode="numeric"
+                  placeholder="block"
+                  className="h-7 w-28 min-w-0 bg-transparent text-xs outline-none placeholder:text-muted-foreground disabled:opacity-50"
+                />
+              </div>
+              <input
+                aria-label="Pinned contract addresses"
+                value={pinAddresses}
+                disabled={busy || !pinChain}
+                onChange={(e) => setPinAddresses(e.target.value)}
+                placeholder="0x… addresses, comma separated (optional)"
+                className="h-7 min-w-0 bg-transparent text-[11px] outline-none placeholder:text-muted-foreground disabled:opacity-50"
+              />
+              <span className="text-[11px] leading-relaxed text-muted-foreground">
+                {pinChain
+                  ? "The replay forks this block read-only and judges harm to these addresses. Nothing is signed or sent."
+                  : "Off. A pinned scope replays on a real chain block instead of a local EVM."}
+              </span>
+            </div>
+          </div>
           <div role="group" aria-labelledby="add-scope-modules" className={cn(formRow, "items-start py-2")}>
             <span id="add-scope-modules" className={cn(formLabel, "leading-5")}>Modules</span>
             {live ? (

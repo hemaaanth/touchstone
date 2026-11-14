@@ -34,8 +34,10 @@ import { liveHostsRefusal } from "../../spike/lib/live-hosts.mjs"
 import { readScopes, loadScopes, addBriefScope, addSourceScope, addRepoScope, addLiveScope, addScope as addMembersScope, removeScope, validateMembers, classifyPath, safeRelPath, SKIP_DIRS, MAX_FILES, MAX_BYTES } from "../../spike/lib/scopes-store.mjs"
 import { planModules, modulesEvent, moduleOn } from "../../spike/lib/modules.mjs"
 import { packFor, packList, PACKS } from "../../spike/packs/index.mjs"
+import { targetsWithNeeds, targetNeeds } from "../../spike/lib/module-needs.mjs"
 import { sortFindings } from "../../spike/lib/record.mjs"
 import { sourceCoverage, coverageFailure } from "../../spike/lib/source-coverage.mjs"
+import { forkEnv } from "../../spike/lib/rpc-store.mjs"
 import { leadsFrom } from "../../spike/lib/leads.mjs"
 import { isProven, proofKind, withProven } from "../../spike/lib/proof-view.mjs"
 import { prepassFailed, prepassFromResult } from "../../spike/lib/prepass-view.mjs"
@@ -117,7 +119,10 @@ function runProvider(run) {
 // The target library the UI picks a scope from. The only filesystem path in it
 // is one the operator typed: a folder scope the server reads in place.
 export function availableTargets() {
-  return listTargets()
+  // A target carries its modules' unmet needs, and is not runnable while it has
+  // one. The console greys out the module; the run start refuses from the same
+  // table, so the button and the server cannot disagree.
+  return targetsWithNeeds(listTargets())
 }
 
 // The modules (packs) the New run dialog may offer. Read from the pack loader,
@@ -130,7 +135,10 @@ export function availablePacks() {
 // brief markdown never leaves the server; the summary carries only the links a run
 // will fetch. These three back the /api/scopes routes.
 export function listScopes() {
-  return readScopes().map(targetSummary)
+  // Same needs table as availableTargets: a forked scope with no RPC is not
+  // runnable, and the Scopes page must say so rather than let it be picked and
+  // fail at run start.
+  return targetsWithNeeds(readScopes().map(targetSummary))
 }
 
 // Add an operator scope. Returns its summary so the UI can select it at once.
@@ -144,7 +152,7 @@ export function listScopes() {
 //   { kind: "live", title, hosts, pack?, permission: true }
 //       real websites. `permission` is the operator's checkbox; it becomes the
 //       grant that lets a run reach these hosts.
-export function addScope({ kind, title, brief, blurb, files, repo, members, pack, hosts, permission, token, tokens, toolScope, assistant, allowPrivate } = {}) {
+export function addScope({ kind, title, brief, blurb, files, repo, members, pack, hosts, permission, token, tokens, toolScope, assistant, allowPrivate, fork } = {}) {
   if (kind === "live") {
     // Checked before the grant is written, so an unknown module saves nothing.
     // `pack` is one module or the list the operator ticked.
@@ -160,9 +168,11 @@ export function addScope({ kind, title, brief, blurb, files, repo, members, pack
     return { ...targetSummary(live), runnable: true }
   }
   const scope = members !== undefined
-    ? addMembersScope({ title, members: readLocalFolders(members), pack, blurb })
+    ? addMembersScope({ title, members: readLocalFolders(members), pack, blurb, fork })
     : files ? addSourceScope({ title, files }) : repo ? addRepoScope({ title, repo }) : addBriefScope({ title, brief, blurb })
-  return { ...targetSummary(scope), runnable: true }
+  // Never a hard-coded `runnable: true`: a forked scope with no RPC is created but
+  // not runnable, and the response must say the same thing the list will.
+  return targetsWithNeeds([targetSummary(scope)])[0]
 }
 
 // A local folder is read IN PLACE, on this machine: the operator names its path
@@ -547,6 +557,16 @@ export async function createRun({ alias, targetId, modules, budgetUsd, pack, pac
     const allowed = eligiblePacks(target)
     const denied = picked.filter((id) => !allowed.includes(id))
     if (denied.length) throw new Error(`target ${target.id} belongs to pack "${allowed.join('", "')}", not "${denied.join('", "')}"`)
+  }
+  // A module's needs, refused before the reach opens and before anything is
+  // spent. Same table the console greys the module with, so a target the console
+  // offers as unrunnable cannot be started by a direct API call either.
+  for (const id of multi ? picked : [one ?? target.pack ?? "contracts"]) {
+    const wanted = targetNeeds(target, id)
+    if (!wanted.ok) {
+      // Name every unmet need, so one round trip fixes all of them.
+      throw new Error(`${PACKS[id]?.title ?? id} cannot run on "${target.title ?? target.id}" yet: ${wanted.needs.filter((n) => !n.met).map((n) => n.label).join("; ")}.`)
+    }
   }
   // A joined run keeps the credential of an AI/MCP scope, but only when it has
   // that module: otherwise the token would sit in the state file for nothing.
@@ -1009,7 +1029,12 @@ function spawnAgent(run, leads) {
   // so the module's network seam routes target-bound traffic through the gate. It
   // is empty for an offline run, so a lab child's env is unchanged.
   run.roamEpoch = randomUUID()
-  const env = { ...process.env, TOUCHSTONE_PARENT_PIPE: "1", PROVIDER: runProvider(run), ALIAS: run.alias, EVENTS_FILE: run.eventsFile, RUN_CHARGE_FILE: path.join(RESULTS_DIR, `run-${run.id}.charges.jsonl`), ATTEMPT_BASE: attemptBase(run), ...budgetEnv(run), ...fleetEnv(run), ...scopeEnv(run.target, run.packs), ...(run.reach?.env ?? {}), ...leads }
+  // A forked run needs its chain RPC in the worker's env. `forkEnv()` returns only
+  // the chains the operator configured in Settings, so an unforked run gets
+  // nothing and its env is unchanged. The URL is passed in the environment and
+  // never written into the workspace, so it cannot reach a finding or a bundle.
+  const forkVars = run.target?.fork ? forkEnv() : {}
+  const env = { ...process.env, ...forkVars, TOUCHSTONE_PARENT_PIPE: "1", PROVIDER: runProvider(run), ALIAS: run.alias, EVENTS_FILE: run.eventsFile, RUN_CHARGE_FILE: path.join(RESULTS_DIR, `run-${run.id}.charges.jsonl`), ATTEMPT_BASE: attemptBase(run), ...budgetEnv(run), ...fleetEnv(run), ...scopeEnv(run.target, run.packs), ...(run.reach?.env ?? {}), ...leads }
   // stdin is a pipe (not "ignore") so the operator can steer the live run: we
   // write one JSON line per message to the worker, which injects it into the
   // agent's current turn. Swallow EPIPE if we race a worker that just exited.
@@ -1855,6 +1880,8 @@ export function followUp(run, text, clientId) {
       // No inherited reach env: follow-ups keep files, not a live route.
       env: {
         ...env,
+        // A follow-up on a forked run still replays on that chain, so it keeps the RPC.
+        ...(target?.fork ? forkEnv() : {}),
         TOUCHSTONE_PARENT_PIPE: "1",
         PROVIDER: runProvider(run),
         ALIAS: run.alias,

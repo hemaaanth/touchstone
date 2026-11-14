@@ -17,6 +17,10 @@ import { Label, ListCard, ListEmpty, ListLoading, ListPage, ListRow, RowMenu, Ro
 // A scope the operator added. The rest are the labs that ship with the app.
 const isOwn = (t: TargetChoice) => isOwnScope(t.id) || t.kind === "live"
 
+// The name a module badge shows. A scope's needs are keyed by module id, and an id in
+// a badge would be noise.
+const PACK_TITLE = (id: string) => ({ contracts: "Contracts", review: "Code review", web: "Web", keys: "Keys", domains: "Domains", surface: "Surface", "supply-chain": "Supply chain", "infra-cloud": "Infra", "ai-mcp": "AI and MCP", "chain-watch": "Chain watch", phishing: "Phishing" } as Record<string, string>)[id] ?? id
+
 // The modules a scope allows. A scope saved before it could hold several has one.
 const modulesOf = (t: TargetChoice) => t.packs ?? [packOf(t)]
 
@@ -128,16 +132,28 @@ export function ScopesPage({
             const items = contents(t)
             const mine = runsOf(t)
             const proven = mine.reduce((n, r) => n + r.brief.proven, 0)
+            // A scope can be runnable overall and still block one of its modules: a
+            // forked scope allows Contracts (which reads the chain) and Review (which
+            // does not), so with no RPC it runs under Review only. Saying nothing in
+            // the list left the operator to discover the block when a run refused.
+            const blockedModules = Object.entries(t.needsByPack ?? {})
+              .filter(([, needs]) => needs.length > 0)
+              .map(([id]) => PACK_TITLE(id))
             return (
               <ListRow
                 key={t.id}
                 icon={<ScopeIcon target={t} />}
                 title={t.title}
                 badges={
-                  own && t.runnable ? null : (
+                  own && t.runnable && !blockedModules.length ? null : (
                     <>
                       {own ? null : demoBadge}
                       {t.runnable ? null : blockedBadge}
+                      {blockedModules.length ? (
+                        <Badge key="blocked-modules" variant="secondary" className="h-[18px] px-1.5 text-[10.5px] font-normal text-muted-foreground">
+                          {`${blockedModules.join(", ")} cannot run`}
+                        </Badge>
+                      ) : null}
                     </>
                   )
                 }

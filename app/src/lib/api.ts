@@ -248,6 +248,9 @@ export function attachScope(body: {
   repo?: string
   brief?: string
   files?: { path: string; content: string }[]
+  // Pin this scope to a real chain block (docs/network.md). `addresses` are the
+  // contracts a forked replay may treat as victims; the deployed oracle judges them.
+  fork?: { chain: string; block: number; addresses?: string[]; label?: string }
 }): Promise<TargetChoice> {
   return postJson<TargetChoice>("/api/scopes", body)
 }
@@ -384,6 +387,12 @@ export function setDefaultModel(provider: string, model: string): Promise<Settin
 
 export function setRunBudget(budgetUsd: number): Promise<SettingsState> {
   return postJson<SettingsState>("/api/settings/budget", { budgetUsd })
+}
+
+// One chain's RPC for forked replays. An empty url clears it. The server keeps the
+// URL; the response carries only whether it is set and its last 4 characters.
+export function setRpc(body: { chain: string; url: string }): Promise<SettingsState> {
+  return postJson<SettingsState>("/api/settings/rpc", body)
 }
 
 // Where tool calls run. An empty apiUrl or target clears the saved value.
