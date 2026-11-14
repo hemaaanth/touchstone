@@ -524,6 +524,42 @@ test("a stopped run never starts a default child", async (t) => {
   assert.equal((await r.harness.snapshot(Roster, ROOT_CONVERSATION_ID, ctx))?.agents.length ?? 0, 0);
 });
 
+test("a failed coordinator drains an existing child without starting a default and keeps its original failure", { timeout: 15000 }, async (t) => {
+  let started, release;
+  const childStarted = new Promise((resolve) => { started = resolve; });
+  const held = new Promise((resolve) => { release = resolve; });
+  t.after(() => release());
+  const r = await runtime(t, async (s) => {
+    if (s.who === "coordinator") {
+      if (text(s.last) === "start") return result([spawnCall("Alpha")]);
+      if (s.last.toolName === "spawn_agent") {
+        await childStarted;
+        return answer([], { stopReason: "error", errorMessage: "Original coordinator failure" });
+      }
+      return answer("Child report received.");
+    }
+    if (s.last.role === "user") {
+      started();
+      await held;
+      return result([call("read_source", {})]);
+    }
+    return answer("Child evidence recorded.");
+  }, { defaultRoute: () => assert.fail("a failed coordinator must not start a default child") });
+  const root = await r.harness.root(ctx);
+  await (await root.submit({ type: "input", content: "start" }, ctx)).wait(ctx);
+  const original = (await r.harness.snapshot(LiveDoc, ROOT_CONVERSATION_ID, ctx)).runFailure;
+  assert.ok(original);
+  const draining = r.fleet.drain(ctx);
+  assert.equal(await Promise.race([draining.then(() => "settled"), delay(20, "pending")]), "pending", "drain must wait for the existing child");
+  release();
+  assert.deepEqual(await draining, { status: "unanswered", reason: original.reason, detail: original.detail });
+  const alpha = r.spawned("Alpha");
+  assert.deepEqual(r.ran, [`${alpha.id}:read_source`]);
+  assert.ok(r.events.some((e) => e.ev === "subagent-done" && e.id === alpha.id && e.status === "done"));
+  assert.equal(r.spawned("FreeRoam"), undefined);
+  assert.equal((await r.harness.snapshot(Roster, ROOT_CONVERSATION_ID, ctx)).agents.length, 1);
+});
+
 test("a reopened worker cannot grant a stale option", async (t) => {
   const open = await shared(t);
   let w = await runtime(t, () => answer("Done."), { storage: await open(), env: { ...ON, ROAM_OPTIONS: '["wallet","email"]' } });
