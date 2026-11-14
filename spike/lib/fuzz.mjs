@@ -90,7 +90,7 @@ async function echidnaScan(scratch, target, { timeoutMs = 240_000, testLimit = 5
   const out = r.stdout + r.stderr;
   // No property line at all means the harness never compiled/ran — honest empty.
   if (!/echidna_\w+:/.test(out)) {
-    return { tool: "Echidna", available: false, reason: r.timedOut ? "timed out" : "no result", leads: [] };
+    return { tool: "Echidna", available: false, reason: r.timedOut ? "timed out" : "no result", leads: [], timedOut: r.timedOut };
   }
   const leads = parseEchidna(out)
     .filter((p) => p.broke)

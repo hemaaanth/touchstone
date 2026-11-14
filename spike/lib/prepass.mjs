@@ -39,11 +39,11 @@ function oursSourceFiles(ws) {
       return;
     }
     for (const e of entries) {
-      if (out.length >= OUR_SOURCE_CAP) { capped = true; return; }
       if (OUR_SKIP.has(e.name)) continue;
       const child = rel ? join(rel, e.name) : e.name;
       if (e.isDirectory()) { walk(child); continue; }
       if (!e.isFile() || !e.name.endsWith(".sol")) continue;
+      if (out.length >= OUR_SOURCE_CAP) { capped = true; return; }
       try { out.push({ path: child.split(sep).join("/"), content: readFileSync(join(ws, child), "utf8") }); } catch { unreadable = true; }
     }
   };

@@ -271,5 +271,10 @@ test("source file cap is reported in the agent brief and tool row", async () => 
     const view = prepassView(prep.record);
     assert.equal(view.tools[0].status, "unavailable");
     assert.match(view.tools[0].reason, /400-file limit/);
+    rmSync(join(ws, "src", "400.sol"));
+    writeFileSync(join(ws, "src", "zz-readme.txt"), "Not Solidity");
+    nextScan = { ...cleanScan, files: 400, analysed: 400 };
+    const complete = await contracts.prepass(ws, { emit: () => {} });
+    assert.equal(complete.env.STATIC_GAP, "", "ignored entries after exactly 400 source files do not imply truncation");
   } finally { rmSync(ws, { recursive: true, force: true }); }
 });
