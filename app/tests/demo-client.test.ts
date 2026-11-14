@@ -1,7 +1,7 @@
 import "./helpers/isolated-env"
 import { afterEach, expect, test } from "bun:test"
 import { startRun, stopRun } from "../src/lib/api"
-import { DEMO_ADMIN_MESSAGE, DEMO_BUSY_MESSAGE } from "../src/lib/demo"
+import { DEMO_ADMIN_MESSAGE } from "../src/lib/demo"
 
 const globals = globalThis as { fetch: unknown; document?: unknown }
 const original = { fetch: globals.fetch, document: globals.document }
@@ -54,10 +54,21 @@ test("missing or foreign demo scopes never send a start request", async () => {
   await expect(startRun("alias", "scope-owner")).rejects.toThrow("Select a prepared demo scope")
 })
 
-test("busy and provider failures give visitor actions, not owner setup instructions", async () => {
+test("provider failures give visitor actions, not owner setup instructions", async () => {
   enableDemo()
-  for (const [status, message] of [[429, DEMO_BUSY_MESSAGE], [400, DEMO_ADMIN_MESSAGE], [403, DEMO_ADMIN_MESSAGE], [503, DEMO_ADMIN_MESSAGE]] as const) {
+  for (const status of [400, 403, 503]) {
     globals.fetch = async () => Response.json({ error: "Add a provider key in Settings" }, { status })
+    await expect(startRun("alias", "vault-reentrancy")).rejects.toThrow(DEMO_ADMIN_MESSAGE)
+  }
+})
+
+test("only demo_busy identifies a running demo; other 429 responses describe a limit", async () => {
+  enableDemo()
+  for (const code of ["demo_busy", "demo_session_limit", "demo_ip_limit", "unknown", undefined, null, 429]) {
+    globals.fetch = async () => Response.json({ code, error: "Internal quota details" }, { status: 429 })
+    const message = code === "demo_busy"
+      ? "Another demo is running. Try again when it finishes. Runs are not queued."
+      : "Demo limit reached. Please try again later."
     await expect(startRun("alias", "vault-reentrancy")).rejects.toThrow(message)
   }
 })

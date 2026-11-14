@@ -4,6 +4,7 @@ const DEFAULT_DEMO: DemoConfig = { budgetUsd: 1, maxMinutes: 10 }
 export const DEMO_SOURCE = "https://github.com/hemaaanth/touchstone"
 export const DEMO_ADMIN_MESSAGE = "The sponsored demo is unavailable right now. The owner needs to check its setup. No API key is needed from you."
 export const DEMO_BUSY_MESSAGE = "Another demo is running. Try again when it finishes. Runs are not queued."
+export const DEMO_LIMIT_MESSAGE = "Demo limit reached. Please try again later."
 export const DEMO_TARGETS = ["vault-reentrancy", "vault-accounting"] as const
 
 // Read the static HTML before rendering. A malformed opt-in must not expose owner controls.

@@ -645,7 +645,7 @@ export function RunChat({
           {narrow ? panelLayer : null}
           <div inert={drawerOpen} className="shrink-0">
             {demo ? <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2 text-xs text-muted-foreground">
-              <span>Inference sponsored by NEAR AI · ${demo.budgetUsd} budget · {demo.maxMinutes}-minute work limit</span>
+              <span>Sponsored inference via NEAR AI · ${demo.budgetUsd} budget · {demo.maxMinutes}-minute work limit</span>
               <a className="focus-ring rounded-sm underline underline-offset-4 hover:text-foreground" href={DEMO_SOURCE} target="_blank" rel="noopener noreferrer">Build your own with Touchstone</a>
               {sendError ? <p role="alert" className="w-full">{sendError}</p> : null}
             </div> : <PendingAskLinks onOpen={openPeek} />}

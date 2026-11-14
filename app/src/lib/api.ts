@@ -22,7 +22,7 @@ import type {
   SessionManifest,
 } from "./types"
 import { reportStalePage, setConsoleToken, tokenHeaders } from "./console-token"
-import { DEMO_ADMIN_MESSAGE, DEMO_BUSY_MESSAGE, demoStartBody, isDemoMode, type DemoConfig } from "./demo"
+import { DEMO_ADMIN_MESSAGE, DEMO_BUSY_MESSAGE, DEMO_LIMIT_MESSAGE, demoStartBody, isDemoMode, type DemoConfig } from "./demo"
 
 export class HttpError extends Error {
   status: number
@@ -61,7 +61,9 @@ async function writeResult<T>(url: string, res: Response): Promise<T> {
   })
   if (!res.ok) {
     const serverError = json && typeof json === "object" && "error" in json && typeof json.error === "string" ? json.error : `${url} -> ${res.status}`
-    const error = isDemoMode() ? res.status === 429 ? DEMO_BUSY_MESSAGE : DEMO_ADMIN_MESSAGE : serverError
+    const code = json && typeof json === "object" && "code" in json ? json.code : undefined
+    const demoError = res.status === 429 ? code === "demo_busy" ? DEMO_BUSY_MESSAGE : DEMO_LIMIT_MESSAGE : DEMO_ADMIN_MESSAGE
+    const error = isDemoMode() ? demoError : serverError
     if (res.status === 403 && !isDemoMode()) {
       reportStalePage(error)
       throw new StalePageError(error)

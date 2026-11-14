@@ -270,7 +270,7 @@ export function App() {
                   <p className="text-sm leading-relaxed text-muted-foreground">Select a prepared demo, watch the agents work, then inspect their evidence, files and replay results.</p>
                 </div>
                 <div className="space-y-1 text-sm text-muted-foreground">
-                  <p>Inference sponsored by NEAR AI · DeepSeek</p>
+                  <p>Sponsored inference via NEAR AI · DeepSeek</p>
                   <p>${demo.budgetUsd} budget · {demo.maxMinutes}-minute work limit · No API key needed</p>
                 </div>
                 <Button onClick={() => { refreshModels(); setStartError(null); setDialogOpen(true) }}>Select a demo</Button>
