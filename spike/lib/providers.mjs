@@ -87,7 +87,7 @@ export const PROVIDERS = {
   },
 };
 
-const FALLBACK_ID = "boundless";
+const FALLBACK_ID = "near";
 // TOUCHSTONE_PROVIDERS_FILE exists only so tests use a throwaway config. Read on
 // each call, so a test can set it after import.
 export const providersFile = () => process.env.TOUCHSTONE_PROVIDERS_FILE || fileURLToPath(new URL("../data/providers.json", import.meta.url));
@@ -173,6 +173,15 @@ export function defaultAlias(p, cfg = readConfig()) {
   const want = cfg.default?.provider === p.id ? cfg.default?.model : null;
   if (want && p.models?.[want]) return want;
   return Object.keys(p.models ?? {})[0] ?? null;
+}
+
+// Check locally before a run creates workspaces or starts scanners. No provider call.
+export function providerSetupError(p, alias) {
+  if (!p) return "Choose an inference provider in Settings before starting a run.";
+  if (!p.models?.[alias]?.id) return `Choose a model for ${p.label} in Settings before starting a run.`;
+  const key = providerKey(p);
+  if (typeof key !== "string" || !key.trim()) return `Add an API key for ${p.label} in Settings before starting a run.`;
+  return null;
 }
 
 export function runBudgetUsd(cfg = readConfig()) {

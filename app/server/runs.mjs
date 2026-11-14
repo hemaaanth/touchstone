@@ -25,7 +25,7 @@ import { fileURLToPath } from "node:url"
 import { createHash, randomUUID } from "node:crypto"
 import { cleanupWorkspace, readTouchstone } from "../../spike/lib/sandbox.mjs"
 import { closeRun } from "../../spike/lib/daytona.mjs"
-import { activeProvider, allProviders, defaultAlias, readConfig } from "../../spike/lib/providers.mjs"
+import { activeProvider, allProviders, defaultAlias, providerSetupError, readConfig } from "../../spike/lib/providers.mjs"
 import { appRunBudgetUsd, appSpendCapUsd, spendCapRefusal, totalSpendState } from "./settings.mjs"
 import { validateRunBudget } from "../../spike/lib/run-budget.mjs"
 import { briefChange, briefOf, dropOldBriefFile, eligiblePacks, getTarget, listTargets, pickTarget, prepareMultiWorkspace, prepareRunWorkspace, scopeEnv, targetSummary, withPack } from "../../spike/lib/targets.mjs"
@@ -90,6 +90,7 @@ export function availableModels() {
   const cfg = readConfig()
   const p = activeProvider(cfg)
   const first = defaultAlias(p, cfg)
+  if (providerSetupError(p, first)) return []
   return Object.entries(p.models)
     .map(([alias, m]) => ({ alias, id: m.id, abliterated: /-abl$|abliterat|uncensor/i.test(`${alias} ${m.id}`) }))
     .sort((a, b) => (b.alias === first) - (a.alias === first))
@@ -101,8 +102,9 @@ export function spendState() {
 
 // The active inference provider, so the UI can show which gateway a run drives.
 export function providerInfo() {
-  const p = activeProvider()
-  return { id: p.id, label: p.label }
+  const cfg = readConfig()
+  const p = activeProvider(cfg)
+  return { id: p.id, label: p.label, setupError: providerSetupError(p, defaultAlias(p, cfg)) }
 }
 
 // The provider a run used. Runs from before Settings did not record one; they
@@ -516,7 +518,10 @@ export async function createRun({ alias, targetId, modules, budgetUsd, pack, pac
   if (capRefusal) throw new Error(capRefusal)
   const provider = activeProvider(cfg)
   alias ??= defaultAlias(provider, cfg)
+  if (alias == null) throw new Error(providerSetupError(provider, alias))
   if (!provider.models[alias]) throw new Error(`unknown model alias for ${provider.label}: ${alias}`)
+  const setupError = providerSetupError(provider, alias)
+  if (setupError) throw new Error(setupError)
   // The modules the run covers. `packs` is the operator's ticked list from the
   // New run dialog; two or more distinct ids make ONE run over all of them. A
   // list that dedupes to one, or no list, is today's one-module run: `pack`.
@@ -956,6 +961,14 @@ export function failureInfo(run) {
   }
 
   if (reason === "model_error") {
+    if (/Provider is not configured|No API key for provider|Unknown (?:provider|model)|model .*(?:not found|does not exist)/i.test(detail)) {
+      return {
+        kind: "account", retryable: false, reason, spentUsd, detail,
+        title: "Provider setup is incomplete",
+        hint: "Open Settings, add the provider's API key, and choose a model. Fix the configuration before starting another run.",
+        message: `provider setup is incomplete — ${spentNote}`,
+      }
+    }
     if (ACCOUNT_ERR.test(detail)) {
       return {
         kind: "account", retryable: false, reason, spentUsd, detail,

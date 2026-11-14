@@ -133,6 +133,9 @@ const RESULTS = path.join(dir, "results");
 process.env.TOUCHSTONE_RESULTS_DIR = RESULTS;
 process.env.TOUCHSTONE_SCOPES_FILE = path.join(dir, "scopes.json");
 process.env.TOUCHSTONE_GRANTS_FILE = path.join(dir, "grants.json");
+process.env.SPEND_LEDGER = path.join(dir, "spend.json");
+process.env.PROVIDER = "near";
+process.env.NEARAI_API_KEY = "synthetic-key-for-mocked-engine";
 const made = []; // workspaces a test deleted from the record's view; removed at the end
 after(() => {
   for (const f of existsSync(RESULTS) ? readdirSync(RESULTS) : []) {

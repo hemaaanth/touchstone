@@ -14,6 +14,7 @@ import {
   runBudgetUsd,
   defaultAlias,
   providerKey,
+  providerSetupError,
   envKeyHome,
   readConfig,
   writeConfig,
@@ -222,6 +223,7 @@ export function getSettings() {
     default: { provider: active, model: ap ? defaultAlias(ap, cfg) : null },
     // PROVIDER in the server's env overrides the saved default. Say so.
     envOverride: process.env.PROVIDER || null,
+    setupError: providerSetupError(ap, ap ? defaultAlias(ap, cfg) : null),
     spend: { ...totalSpendState(cfg), budgetUsd: appRunBudgetUsd(cfg) },
     fallbackPrice: FALLBACK_PRICE,
     execution: executionState(cfg),
@@ -386,6 +388,12 @@ export function saveProvider(body = {}) {
   }
   if (!entry.models && !preset) throw new Error("add at least one model")
   cfg.providers[id] = entry
+  // The first configured provider becomes the default; later saves preserve the choice.
+  if (!cfg.default && !process.env.PROVIDER) {
+    const p = allProviders(cfg)[id]
+    const model = defaultAlias(p, cfg)
+    if (!providerSetupError(p, model)) cfg.default = { provider: id, model }
+  }
   writeConfig(cfg)
   return getSettings()
 }

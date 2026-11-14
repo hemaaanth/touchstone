@@ -31,6 +31,31 @@ If you are developing a production application, we recommend enabling type-aware
 
 See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
 
+## First-run setup
+
+Open Settings before starting a run. Add an inference provider key and keep at least
+one model selected. NEAR AI Cloud is the recommended preset and the default on a
+fresh installation. The first configured provider becomes the saved default;
+existing selections and a server `PROVIDER` override are preserved.
+
+The console shows a setup action and disables Start until the selected provider
+has a key and model. The server checks again before creating a run, workspace,
+or scanners. This is a local configuration check, not a claim that the key is
+valid or the provider has credit. Use Fetch models to check the provider's catalog.
+
+NEAR AI Cloud has its own Private inference section. Its Private TEE service is
+a provider feature; Touchstone does not verify attestation. The label does not
+cover scanner traffic, other providers, or remote sandboxes.
+
+Website scans and local EVM labs do not require a production RPC key. Configurable
+live-network RPC endpoints are not supported by the current chain modules.
+Do not collect an unused RPC key during onboarding. A live-chain design must bind
+each endpoint to a network, scope, read/fork policy, and credential boundary first.
+
+If the connection drops during Start, acceptance is unknown: the run may already
+exist. Reload the run list before starting another run. A transport failure is not
+evidence that the inference key is missing.
+
 ## Free-roam operator controls
 
 Fleet starts default to `freeRoam: true`. Solo starts opt out. The start body

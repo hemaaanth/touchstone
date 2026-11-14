@@ -388,6 +388,7 @@ export interface TargetChoice extends TargetScope {
 export interface ProviderInfo {
   id: string
   label: string
+  setupError?: string | null
 }
 
 // One raw event as the engine prints it. `ev` names the step; the rest varies.
@@ -772,6 +773,7 @@ export interface SettingsState {
   envOverride: string | null
   spend: SpendState
   fallbackPrice: { input: number; output: number }
+  setupError?: string | null
 }
 
 export interface DiscoveredModel {

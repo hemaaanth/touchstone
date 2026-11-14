@@ -65,3 +65,23 @@ test("a read of the client sends no token", async () => {
   expect(sent[0].method).toBe("GET")
   expect(sent[0].headers["x-touchstone-grant-token"]).toBe(undefined)
 })
+
+test("a lost start response warns about an existing run instead of telling the operator to retry", async () => {
+  const savedFetch = g.fetch
+  g.fetch = async () => { throw new TypeError("Failed to fetch") }
+  try {
+    await expect(api.startRun("alias", "scope")).rejects.toThrow("The run may already exist")
+  } finally {
+    g.fetch = savedFetch
+  }
+})
+
+test("a refused start preserves the server's actionable setup error", async () => {
+  const savedFetch = g.fetch
+  g.fetch = async () => new Response(JSON.stringify({ error: "Add an API key for NEAR AI Cloud in Settings before starting a run." }), { status: 400 })
+  try {
+    await expect(api.startRun("alias", "scope")).rejects.toThrow("Add an API key for NEAR AI Cloud in Settings")
+  } finally {
+    g.fetch = savedFetch
+  }
+})
