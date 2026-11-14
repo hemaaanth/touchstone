@@ -141,6 +141,8 @@ I1 to I6 in the order of the plan page. I6 needs G5. I7 needs the protected file
 
 Started 2026-11-13: a planner (`thr_j9x637fuk6`, read-only worktree `redteam-w4-plan`) writes the build plan for I1 to I7: contracts, file owners, parallel lanes, the first vertical slice, and the needs from the owner (Playwright is a new dependency). No build thread starts before the plan is reviewed.
 
+**Owner input, 2026-11-13 (sent to the planner):** deadline Saturday 2026-11-14 23:59 UTC. Scope Wave 4 lean and reuse existing work. Browser control: read the owner's bb browser plugin (bb-plugins project) before any new design; a cloud browser such as kernel.sh is allowed. Live preview: reuse the Voxl approach of the bb sandbox and browser plugins; build no new one. Ask-the-human: use an existing pattern; one idea (not decided) is an ask-human tool on the main agent, with child agents forwarding their question to the parent.
+
 **Wave 5. Live proof. Needs a paid-run budget.**
 
 One multi-module run (D3). One follow-up on a finished run (A2, A3). Live batch 2. The best ENS leads offline. Then a full pass through the app by hand with `bb-browser`, and the final progress page.
