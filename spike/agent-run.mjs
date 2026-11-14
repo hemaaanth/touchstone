@@ -36,7 +36,9 @@ import { sourceNavTools, NAV_SYSTEM } from "./packs/source-nav/pack.mjs";
 import { DIAGRAM_RULE } from "./lib/diagram-rule.mjs";
 import { resolveCbmBinary } from "./lib/cbm.mjs";
 import { withProven } from "./lib/proof-view.mjs";
-import { splitMeasured, supersededBy } from "./lib/candidate.mjs";
+import { candidateTool, recordSession, sessionLookup, SESSION_DESCRIPTION, SESSION_POC, splitMeasured, supersededBy } from "./lib/candidate.mjs";
+import { roamTools } from "./lib/roam.mjs";
+import { EGRESS_ENV, startEgressLog, pullEgressLog } from "./lib/roam-egress.mjs";
 import { sourceCoverage, coverageFailure } from "./lib/source-coverage.mjs";
 import { leadsFrom } from "./lib/leads.mjs";
 import { afterNudge } from "./lib/nudge.mjs";
@@ -85,9 +87,13 @@ async function openHarness(db, ws, state) {
   // The diagram rule (lib/diagram-rule.mjs) comes just before them.
   const system = pack.system(ws) + navText + DIAGRAM_RULE + scopeInstructions(process.env);
   const registry = createRegistry();
+  // Always offer the tools, even with FREE_ROAM off, so confined children keep
+  // their remove list across workers. Construction opens no machine.
+  const sessionTool = candidateTool({ name: "submit_session_candidate", description: SESSION_DESCRIPTION, pack: pack.id, state, lookup: sessionLookup(state), poc: SESSION_POC });
+  const offered = [...roamTools(ws, { record: (e) => recordSession(state, e), egress: { env: EGRESS_ENV, start: startEgressLog, pull: pullEgressLog } }), sessionTool];
   // A child that a follow-up reopens holds the brief of its spawn. The fleet
   // gives it the current one with its next message (fleet.mjs createFleet).
-  const fleet = createFleet({ system, costOf, brief: process.env.SCOPE_BRIEF ?? "", briefChange, changed: process.env.BRIEF_CHANGE ?? "" });
+  const fleet = createFleet({ system, costOf, brief: process.env.SCOPE_BRIEF ?? "", briefChange, changed: process.env.BRIEF_CHANGE ?? "", roamTools: offered });
   const tools = [...pack.tools(ws, state), ...(navy ? sourceNavTools(ws) : [])];
   registry.install(defineExtension({ name: pack.id, tools: fleet ? fleet.wrapTools(tools) : tools }));
   if (fleet) registry.install(fleet.extension);

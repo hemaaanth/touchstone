@@ -12,9 +12,12 @@ import { createRegistry, defineDoc, defineExtension, defineTool, Harness, Memory
 import { obj } from "@earendil-works/pi-schema";
 import { createFleet, FREE_ROAM_INSTRUCTIONS } from "../lib/fleet.mjs";
 import { currentAgent } from "../lib/event.mjs";
+import { roamTools } from "../lib/roam.mjs";
+import { EGRESS_ENV, startEgressLog, pullEgressLog } from "../lib/roam-egress.mjs";
+import { candidateTool, recordSession, sessionLookup, SESSION_DESCRIPTION, SESSION_POC } from "../lib/candidate.mjs";
 
-// Per-agent loadouts (I7a). Every tool here is a fake: no Daytona call, no
-// network, no key. "Daytona on" is two env values with a made-up key.
+// Per-agent loadouts (I7a). Fake tools or a fake machine: no Daytona call, no
+// network, no real key. "Daytona on" is two env values with a made-up key.
 const ON = { FLEET: undefined, FREE_ROAM: "1", TOUCHSTONE_EXEC: "daytona", DAYTONA_API_KEY: "made-up-test-key", DAYTONA_API_URL: undefined };
 const PACK = ["read_source", "submit_finding_web", "submit_finding_contracts"]; // a joined run of two modules
 const ROAM = ["shell", "submit_session_candidate"];
@@ -41,7 +44,7 @@ function seen(request) {
 
 // One worker of a run. `storage` and `pack` let a case open a second worker on
 // the same run, with another environment or another pack tool list.
-async function runtime(t, route, { env = ON, required = false, survey, hooks = {}, storage = new MemoryStorage(), pack = PACK } = {}) {
+async function runtime(t, route, { env = ON, required = false, survey, hooks = {}, storage = new MemoryStorage(), pack = PACK, offered } = {}) {
   const set = (values) => { for (const [k, v] of Object.entries(values)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; } };
   set(env);
   t.after(() => set(ORIGINAL));
@@ -52,7 +55,7 @@ async function runtime(t, route, { env = ON, required = false, survey, hooks = {
     name, description: `Fake ${name}.`, parameters: obj({}), replay: "safe",
     execute: async () => { ran.push(`${currentAgent() ?? "coordinator"}:${name}`); await hooks[name]?.(); return { output: [{ type: "text", text: `${name} ran.` }] }; },
   });
-  const packTools = pack.map(fake), roamTools = ROAM.map(fake);
+  const packTools = pack.map(fake), roamTools = offered ?? ROAM.map(fake);
   const faux = fauxProvider({ tokensPerSecond: 100000 });
   faux.setResponses(Array.from({ length: 150 }, () => (request) => { const s = seen(request); lists[s.who] = s.tools; return route(s); }));
   const models = createModels();
@@ -288,4 +291,86 @@ test("the spawn event carries the loadout and tier T2, and a free-roam post is e
   assert.match(told.Beta, /You are free-roam child Beta/);
   assert.ok(!/trusted/i.test(told.Beta));
   assert.match(told.Beta, /Your only tools are: shell, submit_session_candidate, message_agent, bulletin_post, bulletin_read\./);
+});
+
+// agent-run executes on import. Pin its composition, then exercise those same
+// exports below with only the machine replaced. No extra production export.
+test("agent-run always offers the slice tools and uses the session contracts", () => {
+  const src = readFileSync(new URL("../agent-run.mjs", import.meta.url), "utf8");
+  assert.match(src, /import \{ roamTools \} from "\.\/lib\/roam\.mjs"/);
+  assert.match(src, /import \{ EGRESS_ENV, startEgressLog, pullEgressLog \} from "\.\/lib\/roam-egress\.mjs"/);
+  assert.match(src, /import \{ candidateTool, recordSession, sessionLookup, SESSION_DESCRIPTION, SESSION_POC, [^}]+\} from "\.\/lib\/candidate\.mjs"/);
+  assert.ok(src.includes('const sessionTool = candidateTool({ name: "submit_session_candidate", description: SESSION_DESCRIPTION, pack: pack.id, state, lookup: sessionLookup(state), poc: SESSION_POC });'));
+  assert.ok(src.includes('const offered = [...roamTools(ws, { record: (e) => recordSession(state, e), egress: { env: EGRESS_ENV, start: startEgressLog, pull: pullEgressLog } }), sessionTool];'));
+  assert.match(src, /const fleet = createFleet\(\{ system, [^\n]+roamTools: offered \}\);/);
+  assert.ok(!src.includes("process.env.FREE_ROAM"), "only createFleet gates the tools, never their construction");
+});
+
+function sliceTools(state, machine) {
+  const sessionTool = candidateTool({ name: "submit_session_candidate", description: SESSION_DESCRIPTION, pack: "multi", state, lookup: sessionLookup(state), poc: SESSION_POC });
+  return [...roamTools({}, { record: (e) => recordSession(state, e), egress: { env: EGRESS_ENV, start: startEgressLog, pull: pullEgressLog }, machine }), sessionTool];
+}
+
+test("real slice tools construct without a key and stay uninstalled with free-roam off", async (t) => {
+  const old = process.env.DAYTONA_API_KEY;
+  delete process.env.DAYTONA_API_KEY;
+  t.after(() => { if (old === undefined) delete process.env.DAYTONA_API_KEY; else process.env.DAYTONA_API_KEY = old; });
+  const state = { passed: new Map(), found: [] };
+  const offered = sliceTools(state, () => assert.fail("construction or a confined call must not open a machine"));
+  assert.deepEqual(offered.map((tool) => tool.name), ROAM);
+  assert.equal(state.session, undefined);
+  const r = await runtime(t, (s) => s.who === "coordinator" ? coordinator(s, [spawnCall("Alpha")]) : answer("Done."), {
+    env: { ...ON, FREE_ROAM: undefined, DAYTONA_API_KEY: undefined }, offered,
+  });
+  await r.run("start");
+  assert.deepEqual(r.lists.Alpha.filter((name) => ROAM.includes(name)), []);
+  assert.deepEqual(r.lists.coordinator.filter((name) => ROAM.includes(name)), []);
+  assert.equal(state.session, undefined);
+});
+
+test("slice shell, egress and session candidate work together through the fleet", { timeout: 15000 }, async (t) => {
+  const state = { passed: new Map(), found: [] }, calls = [];
+  const machine = {
+    id: "fleet-loadout-slice", fresh: false, replaced: true,
+    upload: async (path, bytes) => { calls.push("upload"); assert.ok(bytes.length > 0); },
+    exec: async (command) => {
+      if (command.includes("nohup")) { calls.push("start"); return { exitCode: 0, result: "" }; }
+      if (command.includes("tail -c")) {
+        calls.push("pull");
+        const line = { t: 1, host: "example.test", method: "GET", url: "http://example.test/export", status: 200 };
+        return { exitCode: 0, result: Buffer.from(JSON.stringify(line) + "\n").toString("base64") };
+      }
+      calls.push("shell");
+      assert.ok(command.includes(EGRESS_ENV));
+      return { exitCode: 0, result: "Private export is readable\nAuthorization: Bearer made-up-token-123456789\n" };
+    },
+  };
+  const offered = sliceTools(state, async () => { calls.push(`machine:${currentAgent()}`); return machine; });
+  const r = await runtime(t, (s) => {
+    if (s.who === "coordinator") return coordinator(s, [spawnCall("Beta", "free-roam")]);
+    if (s.last.role === "user") return result([call("shell", { command: "probe export" })]);
+    if (s.last.toolName === "shell") {
+      const output = text(s.last);
+      assert.match(output, /^The machine was replaced\.[^]*\nsession session:a-\d+:1\nexit 0/);
+      assert.ok(!output.includes("made-up-token-123456789"));
+      const poc = /^session (.+)$/m.exec(output)[1];
+      return result([call("submit_session_candidate", { title: "Export is open", severity: "high", poc, evidence_lines: ["Private export is readable"], explanation: "Anyone can read the export.\nFix: require a login." })]);
+    }
+    return answer("Done.");
+  }, { offered });
+  await r.run("start");
+  const beta = r.spawned("Beta");
+  assert.deepEqual(calls, [`machine:${beta.id}`, "upload", "start", "shell", "pull"]);
+  assert.deepEqual((await r.results(beta.conv, "submit_session_candidate")).map((m) => !!m.isError), [false]);
+  assert.equal(state.candidates.length, 1);
+  const c = state.candidates[0];
+  assert.equal(c.pack, "multi");
+  assert.equal(c.proven, false);
+  assert.equal(c.evidence.agent, beta.id);
+  assert.equal(c.evidence.sandbox, machine.id);
+  assert.deepEqual(c.evidence.egress.hosts, ["example.test"]);
+  assert.equal(c.evidence.egress.requests, 1);
+  assert.deepEqual(state.found, []);
+  assert.ok(!JSON.stringify(c).includes("made-up-token-123456789"));
+  assert.ok(r.events.some((e) => e.ev === "egress-log" && e.requests === 1));
 });
