@@ -15,8 +15,65 @@
 // a live run and a CLI run drive the identical pipeline and emit the identical
 // scan events. Showing a module as "on" in the UI is honest only because it
 // actually ran here.
-import { staticScan, staticBrief } from "./static.mjs";
-import { fuzzScan, fuzzBrief } from "./fuzz.mjs";
+import { staticScan, staticBrief, staticGap } from "./static.mjs";
+import { fuzzScan, fuzzBrief, fuzzGap } from "./fuzz.mjs";
+import { scanSources } from "../packs/keys/source-checks.mjs";
+import { mergeStatic } from "./ensemble.mjs";
+import { readdirSync, readFileSync } from "node:fs";
+import { join, sep } from "node:path";
+
+// The Solidity our rules read: src/ and vendor/, the same two roots the agent may
+// read. For Contracts, vendor/ is NOT a dependency folder — it is where a brief's
+// fetched scope lands, so it is the target. The real dependency folder is the
+// repo-root lib/ (Foundry's), and a repo-root lib/ is never walked. Build output
+// and installed packages are skipped. Capped, so a very large repo stays cheap.
+const OUR_SOURCE_CAP = 400;
+const OUR_SKIP = new Set(["node_modules", "out", "cache", ".git", "broadcast", "artifacts"]);
+function oursSourceFiles(ws) {
+  const out = [];
+  const walk = (rel) => {
+    let entries = [];
+    try { entries = readdirSync(join(ws, rel), { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      if (out.length >= OUR_SOURCE_CAP) return;
+      if (OUR_SKIP.has(e.name)) continue;
+      const child = rel ? join(rel, e.name) : e.name;
+      if (e.isDirectory()) { walk(child); continue; }
+      if (!e.name.endsWith(".sol")) continue;
+      try { out.push({ path: child.split(sep).join("/"), content: readFileSync(join(ws, child), "utf8") }); } catch { /* unreadable: skipped, never silently "clean" */ }
+    }
+  };
+  for (const root of ["src", "vendor"]) walk(root);
+  return out;
+}
+
+// Our own crypto source checks over this workspace's Solidity, as lead-shaped
+// rows. They come from packs/keys/source-checks.mjs — one implementation used by
+// three packs, so a rule fixed there is fixed everywhere.
+function sourceCheckLeads(ws) {
+  try {
+    return scanSources(oursSourceFiles(ws)).map((l) => ({
+      engine: "Touchstone",
+      check: l.check,
+      impact: l.impact,
+      file: l.file,
+      where: l.where,
+      lines: l.lines,
+      description: l.description,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+// Fold our leads into the merged board. Our rows are candidates, never
+// corroborators: a rule of ours is a guess about the code, so it must be able to
+// stand alone (Slither and Aderyn do not have these checks at all). An existing
+// suspect at the same line gains our engine name, which raises its rank exactly
+// as a second analyzer would.
+function mergeOurs(findings, ours) {
+  return mergeStatic([...findings, ...ours]);
+}
 
 // The `static-scan` event shape, built once so the CLI and the app agree to the
 // byte. `scan` is the staticScan result.
@@ -29,6 +86,9 @@ export function staticScanEvent(scan) {
       check: d.check, impact: d.impact, where: d.where, line: d.lines[0] ?? null,
       engines: d.engines, corroborated: d.corroborated,
     })),
+    // Why this scan's row is not evidence: it read no file, or it read some and
+    // failed the rest. Absent when the scan really read what it was given.
+    ...(staticGap(scan) ? { gap: staticGap(scan) } : {}),
   };
 }
 
@@ -42,6 +102,8 @@ export function fuzzScanEvent(fuzz) {
       check: d.check, impact: d.impact, where: d.where, property: d.property,
       sequence: d.sequence, engines: d.engines || [], corroborated: Boolean(d.corroborated),
     })),
+    // Set when no invariant template fit this target, so "0 suspects" is a gap.
+    ...(fuzzGap(fuzz) ? { gap: fuzzGap(fuzz) } : {}),
   };
 }
 
@@ -56,13 +118,22 @@ export function fuzzScanEvent(fuzz) {
 // When a half is off it is skipped entirely — no docker, no callback, no env —
 // and the agent simply starts without that half's leads.
 export async function runPrepass(ws, { onStaticStart, onStatic, onFuzzStart, onFuzz, runStatic = true, runFuzz = true } = {}) {
-  // Static pre-pass: Slither + Aderyn as one compilation unit, merged into a
-  // ranked suspect list. A static alert is only a lead.
-  let scan = null, brief = "", scanEvent = null;
+  // Static pre-pass: Slither + Aderyn as one compilation unit, plus our own crypto
+  // source checks, merged into one ranked suspect list. A static alert is only a
+  // lead. The source checks exist because Slither and Aderyn do not model crypto
+  // rules at all: an ungated `transferOwnership`, an unprotected initializer, a
+  // signature with no nonce. Every other pack that reads source already runs
+  // them; before this, Contracts — the pack that reads the most Solidity — did not.
+  let scan = null, brief = "", staticGapText = "", scanEvent = null;
   if (runStatic) {
     onStaticStart?.();
     scan = await staticScan(ws);
+    // Our own crypto rules are candidates on the same board, so a rule that only
+    // we know about can outrank a generic analyzer's guess.
+    const ours = sourceCheckLeads(ws);
+    if (ours.length) scan = { ...scan, findings: mergeOurs(scan.findings, ours) };
     brief = staticBrief(scan);
+    staticGapText = staticGap(scan);
     scanEvent = staticScanEvent(scan);
     onStatic?.(scanEvent, scan, brief);
   }
@@ -72,11 +143,11 @@ export async function runPrepass(ws, { onStaticStart, onStatic, onFuzzStart, onF
   // engines cannot — but only where a fuzz template fits; otherwise they honestly
   // find nothing. A broken invariant is a strong lead (it comes with the breaking
   // call sequence) but never a finding on its own.
-  let fuzz = null, fuzzBriefText = "", fuzzEvent = null;
+  let fuzz = null, fuzzBriefText = "", fuzzGapText = "", fuzzEvent = null;
   if (runFuzz) {
     onFuzzStart?.();
     fuzz = await fuzzScan(ws);
-    fuzzBriefText = fuzzBrief(fuzz);
+    fuzzGapText = fuzzGap(fuzz);
     fuzzEvent = fuzzScanEvent(fuzz);
     onFuzz?.(fuzzEvent, fuzz, fuzzBriefText);
   }
@@ -88,12 +159,14 @@ export async function runPrepass(ws, { onStaticStart, onStatic, onFuzzStart, onF
   const runEnv = {};
   if (runStatic) {
     runEnv.STATIC_BRIEF = brief;
+    runEnv.STATIC_GAP = staticGapText;
     runEnv.STATIC_JSON = JSON.stringify(scan.findings);
   }
   if (runFuzz) {
     runEnv.FUZZ_BRIEF = fuzzBriefText;
+    runEnv.FUZZ_GAP = fuzzGapText;
     runEnv.FUZZ_JSON = JSON.stringify(fuzz.findings);
   }
 
-  return { scan, brief, scanEvent, fuzz, fuzzBriefText, fuzzEvent, runEnv };
+  return { scan, brief, staticGap: staticGapText, scanEvent, fuzz, fuzzBriefText, fuzzGap: fuzzGapText, fuzzEvent, runEnv };
 }

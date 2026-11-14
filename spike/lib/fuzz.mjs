@@ -136,7 +136,10 @@ export async function fuzzScan(ws, { timeoutMs = 240_000, testLimit = 50_000 } =
     return {
       tool: engines.length ? engines.join(" + ") : "Echidna + Medusa",
       engines,
-      template: "vault-solvency",
+      // The template that actually fit, reported so the run says which property was
+      // checked. Three shapes exist now (lib/harness.mjs); a target that matches none
+      // reports applicable:false rather than an empty pass.
+      template: target.template ?? "vault-solvency",
       applicable: true,
       broken: findings.length > 0,
       findings,
@@ -159,4 +162,14 @@ export function fuzzBrief(scan) {
   });
   const who = scan.engines.length ? scan.engines.join(" + ") : "Echidna + Medusa";
   return `Property fuzzing (${who}) broke ${scan.findings.length} invariant(s):\n${lines.join("\n")}`;
+}
+
+// The honest caveat for a fuzz pass that could not run. `applicable:false` means
+// no invariant template fit the target's shape — the single vault-solvency
+// template is the only one that ships — so zero broken invariants is not evidence
+// of solvency. The agent must be told, because its own fuzz_findings tool would
+// otherwise read "no lead". Returns "" when the pass really did explore.
+export function fuzzGap(scan) {
+  if (!scan || scan.applicable !== false) return "";
+  return `Property fuzzing did not run on this target: the only invariant template we ship is a deposit/withdraw vault (a payable constructor plus a public total), and this code does not match it. Zero broken invariants here says nothing about this code. Do not read it as "solvent" or "safe". Reason about the accounting invariants yourself and prove any break with run_poc.`;
 }
