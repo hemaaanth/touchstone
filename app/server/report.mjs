@@ -126,6 +126,10 @@ export function buildReport(finding) {
     target: typeof finding.target === "string" ? finding.target : (finding.target?.title || null),
     // The scope the run used, when the run recorded one (newer runs).
     scope: finding.scope?.title || null,
+    // Whether the code under test has a deployment identity. A scope made from a
+    // repo alone is source only, and its report must not read as a live exposure:
+    // the DorkFi report did exactly that before a deployment was looked for.
+    provenance: finding.scope ? (finding.scope.contracts?.length ? "deployed" : "source only") : null,
     // When the run started: the first recorded engine event. Null when the run
     // kept no events, so the report says the date was not recorded.
     runAt: Number.isFinite(finding.events?.[0]?.t) ? finding.events[0].t : null,
@@ -347,6 +351,9 @@ export function renderReportHtml(report) {
   const ladder = `<ol class="ladder">${step("Hypothesis", stages.hypothesis)}${step("Reproduced", stages.reproduced)}${step("Proven", stages.proven, true)}</ol>`
   const scopeLine = [
     r.scope ? `<span><b>Scope</b> ${esc(r.scope)}</span>` : "",
+    // Only the weaker case is worth a line: "source only" means nothing here is
+    // shown to be live, and a reader must not price it as deployed.
+    r.provenance === "source only" ? `<span><b>Code status</b> source only — no deployment recorded for this scope</span>` : "",
     r.target ? `<span><b>Target</b> ${esc(r.target)}</span>` : "",
     `<span><b>Run date</b> ${r.runAt ? esc(when(r.runAt)) : "not recorded"}</span>`,
     r.module ? `<span><b>Module</b> ${esc(r.module)}</span>` : "",

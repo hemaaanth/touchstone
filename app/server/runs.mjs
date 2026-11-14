@@ -43,6 +43,7 @@ import { prepassFailed, prepassFromResult } from "../../spike/lib/prepass-view.m
 import { MULTI_DIR, prepassViewOf, shareFetched } from "../../spike/packs/multi.mjs"
 import { memberUrl, restoreSource } from "../../spike/lib/fetch.mjs"
 import { checkRecordedReplays, pruneReplayStore } from "../../spike/lib/replay-bundle.mjs"
+import { primeAttestation, runAttestation, cachedSummary, loadSummary, attestationSupported } from "../../spike/lib/attestation.mjs"
 import { readableTitle } from "../../spike/lib/check-titles.mjs"
 import { isMeasured } from "../../spike/lib/candidate.mjs"
 import { recordProven } from "./findings.mjs"
@@ -118,6 +119,45 @@ function runProvider(run) {
   const all = allProviders()
   if (all.boundless?.models?.[run.alias]) return "boundless"
   return Object.values(all).find((p) => p.models?.[run.alias])?.id ?? activeProvider().id
+}
+
+// The provider object (base URL and all) a run drove, so attestation capture can
+// tell whether its gateway can attest. Null when the id is no longer configured.
+function runProviderObj(run) {
+  return allProviders()[runProvider(run)] ?? null
+}
+
+// The raw model ids a run used — the key for a TEE attestation report. The usage
+// ledger keys models as `${provider}/${modelId}` (modelId may itself hold
+// slashes, e.g. Qwen/Qwen3.8-27B-abliterated), so strip only the first segment.
+// Falls back to the alias's model id when a run recorded no usage.
+function runModelIds(run, usageModels) {
+  const ids = Object.keys(usageModels ?? {}).map((k) => k.slice(k.indexOf("/") + 1)).filter(Boolean)
+  if (ids.length) return [...new Set(ids)]
+  const id = runProviderObj(run)?.models?.[run.alias]?.id
+  return id ? [id] : []
+}
+
+// Cold-start fill: a NEAR run can settle before its attestation report is cached
+// (the first run of a process). When persistRun wrote an "unavailable" receipt,
+// fetch the report in the background, then patch just result.attestation in place
+// — leaving the rest of the record, and its atomic tmp+rename, untouched.
+async function fillAttestation(run, provider, modelIds) {
+  const summaries = (await Promise.all(modelIds.map((id) => loadSummary(provider, id).catch(() => null)))).filter(Boolean)
+  if (!summaries.length) return
+  const file = path.join(RESULTS_DIR, `run-${run.id}.json`)
+  let doc
+  try {
+    doc = JSON.parse(readFileSync(file, "utf8"))
+  } catch {
+    return
+  }
+  if (!doc?.result || doc.result.attestation?.state === "verified") return
+  doc.result.attestation = { state: "verified", provider: provider.id, models: summaries, fetchedAt: Date.now() }
+  writeFileSync(`${file}.tmp`, JSON.stringify(doc, null, 2))
+  renameSync(`${file}.tmp`, file)
+  // Flip the badge for anyone still watching; a reload reads the patched record.
+  broadcast(run, { t: Date.now(), ev: "attestation", attestation: doc.result.attestation })
 }
 
 // The target library the UI picks a scope from. The only filesystem path in it
@@ -832,6 +872,9 @@ function endFoundNothing(run, s, { code = null, signal = null } = {}) {
 // Run the pack's pre-pass before starting the agent with its leads.
 async function startEngine(run) {
   if (run.ownerHash && demoFence(run)) { await endWorkspace(run); endStopped(run); return }
+  // Warm the TEE attestation cache in the background now, so the signed report is
+  // already captured by the time the run settles (persistRun reads it synchronously).
+  primeAttestation(runProviderObj(run), runModelIds(run))
   let leads = {}
   try {
     const money = budgetEnv(run)
@@ -2409,9 +2452,27 @@ function persistRun(run, findings) {
     usage: s.usage ?? null,
     reports: s.reports ?? [],
   }
+  // TEE provenance receipt: which models ran, and (only for a NEAR AI Cloud run)
+  // whether a signed Intel TDX + NVIDIA H100 attestation was captured for them.
+  // Read synchronously from the in-process cache so this terminal path never
+  // waits on the network; a cold first run is patched by fillAttestation below.
+  const provider = runProviderObj(run)
+  const modelIds = runModelIds(run, s.usage?.models)
+  result.attestation = runAttestation(provider, modelIds)
   const file = path.join(RESULTS_DIR, `run-${run.id}.json`)
   writeFileSync(`${file}.tmp`, JSON.stringify({ result, transcript: summary }, null, 2))
   renameSync(`${file}.tmp`, file)
+  // Surface the receipt as an event so a live viewer and a stream replay both
+  // show the badge. Once per run; the reducer takes the last one regardless.
+  if (!run.attestationEmitted) {
+    run.attestationEmitted = true
+    broadcast(run, { t: Date.now(), ev: "attestation", attestation: result.attestation })
+  }
+  // Cold first run on NEAR: the report was not cached in time. Fetch it in the
+  // background and patch the receipt to "verified" once it lands.
+  if (attestationSupported(provider) && result.attestation.state !== "verified") {
+    void fillAttestation(run, provider, modelIds).catch(() => {})
+  }
   // After the record is on disk: re-run each proven Foundry proof from its
   // bundle files, offline, in the background. It writes side files only
   // (replay/rerun/<hash>.json); it never rewrites this record.
@@ -2538,6 +2599,9 @@ function rebuildEvents(id, record, engineEvents) {
   } else {
     evs.push({ t: tN, ev: "status", status: "error", error: "the run did not complete" })
   }
+  // The TEE provenance receipt the record carried (if any), so a run rebuilt
+  // from its record — not its stream — still shows the attestation badge.
+  if (r.attestation) evs.push({ t: tN, ev: "attestation", attestation: r.attestation })
   evs.push({ t: tN, ev: "closed" })
   return evs
 }
