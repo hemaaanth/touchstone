@@ -1,0 +1,173 @@
+# Touchstone
+
+**An agent security harness, built on NEAR AI.** Give it a scope and a budget.
+Watch an agent team investigate, inspect its evidence, and replay the findings
+that pass a module's proof gate.
+
+[Try a sponsored demo](https://touchstone.hem.so) ·
+[Run locally](docs/getting-started.md) ·
+[For judges and AI evaluators](#for-judges-and-ai-evaluators)
+
+![Touchstone: scoped investigation, evidence, and a proof gate](docs/assets/readme-cover.svg)
+
+A scanner alert starts an investigation. Touchstone gives agents the source,
+specialist tools, and a shared budget to investigate it. The console keeps the
+work visible: agent conversations, tool results, files, evidence, and the final
+verification result.
+
+## Try it
+
+Open **[touchstone.hem.so](https://touchstone.hem.so)**. No API key is needed.
+Inference is sponsored by the creator and runs through NEAR AI Cloud.
+
+1. Select **Vault** or **YieldVault**, then **Start demo**.
+2. Open the agent panel to follow the coordinator and its children.
+3. Inspect their files and evidence. When a finding is proven, open its proof
+   and report to see what the verifier established.
+
+These are intentionally vulnerable Solidity labs. They demonstrate the
+investigation and verification pipeline; they are not claims of newly discovered
+production vulnerabilities. Each demo has a $1 inference budget, up to three
+confined children, and a ten-minute work limit. One assessment runs at a time.
+Existing verification and cleanup may finish after the work limit.
+
+The full operator app also supports custom scopes, other configured models and
+providers, and optional Daytona free-roam execution. The public demo uses the
+smaller, fixed configuration. [Demo deployment and limits →](docs/public-demo.md)
+
+## Why NEAR AI
+
+Security investigations carry sensitive material: source code, exploit attempts,
+and a map of a system's weak points. Model capability and inference privacy both
+matter for this workload.
+
+[NEAR AI's cybersecurity models](https://near.ai/cybersecurity#red) include
+DeepSeek and Qwen variants intended for security research. NEAR lists these
+models in its Private TEE tier. Touchstone makes NEAR AI Cloud the recommended
+default and connects those models to scoped tools, agent coordination, budgets,
+and verification.
+
+In the sponsored demo, the coordinator and its children use the same pinned
+NEAR AI DeepSeek model. Every model turn creates inference demand on NEAR AI.
+The shared budget keeps that workload bounded as the agent team grows.
+
+Touchstone currently uses NEAR AI's standard API. It does not independently
+verify enclave attestations. Provider privacy claims and Touchstone's own
+execution and proof checks are separate boundaries.
+
+[Provider integration](spike/lib/providers.mjs) ·
+[Streaming inference and accounting](spike/lib/provider.mjs) ·
+[Shared spend ledger](spike/lib/inference.mjs)
+
+## What the harness does
+
+**Coordinates a fleet.** One coordinator delegates work, follows the children,
+and shares a bulletin. Confined agents and free-roam agents have distinct tool
+profiles. The default lifetime cap is 50 child identities per run; their calls
+charge the same run budget. This is a configured capacity, not a claim of a
+50-machine live benchmark.
+
+**Keeps evidence attached to the work.** Open a child's conversation, inspect a
+generated file, follow a candidate into verification, or export a finding's
+report. Human questions in operator runs appear inside the originating agent's
+conversation, with an acknowledged answer retained in history.
+
+**Checks findings through module-specific gates.** Solidity PoCs run in Foundry.
+HTTP findings use request replay. Evidence modules recheck the cited pinned
+snapshot. Modules without a proof oracle report leads. A model's assertion, a
+scanner lead, and a proven finding remain distinct states.
+
+**Records gaps.** Missing scanners, incomplete source coverage, and timeouts
+remain visible. A tool that did not finish does not count as a clean scan.
+
+<details>
+<summary><strong>Explore the 11 modules</strong></summary>
+
+The [pack registry](spike/packs/index.mjs) is the authoritative catalog. Each
+module declares its tools, supported scope, and proof kind.
+
+| Module | Work | Verification |
+| --- | --- | --- |
+| [Contracts](spike/packs/contracts) | Solidity analysis, property testing, agent-written PoCs | Foundry replay and supported harm checks |
+| [Web and sign-in](spike/packs/web) | Scoped application testing and scanner leads | HTTP replay |
+| [AI and MCP](spike/packs/ai-mcp) | Assistant and tool-access checks | HTTP replay |
+| [Supply chain and Secrets](spike/packs/supply-chain) | Dependencies, workflow configuration, exposed secrets | Pinned evidence checks |
+| [Infra and cloud](spike/packs/infra-cloud) | Infrastructure configuration | Pinned evidence checks |
+| [Domains and front end](spike/packs/domains) | DNS, TLS, and captured front-end configuration | Pinned evidence checks |
+| [Keys and signing](spike/packs/keys) | Wallet and signing labs | Foundry replay |
+| [Chain watch](spike/packs/chain-watch) | Local-chain monitoring labs | Foundry replay |
+| [Surface](spike/packs/surface) | Captured application surface and source leads | Leads; no proof oracle |
+| [Phishing and brand lookalikes](spike/packs/phishing) | Domain and brand signals | Leads; no proof oracle |
+| [Code review](spike/packs/review) | Source investigation without a matching replay oracle | Leads; no proof oracle |
+
+Live reach depends on the selected module and saved scope policy. The module's
+`TOOLS.md` documents the tools and their limits. The hosted demo exercises the
+Contracts path; it does not exercise every module or third-party scanner.
+
+</details>
+
+## Run your own
+
+Use the [local setup guide](docs/getting-started.md) for locked dependencies,
+Docker images, compiler preparation, and the first run. Add your NEAR AI key in
+the local app's **Settings**, select a model, and start with a built-in scope.
+
+The normal console is a single-operator app. Use the dedicated
+[demo mode](docs/public-demo.md) for anonymous public visitors.
+
+## For judges and AI evaluators
+
+Start with the sponsored demo above, then follow the claim to its implementation.
+The focused checks below use controlled providers and private temporary stores.
+They require no inference key and make no paid model calls. They verify the
+listed software boundaries; they do not establish model-driven discovery quality.
+
+```sh
+node --test app/tests/demo-policy.test.mjs app/tests/demo-backend.test.mjs
+
+node --import ./spike/test/helpers/isolated-env.mjs --test --test-concurrency=1 \
+  spike/test/fleet-loadout.test.mjs spike/test/fleet-concurrency.test.mjs \
+  spike/test/harm-gate.test.mjs spike/test/candidate-harm.test.mjs
+
+bun --no-env-file test app/tests/demo.test.ts app/tests/demo-client.test.ts \
+  app/tests/demo-ui.test.tsx app/tests/console-guard.test.ts
+```
+
+| Claim to inspect | Implementation | Focused evidence |
+| --- | --- | --- |
+| NEAR AI inference with shared cost accounting | [`providers.mjs`](spike/lib/providers.mjs), [`provider.mjs`](spike/lib/provider.mjs), [`inference.mjs`](spike/lib/inference.mjs) | [`spend-cap.test.ts`](app/tests/spend-cap.test.ts), [`fleet-loadout.test.mjs`](spike/test/fleet-loadout.test.mjs) |
+| Agent delegation and shared coordination | [`fleet.mjs`](spike/lib/fleet.mjs), [`agent-run.mjs`](spike/agent-run.mjs) | [`fleet-concurrency.test.mjs`](spike/test/fleet-concurrency.test.mjs), [`agent-run-startup.test.mjs`](spike/test/agent-run-startup.test.mjs) |
+| A passing attempt is still subject to a harm gate | [`proof.mjs`](spike/lib/proof.mjs), [`control-trace.mjs`](spike/lib/control-trace.mjs), [`candidate.mjs`](spike/lib/candidate.mjs) | [`harm-gate.test.mjs`](spike/test/harm-gate.test.mjs), [`candidate-harm.test.mjs`](spike/test/candidate-harm.test.mjs) |
+| Public visitors cannot change execution policy or read another visitor's run | [`demo-http.mjs`](app/server/demo-http.mjs), [`runs.mjs`](app/server/runs.mjs), [`findings.mjs`](app/server/findings.mjs) | [`demo-policy.test.mjs`](app/tests/demo-policy.test.mjs), [`demo-backend.test.mjs`](app/tests/demo-backend.test.mjs) |
+| Reports and replay exports come from recorded results | [`report.mjs`](app/server/report.mjs), [`replay-bundle.mjs`](app/server/replay-bundle.mjs) | [`replay-evidence.test.ts`](app/tests/replay-evidence.test.ts), [`replay-store.test.mjs`](spike/test/replay-store.test.mjs) |
+
+The application is in [`app/`](app). The reusable engine and modules are in
+[`spike/`](spike). Prepared targets are in [`lab/`](lab) and the module folders.
+The product uses pi-durable; BB was a development tool and is not required to run it.
+
+### Verification boundaries
+
+The public demonstration is an offline EVM lab assessment. A proof establishes
+the result accepted by that module's verifier, not the absence of other bugs or
+universal coverage of a vulnerability class. Browser takeover, independently
+verified TEE attestations, and a complete live-chain audit are not demonstrated
+capabilities of this submission.
+
+## Hackathon provenance
+
+Built for **NEAR HACKATHON 2026**. This repository's history begins with the
+[initial Touchstone commit on November 10, 2026](https://github.com/hemaaanth/touchstone/commit/d678d5647e966d05fe71a053ae00811bd1986a37).
+The implementation and development history are available in the repository.
+
+Touchstone builds on existing open-source work: pi-durable, assistant-ui,
+shadcn/Base UI, Foundry, and the specialist tools documented in each pack.
+Reused code, notices, and tool licenses are recorded in [THIRD_PARTY.md](THIRD_PARTY.md)
+and the module `TOOLS.md` files. Third-party tools retain their own licenses.
+
+Related project disclosure: the same lead also works on **issue-tipjar**, an
+independent project noted in the [original project brief](IDEA.md).
+
+## License
+
+Touchstone's original code is [MIT licensed](LICENSE). Vendored code, fixtures,
+and separately executed tools keep their existing licenses and notices.
