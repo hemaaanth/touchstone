@@ -86,8 +86,8 @@ export function NewRunDialog({
 
   const own = (target: TargetChoice) => isOwnScope(target.id) || target.kind === "live"
   const scopeGroups = [
-    { label: "Your scopes", demo: false, targets: runnable.filter(own) },
-    { label: "Demo scopes", demo: true, targets: runnable.filter((target) => !own(target)) },
+    { label: "Your scopes", targets: runnable.filter(own) },
+    { label: "Demo scopes", targets: runnable.filter((target) => !own(target)) },
   ]
   const scopeItems = [{ value: RANDOM, label: "Random scope" }, ...scopeGroups.flatMap((group) => group.targets.map((t) => ({ value: t.id, label: t.title })))]
   const demoBadge = <Badge variant="outline" className="h-[18px] shrink-0 px-1.5 text-[10.5px] font-normal text-muted-foreground">Demo</Badge>
@@ -146,14 +146,13 @@ export function NewRunDialog({
                 {scope && !own(scope) ? demoBadge : null}
               </SelectTrigger>
               <SelectContent alignItemWithTrigger={false} className="p-1">
-                <SelectItem value={RANDOM} className="text-[13px]">Random scope</SelectItem>
+                <SelectItem value={RANDOM} className="text-[13px]"><span className="min-w-0 flex-1 truncate">Random scope</span></SelectItem>
                 {scopeGroups.filter((group) => group.targets.length > 0).map((group) => (
-                  <SelectGroup key={group.label}>
+                  <SelectGroup key={group.label} className="p-0">
                     <SelectLabel>{group.label}</SelectLabel>
                     {group.targets.map((target) => (
                       <SelectItem key={target.id} value={target.id} className="text-[13px]">
                         <span className="min-w-0 flex-1 truncate">{target.title}</span>
-                        {group.demo ? demoBadge : null}
                       </SelectItem>
                     ))}
                   </SelectGroup>
