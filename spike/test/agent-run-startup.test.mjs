@@ -15,6 +15,7 @@ import { fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { createRegistry, defineExtension, Harness, MemoryStorage } from "@earendil-works/pi-durable";
 import { createFleet } from "../lib/fleet.mjs";
 import { askHumanTool } from "../lib/ask.mjs";
+import { ideaTool } from "../lib/candidate.mjs";
 import { roamTools } from "../lib/roam.mjs";
 import { candidateTool, recordSession, sessionLookup, SESSION_DESCRIPTION, SESSION_POC } from "../lib/candidate.mjs";
 import { EGRESS_ENV } from "../lib/roam-egress.mjs";
@@ -72,7 +73,7 @@ function startup(t, raw, failure) {
     roamTools: (ws, options) => roamTools(ws, { ...options, machine: noRemote }),
     candidateTool, recordSession, sessionLookup, SESSION_DESCRIPTION, SESSION_POC,
     EGRESS_ENV, startEgressLog: noRemote, pullEgressLog: noRemote,
-    costOf: () => 0, briefChange: () => "", askHumanTool,
+    costOf: () => 0, briefChange: () => "", askHumanTool, ideaTool,
     PROVIDER_ID: "faux", MODELS: { fake: { id: "faux-1" } }, ALIAS: "fake",
     disposeAsks: () => order.push("dispose"),
   });

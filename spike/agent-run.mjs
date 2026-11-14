@@ -208,7 +208,10 @@ async function openHarness(db, ws, state) {
     // ~2+4+8+16+32s of backoff before a call is allowed to fail the whole run.
     // Non-retryable errors (quota/billing/bad-request) still fail fast.
     settings: { retry: { maxRetries: 5 }, stream: { timeoutMs: 180_000 } },
-    onReport: (r) => reports.push({ kind: r.kind, reason: r.reason, msg: String(r.error?.message ?? r.error ?? "").slice(0, 200) }),
+    // Keep the fault's own trace, not only its message: a faulted task settles
+    // with one line, and without the frames the reason is unactionable (an
+    // `undefined` parse looked like a model failure until it was traced).
+    onReport: (r) => reports.push({ kind: r.kind, reason: r.reason, msg: String(r.error?.message ?? r.error ?? "").slice(0, 200), ...(r.error?.stack ? { stack: String(r.error.stack).split("\n").slice(0, 6).join("\n") } : {}) }),
   }, ctx);
   try {
     const root = await harness.root(ctx, {
