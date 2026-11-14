@@ -1,7 +1,8 @@
-import { AssistantEntry, configure, defineDoc, defineExtension, defineTask, defineTool, LiveDoc, ProviderDoc, ROOT_CONVERSATION_ID, UsageDoc } from "@earendil-works/pi-durable";
+import { AgentDoc, AssistantEntry, configure, defineDoc, defineExtension, defineTask, defineTool, LiveDoc, ProviderDoc, ROOT_CONVERSATION_ID, UsageDoc } from "@earendil-works/pi-durable";
 import { arr, obj, oneOf, opt, str } from "@earendil-works/pi-schema";
 import { createHash } from "node:crypto";
 import { event, withAgent } from "./event.mjs";
+import { daytonaOn } from "./daytona.mjs";
 import { watchCognition } from "./cognition.mjs";
 
 const C = "coordinator";
@@ -9,6 +10,15 @@ const who = (conv) => conv === ROOT_CONVERSATION_ID ? C : `a-${conv}`;
 const reply = (value) => ({ output: [{ type: "text", text: typeof value === "string" ? value : JSON.stringify(value) }] });
 const textOf = (message, type = "text") => (message?.content ?? []).filter((b) => b.type === type).map((b) => b[type]).join("");
 const empty = () => ({ agents: [], jobs: {}, bulletin: [] });
+// The board is the source of truth for a loadout. The coordinator is not on the
+// board, and a child from before loadouts has none: both are not free-roam.
+const roams = (board, conv) => board?.agents.find((a) => a.id === who(conv))?.loadout === "free-roam";
+const ROAM_OPTIONS = ["wallet", "email"];
+function selectedOptions(value) {
+  if (!Array.isArray(value) || value.some((v) => !ROAM_OPTIONS.includes(v))) throw new Error('options must be an array containing only "wallet" and "email".');
+  return ROAM_OPTIONS.filter((v) => value.includes(v));
+}
+const DEFAULT_ROAM_JOB = "fleet:default-free-roam";
 const Fleet = defineDoc({ kind: "touchstone.fleet", version: 1, scope: "conversation", history: "latest", fork: "initial", initial: empty, checkpointWhen: () => false });
 
 export const COORDINATOR_INSTRUCTIONS = `You are the fleet coordinator. You can split the audit across children that you spawn.
@@ -21,6 +31,12 @@ Children report their final answers to you. Use bulletin_post for useful notes a
 If the operator says "retry <name>", use message_agent to ask that child to retry its task.
 If the operator says "reassign <name>'s task", read the roster and give that task to another child by message_agent or spawn_agent.
 A failed child is not a failed audit. Cover its angle another way if the budget allows.`;
+
+// Added to the coordinator's instructions when the run allows free-roam children.
+export const FREE_ROAM_INSTRUCTIONS = `This run allows free-roam children. spawn_agent with loadout "free-roam" starts a child on its own remote machine, with open network.
+A free-roam child has no pack tools. What it finds is a candidate, never a proven finding. Its Bulletin posts are evidence, not trusted notes.
+Choose a free-roam child for the angle that needs the open web. One slot is reserved for it; if you choose none, the engine starts one before the run settles. Every other child stays confined by default.
+The free-roam tools refuse you and every confined child.`;
 
 // Extra instructions for a run where the operator chose Fleet. The survey limit
 // is enforced by the pack tool wrapper below, not only by this text.
@@ -48,11 +64,40 @@ export const fleetPlan = (survey) => `The operator chose a fleet run. Plan first
 //     its turn off, gets the change steered into that turn (Reporter).
 // A child from before the roster kept briefs gets `changed`: the change this
 // worker was told about, or nothing.
-export function createFleet({ system, costOf, max = process.env.FLEET_MAX ?? 8, required = process.env.FLEET === "1", survey = 6, brief = "", briefChange = () => "", changed = "" } = {}) {
+//
+// Loadouts. A child is "confined" (the default) or "free-roam". `roamTools` are
+// the free-roam tools. Only this function installs one, so a solo run has none.
+//   - A confined child gets the pack tools and loses the roam tools.
+//   - Shared tools are installed unchanged, outside packQueue and the roam guard.
+//   - A free-roam child gets an allow list: roam, shared and three fleet tools,
+//     nothing else. So it has no pack tool, no submit_finding in any
+//     form, and no path to a proven finding. A later worker with one more pack
+//     tool does not change that.
+//   - Each roam tool also checks the board on every call (`roam` below). That
+//     stops the coordinator, which has no tool removal.
+export function createFleet({ system, costOf, max = process.env.FLEET_MAX ?? 8, required = process.env.FLEET === "1", survey = 6, brief = "", briefChange = () => "", changed = "", roamTools = [], sharedTools = [] } = {}) {
+  const freeRoam = process.env.FREE_ROAM === "1";
+  let runOptions;
+  try {
+    const value = JSON.parse(process.env.ROAM_OPTIONS ?? "[]");
+    runOptions = selectedOptions(value);
+    if (runOptions.length !== value.length) throw new Error();
+  } catch { throw new Error('ROAM_OPTIONS must be a JSON array of distinct "wallet" and "email" strings.'); }
+  if (!freeRoam && runOptions.length) throw new Error("ROAM_OPTIONS requires FREE_ROAM=1.");
+  if (freeRoam && (process.env.FLEET === "0" || !daytonaOn() || !roamTools.length)) {
+    throw new Error("FREE_ROAM=1 requires a fleet, Daytona, and offered roam tools. No confined fallback.");
+  }
   if (process.env.FLEET === "0") return undefined;
+  // A confined child loses the roam tools as they were offered, also when
+  // free-roam is off now: a later worker of the run may have it on.
+  const offered = roamTools;
+  // Free-roam needs FREE_ROAM=1 and Daytona: a roam tool never runs on this host.
+  // When it is off, no roam tool is installed.
+  if (!freeRoam) roamTools = [];
   max = Number(max);
   if (!Number.isInteger(max) || max < 1) throw new Error("FLEET_MAX must be a positive integer.");
-  let harness;
+  let harness, boardObservation, trustedBoard;
+  let closed = false;
   let packQueue = Promise.resolve();
   // The coordinator's pack calls before its first spawn, for the fleet-run gate.
   let spawned = false;
@@ -168,33 +213,57 @@ export function createFleet({ system, costOf, max = process.env.FLEET_MAX ?? 8, 
   // What a child must be told about the brief: "" when it has this worker's.
   const briefNote = (stored) => (stored?.brief === undefined ? changed : briefChange(stored.brief, brief));
 
+  async function createChild({ name, task, area, loadout = "confined", options = [] }, commit, spawnId, ctx, automatic = false) {
+    if (![name, task, area].every((v) => typeof v === "string" && v.trim())) throw new Error("name, task, and area must not be empty.");
+    if (!["confined", "free-roam"].includes(loadout)) throw new Error("Unknown loadout.");
+    const free = loadout === "free-roam";
+    options = selectedOptions(options);
+    if (!free && options.length) throw new Error("Confined children cannot select roam options.");
+    if (options.some((v) => !runOptions.includes(v))) throw new Error("The run did not enable these roam options.");
+    if (free && !freeRoam) throw new Error("Free-roam is off for this run.");
+    const created = await commit(async (tx) => {
+      const board = await tx.doc(Fleet, ROOT_CONVERSATION_ID);
+      // Document overlays cannot be read after this transaction settles.
+      if (board.jobs[spawnId]) return { agent: JSON.parse(JSON.stringify(board.agents.find((a) => a.spawn === spawnId))), fresh: false };
+      if (automatic) {
+        const existing = board.agents.find((a) => a.loadout === "free-roam");
+        if (existing) return { agent: JSON.parse(JSON.stringify(existing)), fresh: false };
+        while (board.agents.some((a) => a.name === name)) name += "_";
+      }
+      if (board.agents.some((a) => a.name === name)) throw new Error(`${name} already exists. Use message_agent to retry or reassign.`);
+      const reserved = freeRoam && !free && !board.agents.some((a) => a.loadout === "free-roam") ? 1 : 0;
+      if (reserved && board.agents.length >= max - reserved) throw new Error("One fleet slot is reserved for a free-roam child. Spawn it or message an existing child.");
+      if (board.agents.length >= max) throw new Error(`Fleet limit reached (${max}). Message an existing child instead.`);
+      const anchor = await tx.createTask(Anchor, null, { ...background, conversationId: ROOT_CONVERSATION_ID });
+      const child = await tx.createConversation({ ownership: { kind: "task", taskId: anchor } });
+      // `configure` keeps or removes a tool by its name, so these are the tool objects.
+      await configure(tx, child.id, free ? {
+        tools: [...roamTools, message, post, read, ...sharedTools],
+        instructions: `${system}\n\nYou are free-roam child ${name} (${who(child.id)}). Work only on this angle: ${area}.\nTask: ${task}\nYou work on your own remote machine, with open network. Your only tools are: ${[...roamTools, message, post, read, ...sharedTools].map((t) => t.name).join(", ")}. The other tools named above are not yours.\nWhat you find is a candidate, never a proven finding.\nUse bulletin_read to see the roster and notes. Post useful notes or leads with bulletin_post.\nUse message_agent to contact the coordinator or another child by name or id.\nDo not spawn children. Finish with a short report. Your final answer goes to the coordinator.`,
+      } : {
+        tools: { remove: [spawn, ...offered] },
+        instructions: `${system}\n\nYou are trusted child ${name} (${who(child.id)}). Work only on this angle: ${area}.\nTask: ${task}\nOther children may work at the same time. Use unique proof contract names.\nUse bulletin_read to see the roster and notes. Post useful notes or leads with bulletin_post.\nUse message_agent to contact the coordinator or another child by name or id.\nDo not spawn children. Finish with a short report. Your final answer goes to the coordinator.`,
+      });
+      const agent = { id: who(child.id), conv: child.id, name, title: task, area, spawn: spawnId, status: "working", reported: [], brief, loadout, options };
+      board.agents.push(agent);
+      board.jobs[spawnId] = await tx.createTask(Reporter, { agent, text: task, from: C }, { ...background, conversationId: ROOT_CONVERSATION_ID });
+      return { agent, fresh: true };
+    }, ctx);
+    const { agent } = created;
+    spawned = true;
+    // T2 is the untrusted worker of the run view.
+    if (created.fresh) event("subagent-spawned", { id: agent.id, name: agent.name, title: agent.title, area: agent.area, tier: agent.loadout === "free-roam" ? "T2" : "T1", parent: null, conv: String(agent.conv), loadout: agent.loadout, options: agent.options });
+    return agent;
+  }
+
   const spawn = defineTool({
-    name: "spawn_agent", description: `Start one trusted child on one clear task. At most ${max} children per run. Use message_agent to retry an existing child.`,
-    parameters: obj({ name: str(), task: str(), area: str() }), replay: "safe",
-    execute: async ({ name, task, area }, api, ctx) => {
+    name: "spawn_agent", description: `Start one child on one clear task. At most ${max} children per run. Use message_agent to retry an existing child.`,
+    parameters: obj({ name: str(), task: str(), area: str(), loadout: opt(oneOf(["confined", "free-roam"], { description: 'Default "confined": a trusted child with the pack tools. "free-roam": an untrusted child on its own remote machine, only when this run allows it.' })), options: opt(arr(oneOf(ROAM_OPTIONS), { description: "Selected wallet/email capabilities, only when enabled for this run and only for free-roam children." })) }), replay: "safe",
+    execute: async (args, api, ctx) => {
       if (api.conversationId !== ROOT_CONVERSATION_ID) throw new Error("Only the coordinator can spawn agents.");
-      if (![name, task, area].every((v) => v.trim())) throw new Error("name, task, and area must not be empty.");
-      const created = await api.commit(async (tx) => {
-        const board = await tx.doc(Fleet, ROOT_CONVERSATION_ID);
-        if (board.jobs[api.taskId]) return { agent: board.agents.find((a) => a.spawn === api.taskId), fresh: false };
-        if (board.agents.some((a) => a.name === name)) throw new Error(`${name} already exists. Use message_agent to retry or reassign.`);
-        if (board.agents.length >= max) throw new Error(`Fleet limit reached (${max}). Message an existing child instead.`);
-        const anchor = await tx.createTask(Anchor, null, background);
-        const child = await tx.createConversation({ ownership: { kind: "task", taskId: anchor } });
-        await configure(tx, child.id, {
-          tools: { remove: [spawn] },
-          instructions: `${system}\n\nYou are trusted child ${name} (${who(child.id)}). Work only on this angle: ${area}.\nTask: ${task}\nOther children may work at the same time. Use unique proof contract names.\nUse bulletin_read to see the roster and notes. Post useful notes or leads with bulletin_post.\nUse message_agent to contact the coordinator or another child by name or id.\nDo not spawn children. Finish with a short report. Your final answer goes to the coordinator.`,
-        });
-        const agent = { id: who(child.id), conv: child.id, name, title: task, area, spawn: api.taskId, status: "working", reported: [], brief };
-        board.agents.push(agent);
-        board.jobs[api.taskId] = await tx.createTask(Reporter, { agent, text: task, from: C }, background);
-        return { agent, fresh: true };
-      }, ctx);
-      const { agent } = created;
-      spawned = true;
-      if (created.fresh) event("subagent-spawned", { id: agent.id, name, title: task, area, tier: "T1", parent: null, conv: String(agent.conv) });
+      const agent = await createChild(args, (fn, c) => api.commit(fn, c), api.taskId, ctx);
       await api.details({ conversationId: agent.conv }, ctx);
-      return reply({ id: agent.id, name, task: agent.title, area, conv: String(agent.conv) });
+      return reply({ id: agent.id, name: agent.name, task: agent.title, area: agent.area, conv: String(agent.conv) });
     },
   });
   const message = defineTool({
@@ -231,8 +300,13 @@ export function createFleet({ system, costOf, max = process.env.FLEET_MAX ?? 8, 
     parameters: obj({ text: str(), kind: oneOf(["note", "lead"]), severity: opt(oneOf(["critical", "high", "medium", "low"])), tags: opt(arr(str())) }), replay: "unsafe",
     execute: async (args, api, ctx) => {
       if (!args.text.trim()) throw new Error("Bulletin text must not be empty.");
-      const note = { ...args, id: `b-${api.taskId}`, author: who(api.conversationId), lane: "trusted" };
-      await api.commit(async (tx) => { (await tx.doc(Fleet, ROOT_CONVERSATION_ID)).bulletin.push(note); }, ctx);
+      // A free-roam author's post is evidence, not a trusted note.
+      let note;
+      await api.commit(async (tx) => {
+        const board = await tx.doc(Fleet, ROOT_CONVERSATION_ID);
+        note = { ...args, id: `b-${api.taskId}`, author: who(api.conversationId), lane: roams(board, api.conversationId) ? "evidence" : "trusted" };
+        board.bulletin.push(note);
+      }, ctx);
       event("bulletin-post", note);
       return reply(note);
     },
@@ -242,7 +316,7 @@ export function createFleet({ system, costOf, max = process.env.FLEET_MAX ?? 8, 
     parameters: obj({}), replay: "safe",
     execute: async (_args, api, ctx) => {
       const board = await api.snapshot(Fleet, ROOT_CONVERSATION_ID, ctx) ?? empty();
-      return reply({ agents: board.agents.map(({ id, name, title, area, status }) => ({ id, name, task: title, area, status })), bulletin: board.bulletin });
+      return reply({ agents: board.agents.map(({ id, name, title, area, status, loadout, options = [] }) => ({ id, name, task: title, area, status, loadout, options })), bulletin: board.bulletin });
     },
   });
 
@@ -264,15 +338,49 @@ export function createFleet({ system, costOf, max = process.env.FLEET_MAX ?? 8, 
     }) };
   }
 
+  // The second guard of a roam tool: it refuses every caller that is not a
+  // free-roam child on the board. These tools get tag(t), not the pack queue: a
+  // shell call can run for minutes, and each free-roam child has its own machine.
+  const roam = roamTools.map((tool) => ({ ...tool, execute: async (args, api, ctx) => {
+    if (!roams(await api.snapshot(Fleet, ROOT_CONVERSATION_ID, ctx), api.conversationId)) throw new Error(`${tool.name} is only for a free-roam child.`);
+    return tool.execute(args, api, ctx);
+  } }));
+
   return {
-    instructions: required ? `${COORDINATOR_INSTRUCTIONS}\n\n${fleetPlan(survey)}` : COORDINATOR_INSTRUCTIONS,
-    extension: defineExtension({ name: "fleet", tasks: [Anchor, Reporter], tools: [spawn, message, post, read].map((t) => tag(t)) }),
+    instructions: (required ? `${COORDINATOR_INSTRUCTIONS}\n\n${fleetPlan(survey)}` : COORDINATOR_INSTRUCTIONS) + (roamTools.length ? `\n\n${FREE_ROAM_INSTRUCTIONS}` : ""),
+    extension: defineExtension({ name: "fleet", tasks: [Anchor, Reporter], tools: [...[spawn, message, post, read, ...roam].map((t) => tag(t)), ...sharedTools] }),
     wrapTools: (tools) => tools.map((t) => tag(t, true)),
     agentForSession: (sessionId) => sessions.get(sessionId),
+    isRoamAgent: (id) => !closed && freeRoam && trustedBoard?.agents.some((a) => a.id === id && a.loadout === "free-roam" && Number.isSafeInteger(a.conv) && a.conv > ROOT_CONVERSATION_ID && a.id === who(a.conv)) === true,
+    async options(agent, api, ctx) {
+      if (!freeRoam || api.conversationId === ROOT_CONVERSATION_ID || agent !== who(api.conversationId)) throw new Error("Roam options require the calling free-roam child.");
+      const board = await api.snapshot(Fleet, ROOT_CONVERSATION_ID, ctx);
+      const stored = board?.agents.find((a) => a.id === agent && a.conv === api.conversationId);
+      if (stored?.loadout !== "free-roam") throw new Error("Roam options require the calling free-roam child.");
+      return selectedOptions(stored.options ?? []).filter((v) => runOptions.includes(v));
+    },
     async attach(value, ctx) {
       harness = value;
-      const board = await harness.snapshot(Fleet, ROOT_CONVERSATION_ID, ctx) ?? empty();
+      // observeDoc publishes synchronously with commits; watchDoc callbacks can lag
+      // behind gate dispatch. Create the empty board so first spawns are observed.
+      await harness.commit((tx) => tx.doc(Fleet, ROOT_CONVERSATION_ID), ctx);
+      boardObservation = await harness.observeDoc(Fleet, ROOT_CONVERSATION_ID, {
+        advance(call) { trustedBoard = call.kind === "value" && !call.retired ? call.value : undefined; },
+        end() { trustedBoard = undefined; },
+      }, ctx);
+      trustedBoard = boardObservation?.value;
+      const board = trustedBoard ?? empty();
       spawned = board.agents.length > 0;
+      // Saved free-roam children have exact allow lists from their first worker.
+      // Add only shared tools; never widen their pack or roam permissions here.
+      if (sharedTools.length) await harness.commit(async (tx) => {
+        for (const agent of board.agents) {
+          const config = await tx.doc(AgentDoc, agent.conv);
+          if (Array.isArray(config.tools)) {
+            for (const tool of sharedTools) if (!config.tools.includes(tool.name)) config.tools.push(tool.name);
+          }
+        }
+      }, ctx);
       for (const agent of board.agents) {
         const provider = await harness.snapshot(ProviderDoc, agent.conv, ctx);
         if (provider) sessions.set(provider.sessionId, agent.id);
@@ -280,6 +388,11 @@ export function createFleet({ system, costOf, max = process.env.FLEET_MAX ?? 8, 
     },
     // `enforce: false` is for operator follow-ups: they never get the split turn.
     async drain(ctx, { enforce = true } = {}) {
+      const stopped = await harness.snapshot(LiveDoc, ROOT_CONVERSATION_ID, ctx);
+      if (stopped?.runFailure) return { status: "unanswered", reason: stopped.runFailure.reason, detail: stopped.runFailure.detail };
+      if (freeRoam) {
+        await createChild({ name: "FreeRoam", task: "Investigate the audit scope from the open web. Read the Bulletin first, avoid duplicating another child's work, and report captured evidence as unproven candidates only.", area: "open-web", loadout: "free-roam", options: runOptions }, (fn, c) => harness.commit(fn, c), DEFAULT_ROAM_JOB, ctx, true);
+      }
       let turn;
       for (;;) {
         // Reports can start coordinator turns, which can create more children or messages.
@@ -302,6 +415,9 @@ export function createFleet({ system, costOf, max = process.env.FLEET_MAX ?? 8, 
       }
     },
     async close() {
+      closed = true;
+      trustedBoard = undefined;
+      boardObservation?.detach();
       for (const pending of watches.values()) {
         const watch = await pending;
         watch.cognition?.stop();
