@@ -325,6 +325,72 @@ test("upload and startup execution failures still clean up and hide response bod
   });
 });
 
+test("image review and clear use private stdin with exact action-bound acknowledgements", async () => {
+  await fixture(async ({ f, lookup }) => {
+    const m = await lookup();
+    const sha256 = "a1".repeat(32);
+    for (const n of [1, 9, 10, 12]) {
+      const input = { action: "review-image", path: `/var/lib/touchstone/session/shot-${n}.png`, sha256 };
+      f.desktop = { kind: "review-image", sha256, bytes: 5242880 };
+      assert.deepEqual(await m.request(Buffer.from(JSON.stringify(input))), f.desktop);
+      assert.deepEqual(JSON.parse(f.uploads.at(-1).bytes), input);
+      assert.match(f.execs.at(-1), /rm -rf --/);
+      assert.ok(f.execs.every((s) => !s.includes(input.path) && !s.includes(sha256)));
+    }
+    f.desktop = { kind: "review-cleared" };
+    assert.deepEqual(await m.request(Buffer.from('{"action":"clear-review"}')), f.desktop);
+    assert.deepEqual(JSON.parse(f.uploads.at(-1).bytes), { action: "clear-review" });
+    assert.match(f.execs.at(-1), /rm -rf --/);
+  });
+});
+
+test("image review rejects nonallowlisted paths, invalid hashes and extra fields before HTTP", async () => {
+  await fixture(async ({ f, lookup }) => {
+    const m = await lookup();
+    const input = { action: "review-image", path: "/var/lib/touchstone/session/shot-1.png", sha256: "a1".repeat(32) };
+    const invalid = [
+      ...["/etc/passwd", "/var/lib/touchstone/session/browser.har", "/var/lib/touchstone/session/shot-0.png", "/var/lib/touchstone/session/shot-13.png", "/var/lib/touchstone/session/shot-01.png", "/var/lib/touchstone/session/../shot-1.png", `${input.path}\n`, `${input.path}\0`, "https://example.test/shot-1.png", null].map((path) => ({ ...input, path })),
+      ...["A1".repeat(32), "g".repeat(64), "a".repeat(63), "a".repeat(65), `${input.sha256}\n`, null].map((sha256) => ({ ...input, sha256 })),
+      { ...input, token: "SECRET" }, { action: "review-image", path: input.path },
+      { action: "clear-review", path: input.path },
+    ];
+    const before = f.calls.length;
+    for (const request of invalid) await fixed(m.request(Buffer.from(JSON.stringify(request))));
+    assert.equal(f.calls.length, before);
+  });
+});
+
+test("image review refuses mismatched, oversized and cross-action acknowledgements after cleanup", async () => {
+  await fixture(async ({ f, lookup }) => {
+    const m = await lookup();
+    const input = { action: "review-image", path: "/var/lib/touchstone/session/shot-1.png", sha256: "a1".repeat(32) };
+    const ack = { kind: "review-image", sha256: input.sha256, bytes: 100 };
+    for (const output of [
+      { ...ack, sha256: "b2".repeat(32) }, { ...ack, path: input.path },
+      ...[0, -1, 1.5, "100", 5242881, null].map((bytes) => ({ ...ack, bytes })),
+      { kind: "review-cleared" }, { kind: "closed" }, null,
+    ]) {
+      f.desktop = output;
+      await fixed(m.request(Buffer.from(JSON.stringify(input))));
+      assert.match(f.execs.at(-1), /rm -rf --/);
+    }
+    for (const output of [ack, { kind: "closed" }, { kind: "review-cleared", extra: "SECRET" }]) {
+      f.desktop = output;
+      await fixed(m.request(Buffer.from('{"action":"clear-review"}')));
+      assert.match(f.execs.at(-1), /rm -rf --/);
+    }
+    for (const output of [ack, { kind: "review-cleared" }]) {
+      f.desktop = output;
+      await fixed(m.request(Buffer.from('{"action":"status"}')));
+    }
+    f.meta.labels.agent = "other-agent";
+    const uploads = f.uploads.length;
+    await fixed(m.request(Buffer.from(JSON.stringify(input))));
+    await fixed(m.request(Buffer.from('{"action":"clear-review"}')));
+    assert.equal(f.uploads.length, uploads);
+  });
+});
+
 test("artifact snapshot uses no-follow descriptors, bounded download, hash and cleanup", async () => {
   await fixture(async ({ f, lookup }) => {
     const m = await lookup();
