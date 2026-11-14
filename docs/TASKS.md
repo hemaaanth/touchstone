@@ -139,6 +139,8 @@ A wave starts when the items it depends on are on `main`. Items inside a wave ru
 
 I1 to I6 in the order of the plan page. I6 needs G5. I7 needs the protected files. J1 and J2 run beside it.
 
+Started 2026-11-13: a planner (`thr_j9x637fuk6`, read-only worktree `redteam-w4-plan`) writes the build plan for I1 to I7: contracts, file owners, parallel lanes, the first vertical slice, and the needs from the owner (Playwright is a new dependency). No build thread starts before the plan is reviewed.
+
 **Wave 5. Live proof. Needs a paid-run budget.**
 
 One multi-module run (D3). One follow-up on a finished run (A2, A3). Live batch 2. The best ENS leads offline. Then a full pass through the app by hand with `bb-browser`, and the final progress page.
@@ -279,7 +281,7 @@ One multi-module run (D3). One follow-up on a finished run (A2, A3). Live batch 
 
 | ID | State | Item |
 |----|-------|------|
-| J1 | doing | Step 0: one real snapshot test on the owner's Daytona account. **Owner, 2026-11-13: yes, make the first real Daytona call.** No longer blocked. Order from the same answer: N3, N5 and N6 are finished first; J1 is then the first Wave 4 step. Report the cost of the call. **Unblocked 2026-11-13:** N3 is on origin/main at `153dc31`. |
+| J1 | doing | Step 0: one real snapshot test on the owner's Daytona account. **Owner, 2026-11-13: yes, make the first real Daytona call.** No longer blocked. Order from the same answer: N3, N5 and N6 are finished first; J1 is then the first Wave 4 step. Report the cost of the call. **Unblocked 2026-11-13:** N3 is on origin/main at `153dc31`. Started 2026-11-13: author `thr_sfn46di74u`, brief `wave/j1-brief.md`. No repo change: a probe script with a dry run against a fake API first; a second thread (`thr_x53ciuvjud`) reviews the script before the real run. Limits: at most 3 machines, 1 at a time, 60 minutes, only ids the probe created are deleted. |
 | J2 | todo | Steps 1 to 7 after J1. |
 
 ## K. Cleanup and housekeeping
