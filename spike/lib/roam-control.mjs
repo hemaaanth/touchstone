@@ -43,14 +43,21 @@ export function createRoamControl({ epoch, remote, emit, isAgent = () => false }
 
   const view = (slot) => ({ state: slot.state, lease: slot.lease });
   const blocked = (slot) => slot.state === "closed" ? "ROAM_CLOSED" : "ROAM_PAUSED";
-  function rejectQueue(slot) {
-    for (const work of slot.queue.splice(0)) work.finish(blocked(slot));
+  function rejectQueue(slot, error = blocked(slot)) {
+    for (const work of slot.queue.splice(0)) work.finish(error);
   }
 
   function pump(slot) {
     if (slot.active || slot.state !== "running" || disposed) return;
     const work = slot.queue.shift();
     if (!work) return;
+    // Trusted membership may change while this action waits behind another one.
+    try { get(work.agent); }
+    catch {
+      work.finish("ROAM_AGENT");
+      rejectQueue(slot, "ROAM_AGENT");
+      return;
+    }
     let drained;
     const done = new Promise((resolve) => { drained = resolve; });
     slot.active = { work, done };
@@ -72,6 +79,7 @@ export function createRoamControl({ epoch, remote, emit, isAgent = () => false }
       if (typeof fn !== "function") throw failure("ROAM_RUN_INVALID");
       if (slot.state !== "running") throw failure(blocked(slot));
       const work = waiter();
+      work.agent = agent;
       work.fn = fn;
       slot.queue.push(work);
       pump(slot);

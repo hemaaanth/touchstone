@@ -214,6 +214,7 @@ test("dispose settles remote waiters; late pause and resume completions cannot a
     remoteWait.resolve();
     await tick();
     assert.equal(events.length, 1);
+    await rejects(gate.run("a-1", () => assert.fail("late completion reopened disposed gate")), "ROAM_DISPOSED");
   }
 });
 
@@ -312,5 +313,44 @@ test("cancel during a remote operation rejects its ack; late rejection cannot re
     assert.equal(events.length, 1);
     assert.deepEqual(calls, ["closed"]);
     await rejects(gate.run("a-1", () => 1), "ROAM_CLOSED");
+  }
+});
+
+test("queued actions reject when trusted membership is false or throws at dispatch", async () => {
+  for (const revoked of [() => false, () => { throw new Error("private board failure"); }]) {
+    let trusted = () => true;
+    const { gate } = fixture({ isAgent: (agent) => agent === "a-2" || trusted() });
+    const hold = deferred();
+    const active = gate.run("a-1", () => hold.promise);
+    const queued = [1, 2].map(() => rejects(
+      gate.run("a-1", () => assert.fail("revoked queued action ran")), "ROAM_AGENT",
+    ));
+    trusted = revoked;
+    hold.resolve("active result");
+    assert.equal(await active, "active result");
+    await Promise.all(queued);
+    assert.equal(await gate.run("a-2", () => "unaffected"), "unaffected");
+    trusted = () => true;
+    assert.equal(await gate.run("a-1", () => "restored"), "restored");
+  }
+});
+
+test("late pause and resume success after cancel cannot reopen the closed latch", async () => {
+  for (const op of ["pause", "resume"]) {
+    const hold = deferred();
+    const { gate, events } = fixture({ remote: { pause() {}, resume() {}, close() {}, [op]: () => hold.promise } });
+    if (op === "resume") await gate.pause("a-1", "lease-1");
+    const handling = gate.handle(line(op));
+    await tick();
+    await gate.cancel("a-1", "lease-1");
+    await handling;
+    assert.equal(events[0].ok, false);
+    assert.equal(events[0].error, "ROAM_CLOSED");
+    hold.resolve();
+    await tick();
+    assert.equal(events.length, 1);
+    await rejects(gate.run("a-1", () => assert.fail("late completion reopened canceled gate")), "ROAM_CLOSED");
+    await gate.handle(line("status"));
+    assert.equal(events[1].state, "closed");
   }
 });
