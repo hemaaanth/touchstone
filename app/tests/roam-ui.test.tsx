@@ -1,11 +1,12 @@
 import { TEST_STORE_DIR } from "./helpers/isolated-env"
 import { test, expect } from "bun:test"
 import { renderToStaticMarkup } from "react-dom/server"
-import { reduceEvents } from "../src/lib/runModel"
+import { reduceEvents, type RunState } from "../src/lib/runModel"
 import { HumanQueue } from "../src/components/human-queue"
+import { AskHuman, AskHumanProvider, PendingAskLinks } from "../src/components/ask-human"
 import { SessionEvidence } from "../src/components/session-evidence"
 import { candidateFrom } from "../src/lib/candidate"
-import { runStartBody } from "../src/lib/api"
+import { runStartBody, answerRunAsk, AskAnswerError } from "../src/lib/api"
 import { OptionList } from "../src/components/assistant-ui/elements/option-list"
 import { formatAskChoiceReply, isAskPresentation, type AskPresentation } from "../src/lib/types"
 import { SandboxDesktop } from "../src/components/sandbox-desktop"
@@ -14,11 +15,12 @@ import { execFileSync } from "node:child_process"
 const spawn = { ev: "subagent-spawned", id: "a-1", name: "Scout", loadout: "free-roam", model: "test-model", t: 1 }
 const first = { ev: "ask-human", id: "one", agent: "a-1", kind: "login", question: "Open test account", t: 2 }
 const second = { ...first, id: "two", agent: "a-2", question: "Check test wallet" }
+const askHtml = (state: RunState, live = true) => renderToStaticMarkup(<AskHumanProvider runId="r1" state={state} live={live}>{state.humanAsks.map((ask) => <AskHuman key={ask.id} ask={ask} />)}</AskHumanProvider>)
 
-test("one queue keeps exact ask identity across agents and removes only matched answers", () => {
+test("inline questions keep exact agent identity without duplicate top forms", () => {
   const state = reduceEvents([spawn, first, second, first, { ev: "ask-answered", id: "one", agent: "a-2", answer: "done" }])
   expect(state.humanAsks.filter((a) => !a.answer).map((a) => a.id)).toEqual(["one", "two"])
-  const html = renderToStaticMarkup(<HumanQueue runId="r1" state={state} live />)
+  const html = askHtml(state)
   expect(html).toContain("Open test account")
   expect(html).toContain("Check test wallet")
   expect(html).toContain("Keep passwords and codes in the browser")
@@ -26,6 +28,13 @@ test("one queue keeps exact ask identity across agents and removes only matched 
   const settled = reduceEvents([spawn, first, second, { ev: "ask-answered", id: "one", agent: "a-1", answer: "reply" }])
   for (const label of [">Watch<", ">Take control<", ">Release<"]) expect(html).not.toContain(label)
   expect(settled.humanAsks.filter((a) => !a.answer).map((a) => a.id)).toEqual(["two"])
+  const desktop = renderToStaticMarkup(<HumanQueue runId="r1" state={state} live />)
+  expect(desktop).not.toContain("Open test account")
+  expect(desktop).not.toContain("Check test wallet")
+  const links = renderToStaticMarkup(<AskHumanProvider runId="r1" state={state} live><PendingAskLinks onOpen={() => {}} /></AskHumanProvider>)
+  expect(links).toContain('aria-label="Pending questions"')
+  expect(links).toContain("Scout")
+  expect(links).toContain("a-2")
 })
 
 test("closed, stopped, or restarted asks never become approvals on followup", () => {
@@ -57,7 +66,7 @@ const multiple: AskPresentation = { options, select: "multiple", min: 2, max: 2 
 test("old Ask events keep free-text Reply, Done and Cancel with no option controls", () => {
   const state = reduceEvents([spawn, first])
   expect(state.humanAsks[0].presentation).toBeUndefined()
-  const html = renderToStaticMarkup(<HumanQueue runId="r1" state={state} live />)
+  const html = askHtml(state)
   expect(html).toContain('aria-label="Reply to Scout"')
   expect(html).toContain(">Reply</button>")
   expect(html).toContain(">Done</button>")
@@ -68,7 +77,7 @@ test("old Ask events keep free-text Reply, Done and Cancel with no option contro
 test("single option renders beside free text and formats only a Reply, never Done", () => {
   const state = reduceEvents([spawn, { ...first, kind: "question", presentation: single }])
   expect(state.humanAsks[0].presentation).toEqual(single)
-  const html = renderToStaticMarkup(<HumanQueue runId="r1" state={state} live />)
+  const html = askHtml(state)
   expect(html).toContain('data-slot="option-list"')
   expect(html).toContain('aria-label="Scan source"')
   expect(html).toContain("Inspect the source first")
@@ -107,7 +116,7 @@ test("malformed saved presentation is ignored; long option content remains escap
     expect(isAskPresentation(presentation)).toBe(false)
     const state = reduceEvents([{ ...first, kind: "question", presentation }])
     expect(state.humanAsks[0].presentation).toBeUndefined()
-    expect(renderToStaticMarkup(<HumanQueue runId="r1" state={state} live />)).not.toContain('data-slot="option-list"')
+    expect(askHtml(state)).not.toContain('data-slot="option-list"')
   }
   const action = reduceEvents([{ ...first, presentation: single }])
   expect(action.humanAsks[0].presentation).toBeUndefined()
@@ -217,4 +226,32 @@ test("retired component cleanup cannot release a newer session or replacement wo
     env: { PATH: process.env.PATH, HOME: TEST_STORE_DIR, TMPDIR: TEST_STORE_DIR, SPEND_LEDGER: `${TEST_STORE_DIR}/ui-spend.jsonl`, TOUCHSTONE_GRANT_TOKEN: "test-grant-token", TOUCHSTONE_GRANT_TOKEN_FILE: `${TEST_STORE_DIR}/ui-token`, TOUCHSTONE_GRANTS_FILE: `${TEST_STORE_DIR}/ui-grants.json`, TOUCHSTONE_SCOPES_FILE: `${TEST_STORE_DIR}/ui-scopes.json`, TOUCHSTONE_PROVIDERS_FILE: `${TEST_STORE_DIR}/ui-providers.json`, TOUCHSTONE_RESULTS_DIR: `${TEST_STORE_DIR}/ui-results` },
   })
   expect(JSON.parse(output)).toEqual({ retiredResponse: "ignored", replacementWorker: "untouched", staleExpiry: "ignored", currentReleaseAndExpiry: "closed-revoked-resumed" })
+})
+
+test("safe accepted history is escaped text; old ack-only records never invent a reply", () => {
+  const ack = { ev: "ask-answered", id: "one", agent: "a-1", answer: "reply" }
+  const old = reduceEvents([spawn, first, ack])
+  expect(askHtml(old, false)).toContain("The answer text was not saved.")
+  const state = reduceEvents([spawn, first, ack, { ev: "ask-receipt", id: "one", agent: "a-1", answer: "reply", text: "<script>not HTML</script>" }])
+  const html = askHtml(state, false)
+  expect(html).toContain("Open test account")
+  expect(html).toContain("&lt;script&gt;not HTML&lt;/script&gt;")
+  expect(html).not.toContain("<script>")
+  expect(html).not.toContain("<form")
+  expect(html).not.toContain("<input")
+})
+
+test("Ask client treats missing delivery metadata and lost HTTP as uncertain, not status-based not-sent", async () => {
+  const original = globalThis.fetch
+  try {
+    for (const status of [400, 403, 409, 500]) {
+      globalThis.fetch = (async () => Response.json({ error: "refused" }, { status })) as typeof fetch
+      try { await answerRunAsk("r1", { ask: "one", reply: "first" }); throw Error("Expected refusal") }
+      catch (error) { expect(error).toBeInstanceOf(AskAnswerError); expect((error as AskAnswerError).uncertain).toBe(true) }
+    }
+    globalThis.fetch = (async () => Response.json({ error: "not sent", delivery: "not-sent" }, { status: 409 })) as typeof fetch
+    await expect(answerRunAsk("r1", { ask: "one", reply: "first" })).rejects.toMatchObject({ uncertain: false })
+    globalThis.fetch = (async () => { throw Error("synthetic connection loss") }) as typeof fetch
+    await expect(answerRunAsk("r1", { ask: "one", reply: "first" })).rejects.toMatchObject({ uncertain: true })
+  } finally { globalThis.fetch = original }
 })

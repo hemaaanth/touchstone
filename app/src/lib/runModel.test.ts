@@ -577,3 +577,31 @@ test("an older run's read of the Touchstone BRIEF.md is not shown as a repo file
   assert.deepEqual(reads("lab"), ["Looked for a BRIEF.md file", "Read src/Vault.sol"])
   assert.deepEqual(reads(null), ["Looked for a BRIEF.md file", "Read src/Vault.sol"])
 })
+
+test("Ask steps keep root/child order and only exact first receipts update them", () => {
+  const question = { ev: "ask-human", id: "root-q", agent: "coordinator", kind: "question", question: "Which scope?" }
+  const child = { ...question, id: "child-q", agent: "a-1", question: "Which source?" }
+  const events = [say(1, "Before"), question, child, say(2, "After"),
+    { ev: "ask-answered", id: "root-q", agent: "other", answer: "reply" },
+    { ev: "ask-receipt", id: "root-q", agent: "coordinator", answer: "reply", text: "unacknowledged" },
+    { ev: "ask-answered", id: "root-q", agent: "coordinator", answer: "reply" },
+    { ev: "ask-receipt", id: "root-q", agent: "coordinator", answer: "done", text: "wrong category" },
+    { ev: "ask-receipt", id: "root-q", agent: "coordinator", answer: "reply", text: "Use staging" },
+    { ev: "ask-receipt", id: "root-q", agent: "coordinator", answer: "reply", text: "duplicate replacement" }]
+  const state = reduceEvents(events)
+  assert.deepEqual(threadSteps(state.steps, null).map((s) => s.label), ["Before", "Which scope?", "After"])
+  assert.deepEqual(threadSteps(state.steps, "a-1").map((s) => s.label), ["Which source?"])
+  assert.equal(state.steps.find((s) => s.kind === "ask")?.ask?.receipt?.text, "Use staging")
+  assert.equal(state.steps.find((s) => s.agent === "a-1")?.ask?.answer, undefined)
+  assert.deepEqual(reduceEvents(JSON.parse(JSON.stringify(events))).humanAsks, state.humanAsks)
+})
+
+test("interrupted Ask history retains its position but never a restored approval or receipt", () => {
+  const events = [{ ev: "ask-human", id: "old-q", agent: "coordinator", kind: "question", question: "Continue?" },
+    { ev: "closed" }, { ev: "reply-start" },
+    { ev: "ask-receipt", id: "old-q", agent: "coordinator", answer: "done", text: "not approval" }]
+  const state = reduceEvents(events)
+  assert.equal(state.steps.filter((s) => s.kind === "ask").length, 1)
+  assert.equal(state.humanAsks[0].interrupted, true)
+  assert.equal(state.humanAsks[0].receipt, undefined)
+})

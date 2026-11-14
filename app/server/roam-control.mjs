@@ -40,7 +40,17 @@ function askPresentation(kind, value) {
   }
 }
 
-// Capabilities and pending replies stay only in this process, never in run records.
+function askReceipt(ask, candidate) {
+  // This is intended chat content, not a secret-entry log. The existing scrubber
+  // cannot detect arbitrary secrets; omit URL values, including relative paths.
+  const text = candidate.answer === "reply"
+    ? redactSecrets(candidate.reply.replace(/\b[a-z][a-z0-9+.-]*:[^\s<>"']+|\bwww\.[^\s<>"']+|(?<!\S)\/[^\s<>"']+/gi, "[URL omitted]")).slice(0, 4000)
+    : undefined
+  return { id: ask.id, agent: ask.agent, answer: candidate.answer, ...(text !== undefined ? { text } : {}) }
+}
+
+// Capabilities and raw pending replies stay process-private. Only the bounded,
+// sanitized accepted display copy enters the best-effort run chat stream.
 export function createRoamControlApi({ getRun, emit, machine, timeoutMs = 15000, now = Date.now, schedule = setTimeout, unschedule = clearTimeout }) {
   const workers = new Map()
   const desktops = new Map()
@@ -239,30 +249,68 @@ export function createRoamControlApi({ getRun, emit, machine, timeoutMs = 15000,
     return closeOwned(run, scope.s, agent, scope)
   }
   async function answer(id, body) {
-    const { run, s } = active(id)
-    const keys = Object.keys(body ?? {})
-    const hasDone = typeof body?.done === "boolean"
-    const reply = typeof body?.reply === "string" ? body.reply.trim() : ""
-    if (keys.length !== 2 || !keys.includes("ask") || !(hasDone ? keys.includes("done") : keys.includes("reply") && reply && reply.length <= 4000)) throw fail("Use Done, Cancel, or a nonempty reply up to 4,000 characters.", 400)
-    const ask = s.asks.get(body.ask)
-    if (!ask || ask.answer || ask.sending) throw fail("This ask is stale or already answered.")
-    ask.sending = true
+    let ask
     try {
-      const scope = s.operations.get(ask.agent)?.scope ?? s.desktops.get(ask.agent)?.scope
-      if (scope) await closeOwned(run, s, ask.agent, scope)
-      else if (s.closing.has(ask.agent)) await s.closing.get(ask.agent)
-      active(id, s)
-      if (ask.answer) throw fail("This ask is no longer pending.")
-      const expected = hasDone ? body.done ? "done" : "cancel" : "reply"
-      const e = await pending(s, `ask:${ask.id}`, (e) => e.ev === "ask-answered" && e.id === ask.id && e.agent === ask.agent, hasDone ? { ask: ask.id, done: body.done } : { ask: ask.id, reply })
-      if (e.answer !== expected) throw fail("The ask was cancelled before this answer was accepted.")
-      return { ok: true }
-    } finally { ask.sending = false }
+      const { run, s } = active(id)
+      const keys = Object.keys(body ?? {})
+      const hasDone = typeof body?.done === "boolean"
+      const reply = typeof body?.reply === "string" ? body.reply.trim() : ""
+      if (keys.length !== 2 || !keys.includes("ask") || !(hasDone ? keys.includes("done") : keys.includes("reply") && reply && body.reply.length <= 4000)) throw fail("Use Done, Cancel, or a nonempty reply up to 4,000 characters.", 400)
+      ask = s.asks.get(body.ask)
+      const candidate = { answer: hasDone ? body.done ? "done" : "cancel" : "reply", ...(hasDone ? {} : { reply }) }
+      if (!ask) throw fail("This ask is stale or already answered.")
+      const same = !ask.candidate || (ask.candidate.answer === candidate.answer && ask.candidate.reply === candidate.reply)
+      if (!same) throw fail("Delivery of the first answer is uncertain. Retry that same answer or refresh its status.")
+      if (ask.answer) {
+        if (ask.receipt) return { ok: true, receipt: ask.receipt }
+        throw fail("This ask is stale or already answered.")
+      }
+      if (ask.sending) throw fail("An answer is already pending.")
+      ask.sending = true
+      try {
+        const scope = s.operations.get(ask.agent)?.scope ?? s.desktops.get(ask.agent)?.scope
+        if (scope) await closeOwned(run, s, ask.agent, scope)
+        else if (s.closing.has(ask.agent)) await s.closing.get(ask.agent)
+        active(id, s)
+        if (ask.answer) throw fail("This ask is no longer pending.")
+        const previouslySent = Boolean(ask.candidate)
+        ask.candidate ??= candidate
+        const e = await new Promise((resolve, reject) => {
+          const key = `ask:${ask.id}`
+          const timer = schedule(() => {
+            s.pending.delete(key)
+            reject(fail("Answer delivery is uncertain. Retry the same answer or refresh its status."))
+          }, timeoutMs)
+          s.pending.set(key, {
+            match: (event) => event.ev === "ask-answered" && event.id === ask.id && event.agent === ask.agent,
+            resolve: (event) => { unschedule(timer); s.pending.delete(key); resolve(event) },
+            reject: (error) => { unschedule(timer); s.pending.delete(key); reject(error) },
+          })
+          const payload = hasDone ? { ask: ask.id, done: body.done } : { ask: ask.id, reply }
+          try {
+            s.child.stdin.write(JSON.stringify(payload) + "\n", (error) => {
+              if (error) s.pending.get(key)?.reject(fail("Answer delivery is uncertain. Refresh its status."))
+            })
+          } catch {
+            // A synchronous write refusal did not send this attempt. It cannot
+            // erase an earlier attempt whose acknowledgement is still unknown.
+            if (!previouslySent) delete ask.candidate
+            s.pending.get(key)?.reject(fail("The answer was not sent. Try again."))
+          }
+        })
+        active(id, s)
+        if (e.answer !== candidate.answer || !ask.receipt) throw fail("The ask was cancelled before this answer was accepted.")
+        return { ok: true, receipt: ask.receipt }
+      } finally { ask.sending = false }
+    } catch (error) {
+      throw Object.assign(error, { delivery: ask?.candidate && !ask?.answer ? "unknown" : "not-sent" })
+    }
   }
   function consume(run, child, epoch, e) {
     const s = state(run)
-    const privateEvent = ["roam-control", "ask-human", "ask-answered"].includes(e.ev)
+    const privateEvent = ["roam-control", "ask-human", "ask-answered", "ask-receipt"].includes(e.ev)
     if (!s || s.retired || s.child !== child || s.epoch !== epoch || run.child !== child || run.roamEpoch !== epoch) return privateEvent || (child !== run.child)
+    if (e.ev === "ask-receipt") return true // A worker cannot certify chat display text.
     if (e.ev === "roam-control") {
       const p = s.pending.get(e.id)
       if (p?.match(e)) p.resolve(e)
@@ -289,6 +337,10 @@ export function createRoamControlApi({ getRun, emit, machine, timeoutMs = 15000,
       const p = s.pending.get(`ask:${e.id}`)
       if (p?.match(e)) p.resolve(e)
       emit(run, { ev: "ask-answered", id: ask.id, agent: ask.agent, answer: e.answer, t: now() })
+      if (ask.candidate?.answer === e.answer && !e.interrupted) {
+        ask.receipt = askReceipt(ask, ask.candidate)
+        emit(run, { ev: "ask-receipt", ...ask.receipt, t: now() })
+      }
       return true
     }
     return false

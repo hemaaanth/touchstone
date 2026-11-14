@@ -437,3 +437,21 @@ test("a recorded finding with a module but no proof kind reads its module's proo
     .map((p) => p.args?.proofKind)
   assert.deepEqual(kinds, ["http"])
 })
+
+test("Ask is a stable unresolved native tool part between groups, then one receipt in place", () => {
+  const before: RunEvent[] = [{ ev: "read_source", file: "before.ts" },
+    { ev: "ask-human", id: "q", agent: "coordinator", kind: "question", question: "Which source?" },
+    { ev: "read_source", file: "after.ts" }]
+  const parts = (events: RunEvent[]) => {
+    const state = reduceEvents(events)
+    return buildMessages(state, state.steps, "running", true).flatMap((m) => Array.isArray(m.content) ? m.content as { toolName?: string; toolCallId?: string; result?: unknown; args?: unknown }[] : [])
+  }
+  const pending = parts(before)
+  assert.deepEqual(pending.map((p) => p.toolName), ["toolgroup", "ask_human", "toolgroup"])
+  assert.equal(pending[1].result, undefined)
+  const answered = parts([...before, { ev: "ask-answered", id: "q", agent: "coordinator", answer: "reply" },
+    { ev: "ask-receipt", id: "q", agent: "coordinator", answer: "reply", text: "before.ts" }])
+  assert.equal(answered[1].toolCallId, pending[1].toolCallId)
+  assert.deepEqual(answered[1].result, { id: "q", agent: "coordinator", answer: "reply", text: "before.ts" })
+  assert.equal(answered.filter((p) => p.toolName === "ask_human").length, 1)
+})

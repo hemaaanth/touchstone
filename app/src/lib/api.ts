@@ -14,6 +14,7 @@ import type {
   PackChoice,
   RunMode,
   AskAnswer,
+  AskAccepted,
   RoamSelection,
   SandboxDesktopView,
   SandboxDesktopIdentity,
@@ -310,7 +311,26 @@ export function fetchRun(id: string): Promise<RunView> {
   return getJson<RunView>(`/api/runs/${encodeURIComponent(id)}`)
 }
 
-export const answerRunAsk = (run: string, answer: AskAnswer) => postJson<{ ok: true }>(`/api/runs/${encodeURIComponent(run)}/ask`, answer)
+export class AskAnswerError extends Error {
+  uncertain: boolean
+  constructor(message: string, uncertain: boolean) { super(message); this.uncertain = uncertain }
+}
+export async function answerRunAsk(run: string, answer: AskAnswer): Promise<AskAccepted> {
+  const url = `/api/runs/${encodeURIComponent(run)}/ask`
+  let res: Response
+  try {
+    res = await fetch(url, { method: "POST", headers: { "content-type": "application/json", ...tokenHeaders() }, body: JSON.stringify(answer) })
+  } catch {
+    throw new AskAnswerError("Answer delivery is uncertain. Retry the original answer or refresh its status.", true)
+  }
+  if (!res.ok) {
+    const data = await res.clone().json().catch(() => ({}))
+    try { await writeResult(url, res) } catch (error) {
+      throw new AskAnswerError(error instanceof Error ? error.message : "The answer was not accepted.", data.delivery !== "not-sent")
+    }
+  }
+  return writeResult<AskAccepted>(url, res)
+}
 export const openRunDesktop = (run: string, agent: string, viewOnly: boolean, desktop: SandboxDesktopIdentity) => postJson<SandboxDesktopView>(`/api/runs/${encodeURIComponent(run)}/desktop`, { agent, viewOnly, desktop })
 export async function closeRunDesktop(run: string, agent: string, desktop: SandboxDesktopIdentity): Promise<SandboxDesktopView> {
   const url = `/api/runs/${encodeURIComponent(run)}/desktop`
