@@ -266,6 +266,38 @@ test("A2: a follow-up runs in the workspace the agent left: sources and notes ar
   assert.ok(existsSync(path.join(ws, SOURCE)), "and it is kept for the next follow-up too");
 });
 
+for (const duringFollowUp of [false, true]) {
+  test(`A2: an unparseable lab config at ${duringFollowUp ? "follow-up" : "initial"} close keeps the workspace and saved files`, async () => {
+    const tear = (call) => {
+      writeFileSync(path.join(call.args[4], ".touchstone.json"), '{"kind":');
+      writeFileSync(path.join(call.args[4], "notes2.md"), "second note");
+    };
+    scripts.push({ act: (call) => { work(call); if (!duringFollowUp) tear(call); }, events: [fetched, done] });
+    const { id } = await start();
+    await settle(id);
+    const ws = spawns.at(-1).args[4];
+    made.push(ws);
+    if (duringFollowUp) {
+      scripts.push({ act: tear, events: [done] });
+      steerRun(id, "Write a second note.");
+      await settle(id, 1);
+    }
+    assert.ok(existsSync(ws), "a torn config must not delete the workspace");
+    assert.equal(kept(id).ws, ws);
+    assert.equal(readFileSync(path.join(ws, ".touchstone.json"), "utf8"), '{"kind":', "the torn config is not rewritten");
+    scripts.push({ act: look, events: [done] });
+    steerRun(id, "Read the saved files.");
+    const r = await settle(id, duringFollowUp ? 2 : 1);
+    const next = spawns.at(-1);
+    assert.equal(next.args[4], ws, "the next follow-up uses the kept workspace");
+    assert.deepEqual(next.saw, { source: true, note: true });
+    assert.equal(readFileSync(path.join(ws, "notes2.md"), "utf8"), "second note");
+    assert.equal(readFileSync(path.join(ws, ".touchstone.json"), "utf8"), '{"kind":');
+    assert.ok(!r.events.some((e) => e.ev === "reply-error" || e.ev === "workspace"));
+    assert.equal(next.env.WORKSPACE_NOTE, undefined);
+  });
+}
+
 test("A2: when the workspace is really gone, one event tells the operator and the agent the same truth", async () => {
   const { id, call } = await finished();
   rmSync(call.args[4], { recursive: true, force: true });

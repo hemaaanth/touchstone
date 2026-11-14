@@ -1294,7 +1294,9 @@ function clearLiveBindings(ws) {
   if (!files) throw new Error(WS_LINK)
   let live = false
   for (const file of files) {
-    const cfg = JSON.parse(readFileSync(file, "utf8"))
+    let cfg
+    try { cfg = JSON.parse(readFileSync(file, "utf8")) } catch { continue } // unreadable configs supply no usable live route
+    if (!cfg || typeof cfg !== "object") continue
     live ||= cfg.kind === "live"
     if (!Object.hasOwn(cfg, "live")) continue
     delete cfg.live
