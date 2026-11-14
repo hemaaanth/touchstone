@@ -4,9 +4,19 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { packageRelease, runtimeEnvironment, sourceAllowed } from "../package-owner-release.mjs";
+import { fileURLToPath } from "node:url";
+import { packageRelease, runCommand, runtimeEnvironment, sourceAllowed } from "../package-owner-release.mjs";
 
 const template = readFileSync(new URL("../touchstone-owner.service", import.meta.url), "utf8");
+const tokenSourcePaths = ["app/src/lib/console-token.ts", "spike/test/console-token.test.mjs"];
+const excludedFixturePaths = [
+  "spike/.env.local", "spike/data/providers.json", "spike/data/scopes.json", "spike/data/grants.json", "spike/data/console-token",
+  "spike/spend.json", "spike/results/agent/old.json", "app/node_modules/old.js", "app/.npmrc",
+  "app/console-token", "app/console-token.json", "app/src/lib/console-token", "app/src/lib/console-token.json",
+  "app/src/lib/console-token.ts.env", "app/src/lib/console-token.ts.bak", "app/src/other/console-token.ts",
+  "app/data/console-token.ts", "spike/data/console-token.test.mjs", "spike/test/console-token.test.mjs.bak",
+  "spike/test/console-token", "spike/test/console-token.json", "app/src/lib/.env", "app/src/lib/secret.key",
+];
 const hash = (data) => createHash("sha256").update(data).digest("hex");
 const put = (path, data = "fixture") => { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, data); };
 function writable(dir) {
@@ -26,8 +36,9 @@ function fixture(fn) {
   try {
     git("init", "-q");
     for (const path of ["app/package.json", "app/bun.lock", "app/server/start.mjs", "spike/package.json", "spike/package-lock.json", "spike/agent-run.mjs", "lab/vault/src/Test.sol"]) put(join(repo, path), `tracked ${path}`);
+    for (const path of tokenSourcePaths) put(join(repo, path), `export const fixture = ${JSON.stringify(path)};`);
     put(join(repo, "scripts/touchstone-owner.service"), template);
-    for (const path of ["spike/.env.local", "spike/data/providers.json", "spike/data/scopes.json", "spike/data/grants.json", "spike/data/console-token", "spike/spend.json", "spike/results/agent/old.json", "app/node_modules/old.js", "app/.npmrc"]) put(join(repo, path), `FAKE_EXCLUDED_${path}`);
+    for (const path of excludedFixturePaths) put(join(repo, path), `FAKE_EXCLUDED_${path}`);
     git("add", "."); git("commit", "-qm", "fixture");
     const revision = git("rev-parse", "HEAD");
     const calls = [];
@@ -35,7 +46,7 @@ function fixture(fn) {
     for (const path of [options.node, options.bun]) { put(path, "do not execute this stub"); chmodSync(path, 0o700); }
     const run = (command, args, opts) => {
       calls.push({ command, args, opts });
-      if (command === "git") return execFileSync(command, args, opts);
+      if (command === "git") return runCommand(command, args, opts);
       if (args[0] === "--version") return Buffer.from(command === options.node ? "v24.10.0\n" : "1.3.0\n");
       assert.equal(command, options.bun);
       assert.deepEqual(args, ["install", "--frozen-lockfile", "--ignore-scripts", "--no-env-file", "--backend=copyfile", "--no-progress"]);
@@ -61,7 +72,7 @@ test("exports selected commit blobs only, with manifest hash and no mutable chec
   const result = packageRelease(options, { run });
   assert.equal(readFileSync(join(options.output, "app/server/start.mjs"), "utf8"), "tracked app/server/start.mjs");
   assert.equal(existsSync(join(options.output, "app/untracked.js")), false);
-  for (const path of ["spike/.env.local", "spike/data/providers.json", "spike/data/scopes.json", "spike/data/grants.json", "spike/data/console-token", "spike/spend.json", "spike/results/agent/old.json", "app/node_modules/old.js", "app/.npmrc"]) {
+  for (const path of excludedFixturePaths) {
     assert.equal(existsSync(join(options.output, path)), false);
     const object = git("rev-parse", `${options.revision}:${path}`);
     assert.ok(!calls.find((c) => c.args.includes("cat-file")).opts.input.includes(object));
@@ -78,6 +89,50 @@ test("exports selected commit blobs only, with manifest hash and no mutable chec
   assert.equal(lstatSync(options.output).mode & 0o777, 0o500);
   assert.equal(lstatSync(join(options.output, "spike/agent-run.mjs")).mode & 0o777, 0o400);
   assert.equal(existsSync(join(options.output, ".git")), false);
+}));
+
+test("exports reviewed token source modules without reading token files or secret lookalikes", () => fixture(({ options, run, calls, git }) => {
+  packageRelease(options, { run });
+  const manifest = JSON.parse(readFileSync(join(options.output, "release-manifest.json"), "utf8"));
+  const batch = calls.find((c) => c.args.includes("cat-file")).opts.input.split("\n");
+  for (const path of tokenSourcePaths) {
+    assert.equal(readFileSync(join(options.output, path), "utf8"), `export const fixture = ${JSON.stringify(path)};`);
+    assert.ok(manifest.files.some((file) => file.path === path), path);
+    assert.ok(batch.includes(git("rev-parse", `${options.revision}:${path}`)), path);
+  }
+  for (const path of excludedFixturePaths) {
+    assert.equal(existsSync(join(options.output, path)), false, path);
+    assert.ok(!manifest.files.some((file) => file.path === path), path);
+    assert.ok(!batch.includes(git("rev-parse", `${options.revision}:${path}`)), path);
+  }
+}));
+
+test("exports tracked app trees and spike modules using an independent Git inventory", () => fixture(({ root, options, run, calls }) => {
+  const repo = fileURLToPath(new URL("../../", import.meta.url));
+  const git = (...args) => execFileSync("git", ["--no-replace-objects", "-C", repo, ...args], {
+    env: { PATH: process.env.PATH, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" },
+  }).toString();
+  const revision = git("rev-parse", "HEAD").trim();
+  // Do not derive expected files from sourceAllowed or the manifest: both omit the same missing imports.
+  // Inventory app trees and imported spike code without running it. Packs also contain excluded TLS lab keys.
+  const sources = git("ls-tree", "-rz", "--full-tree", revision, "--",
+    "app/src", "app/server", "app/public", "app/index.html", "app/vite.config.ts", "spike/lib", "spike/packs", "spike/agent-run.mjs",
+  ).split("\0").filter(Boolean).map((line) => {
+    const tab = line.indexOf("\t");
+    return { path: line.slice(tab + 1), object: line.slice(0, tab).split(" ")[2] };
+  }).filter(({ path }) => !path.startsWith("spike/packs/") || /\.(?:[cm]?[jt]sx?)$/.test(path));
+  assert.ok(sources.some((file) => file.path === "app/src/App.tsx"));
+  assert.ok(sources.some((file) => file.path === "app/src/lib/console-token.ts"));
+  const output = join(root, revision);
+  packageRelease({ ...options, repo: repo.replace(/\/$/, ""), revision, output }, { run });
+  assert.ok(!calls.some((call) => call.args[0] === "install"));
+  const manifest = JSON.parse(readFileSync(join(output, "release-manifest.json"), "utf8"));
+  for (const { path, object } of sources) {
+    assert.ok(existsSync(join(output, path)), `Missing tracked runtime source: ${path}`);
+    const data = readFileSync(join(output, path));
+    assert.equal(createHash("sha1").update(`blob ${data.length}\0`).update(data).digest("hex"), object, path);
+    assert.ok(manifest.files.some((file) => file.path === path && file.sha256 === hash(data)), path);
+  }
 }));
 
 test("private state covers ledger, workspaces, logs, caches and stores; service never auto-starts", () => fixture(({ options, run }) => {
@@ -158,5 +213,6 @@ test("failed install or changed lock has no completed manifest; external depende
 test("path filter refuses traversal and excludes dotenv variants and runtime files", () => {
   for (const path of ["app/../secret", "/app/start.mjs", "app/a\nb", "app/a\\b"]) assert.throws(() => sourceAllowed(path));
   for (const path of ["app/.env", "app/.env.production", "spike/.env.local", "spike/data/x.json", "spike/results/x", "app/node_modules/x", "lab/key.pem", "app/logs/x", "app/cache/x"]) assert.equal(sourceAllowed(path), false);
-  for (const path of ["app/vite.config.ts", "spike/lib/sandbox.mjs", "lab/vault/src/Contract.sol", "tools/fetch-cbm-bin.sh"]) assert.equal(sourceAllowed(path), true);
+  for (const path of [...excludedFixturePaths, "app/src/lib/console-token.ts/nested.ts", "spike/test/console-token.test.mjs/nested.mjs"]) assert.equal(sourceAllowed(path), false, path);
+  for (const path of [...tokenSourcePaths, "app/vite.config.ts", "spike/lib/sandbox.mjs", "lab/vault/src/Contract.sol", "tools/fetch-cbm-bin.sh"]) assert.equal(sourceAllowed(path), true, path);
 });
