@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { checkRoamSelection, startRoamShellTest, startRoamSnapshotBuild, reconcileRoamShellTest, reconcileRoamSnapshot, roamSetupView } from "../lib/daytona-setup.mjs";
+import { daytonaError } from "../lib/daytona-api.mjs";
 import { allRoamOperations, roamBinding, roamSelectionState } from "../lib/daytona-state.mjs";
 
 import { daytonaFixture as fixture, settle } from "./helpers/daytona-fixture.mjs";
@@ -212,4 +213,17 @@ test("slow GET responses cannot admit toolbox commands after the startup deadlin
   assert.equal(f.deletes, 1);
   assert.ok(!f.calls.some((c) => c.path.endsWith("/process/execute")));
   assert.equal(allRoamOperations()[0].errorCode, "daytona_sandbox_start_failed");
+}));
+
+for (const status of [71,72,73,74,75,76,77,78,79,80]) test(`prerequisite ${status} survives setup storage with its fixed public message`, async () => fixture(async ({ config, f, deps }) => {
+  f.prerequisiteStatus = status;
+  startRoamShellTest(config, randomUUID(), deps);
+  await settle();
+  const view = roamSetupView(config);
+  assert.equal(view.ready, false);
+  assert.equal(view.operation.phase, "complete");
+  assert.equal(view.operation.errorMessage, daytonaError(view.operation.errorCode).message);
+  assert.ok(!view.operation.errorMessage.includes("synthetic"));
+  assert.equal(f.posts, 1);
+  assert.equal(f.deletes, 1);
 }));

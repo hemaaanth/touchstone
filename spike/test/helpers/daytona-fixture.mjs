@@ -65,7 +65,7 @@ export async function daytonaFixture(fn) {
       if (command === "true") return json({ exitCode: 0, result: "" });
       if (command.includes("touchstone-prerequisites-ready")) {
         await f.holdProbe?.();
-        return json({ exitCode: f.failProbe ? 1 : 0, result: "touchstone-prerequisites-ready" });
+        return json({ exitCode: f.prerequisiteStatus ?? (f.failProbe ? 1 : 0), result: "touchstone-prerequisites-ready" });
       }
       if (command.includes("nohup node")) return json({ exitCode: 0, result: "" });
       if (command.includes("touchstone-egress-ready")) return json({ exitCode: 0, result: "touchstone-egress-ready" });

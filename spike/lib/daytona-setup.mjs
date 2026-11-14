@@ -55,6 +55,9 @@ export function roamSetupView(config) {
         probePassed: latest.probePassed === true,
         errorCode: latest.errorCode ?? null,
         errorStatus: latest.errorStatus ?? null,
+        errorMessage: latest.errorCode ? latest.action === "snapshot" && latest.errorStatus === 403
+          ? "This Daytona account or key does not permit custom snapshot creation. Use an existing snapshot or update its snapshot permissions."
+          : daytonaError(latest.errorCode).message : null,
         ...(latest.action === "snapshot" ? { snapshotId: latest.resourceId ?? null, snapshotName: latest.snapshotName ?? null } : {}),
         canReconcile: !terminal(latest) && !drivers.has(latest.id),
       } : null,
