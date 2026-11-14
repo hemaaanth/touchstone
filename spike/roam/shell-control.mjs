@@ -118,7 +118,7 @@ async function control(q) {
 }
 
 async function worker(q) {
-  let shell, timer, polling, returned = false;
+  let shell, timer, polling, returned = false, expiring = false;
   let output = Buffer.alloc(0);
   const me = proc(process.pid);
   const job = { id: q.id, pid: process.pid, birth: me.birth, deadline: Date.now() + q.seconds * 1000, drained: false };
@@ -147,13 +147,43 @@ async function worker(q) {
     const collect = (b) => { output = Buffer.concat([output, b]).subarray(-262144); };
     shell.stdout.on("data", collect); shell.stderr.on("data", collect);
     shell.on("error", () => { void poison(); });
-    timer = setTimeout(() => { void poison(); }, q.seconds * 1000);
+    timer = setTimeout(async () => {
+      expiring = true;
+      clearInterval(polling);
+      try {
+        await locked(async () => {
+          const s = readState();
+          const stored = s.jobs.find((j) => j.id === job.id);
+          if (s.mode !== "active" || !stored || stored.birth !== job.birth) fail();
+          // Keep the group leader alive until every managed child is confirmed gone.
+          let drained = false;
+          for (let i = 0; i < 100; i++) {
+            const children = members(job).filter((p) => p.pid !== process.pid);
+            if (!children.length) { drained = true; break; }
+            for (const p of children) {
+              const now = proc(p.pid);
+              if (now?.birth === p.birth && now.group === job.pid && now.state !== "Z") {
+                try { process.kill(p.pid, "SIGKILL"); } catch (e) { if (e.code !== "ESRCH") throw e; }
+              }
+            }
+            await sleep(20);
+          }
+          if (!drained) fail();
+          stored.drained = true; save(s);
+        });
+        if (!returned) send({ ok: true, generation: q.generation, epoch: q.epoch,
+          exitCode: 124, result: output.toString("utf8") + "\nCommand timed out; managed processes were stopped." });
+        process.exit(0);
+      } catch { await poison(); }
+    }, q.seconds * 1000);
     shell.on("exit", (code) => {
+      if (expiring) return;
       if (!Number.isInteger(code)) { void poison(); return; }
       returned = true;
       send({ ok: true, generation: q.generation, epoch: q.epoch, exitCode: code, result: output.toString("utf8") });
       // The leader remains alive after the shell exits, until its group drains.
       polling = setInterval(async () => {
+        if (expiring) return;
         try {
           const drained = await locked(() => {
             const s = readState();

@@ -305,8 +305,20 @@ export async function removeScope(id: string): Promise<void> {
 // follow-up that reopens the saved session (`followUp: true`). Either way the
 // text comes back as an `operator-message` event, with `clientId` as its id.
 // Only an archived run refuses.
-export function steerRun(id: string, text: string, clientId?: string): Promise<{ ok: true; followUp?: boolean }> {
-  return postJson<{ ok: true; followUp?: boolean }>(`/api/runs/${encodeURIComponent(id)}/steer`, { text, id: clientId })
+export class MessageDeliveryError extends Error { readonly uncertain = true }
+
+export async function steerRun(id: string, text: string, clientId?: string): Promise<{ ok: true; followUp?: boolean }> {
+  try {
+    return await postJson<{ ok: true; followUp?: boolean }>(`/api/runs/${encodeURIComponent(id)}/steer`, { text, id: clientId })
+  } catch (error) {
+    if (!(error instanceof TypeError || error instanceof SyntaxError)) throw error
+    // Read after a lost response; never repeat a write to discover its outcome.
+    try {
+      const run = await fetchRun(id)
+      if (clientId && run.events.some((e) => ["operator-message", "operator-accepted"].includes(e.ev) && e.id === clientId)) return { ok: true, followUp: true }
+    } catch { /* The stream can still confirm delivery later. */ }
+    throw new MessageDeliveryError("Delivery is not confirmed. Retry this message safely, or wait for the agent's receipt.")
+  }
 }
 
 // Stop the run's live work: the audit, or a follow-up reply. The run ends as

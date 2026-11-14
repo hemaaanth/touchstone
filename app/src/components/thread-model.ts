@@ -403,7 +403,7 @@ export function composerNotice(
   sendError: string | null,
   action: { title: string; text: string } | null,
 ): { title: string; detail: string } | null {
-  if (sendError) return { title: "Message not sent", detail: sentence(sendError) }
+  if (sendError) return { title: sendError.startsWith("Delivery is not confirmed") ? "Checking delivery" : "Message not sent", detail: sentence(sendError) }
   if (action) return { title: action.title, detail: sentence(action.text) }
   return null
 }
@@ -555,16 +555,17 @@ export async function sendCopy(
   copy: Sent,
   steer: () => Promise<{ followUp?: boolean }>,
   update: (f: (xs: Sent[]) => Sent[]) => void,
-): Promise<{ ok: true; followUp: boolean } | { ok: false; error: string }> {
-  update((xs) => [...xs, copy])
+): Promise<{ ok: true; followUp: boolean } | { ok: false; error: string; uncertain?: boolean }> {
+  update((xs) => [...xs.filter((x) => x.id !== copy.id), copy])
   try {
     const res = await steer()
     const mode = res.followUp ? "follow-up" : "steer"
     update((xs) => xs.map((x) => (x.id === copy.id ? { ...x, mode } : x)))
     return { ok: true, followUp: !!res.followUp }
   } catch (err) {
-    update((xs) => xs.filter((x) => x.id !== copy.id))
-    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    const uncertain = err instanceof Error && "uncertain" in err && err.uncertain === true
+    if (!uncertain) update((xs) => xs.filter((x) => x.id !== copy.id))
+    return { ok: false, error: err instanceof Error ? err.message : String(err), uncertain }
   }
 }
 

@@ -1671,10 +1671,20 @@ export function steerRun(id, text, clientId) {
   if (!msg) throw new Error("The message is empty. Type a message and send it again.")
   // The UI's id for the message. The echo carries it back unchanged.
   const tag = typeof clientId === "string" && /^[\w-]{1,64}$/.test(clientId) ? clientId : undefined
-  if (idle(run)) return followUp(run, msg, tag)
+  const hash = createHash("sha256").update(msg).digest("hex")
+  const accepted = tag && run.events.find((e) => e.ev === "operator-accepted" && e.id === tag)
+  if (accepted) {
+    if (accepted.hash !== hash) throw new Error("This message id was already used for different text.")
+    return { ok: true, ...(accepted.followUp ? { followUp: true } : {}) }
+  }
+  const receipt = (result) => {
+    if (tag) broadcast(run, { t: Date.now(), ev: "operator-accepted", id: tag, hash, followUp: !!result.followUp })
+    return result
+  }
+  if (idle(run)) return receipt(followUp(run, msg, tag))
   if (!run.child?.stdin?.writable) throw new Error(`The run cannot take a message at this moment (its status is "${run.status}"). Wait a moment and send the message again.`)
   run.child.stdin.write(JSON.stringify({ text: msg, id: tag }) + "\n")
-  return { ok: true }
+  return receipt({ ok: true })
 }
 
 // Stop a run's work: the live audit or a follow-up reply. The worker process

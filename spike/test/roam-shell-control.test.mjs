@@ -247,16 +247,22 @@ test("remote epoch rejects a delayed launch even after pause and resume", async 
   assert.equal(f.state().mode, "unknown");
 });
 
-test("remote command deadline fails closed even without a toolbox timeout", async (t) => {
-  const f = fixture(t);
+test("a confirmed command timeout stops its group and allows the next command", async (t) => {
+  const f = fixture(t), file = join(f.dir, "timeout-ticks");
   const before = Date.now();
-  await assert.rejects(f.run("sleep 20", 1));
+  const result = await f.run(`(while :; do printf x >> '${file}'; sleep 0.03; done) & wait`, 1);
   assert.ok(Date.now() - before < 5000);
-  assert.equal(f.entries[0].exit_code, undefined);
-  assert.equal(f.state().mode, "unknown");
-  await assert.rejects(pauseRoamShell(f.m));
-  await assert.rejects(resumeRoamShell(f.m));
-  await assert.rejects(f.run("true"));
+  assert.match(result.output[0].text, /exit 124/);
+  assert.match(result.output[0].text, /Command timed out/);
+  assert.equal(f.entries[0].exit_code, 124);
+  assert.equal(f.state().mode, "active");
+  assert.ok(f.state().jobs.every((j) => j.drained));
+  const count = readFileSync(file).length;
+  await sleep(150);
+  assert.equal(readFileSync(file).length, count);
+  assert.match((await f.run("printf recovered")).output[0].text, /exit 0\nrecovered/);
+  await pauseRoamShell(f.m);
+  await resumeRoamShell(f.m);
 });
 
 test("lost exec response latches unknown while a background job remains accounted for", async (t) => {

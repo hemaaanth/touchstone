@@ -455,3 +455,14 @@ test("Ask is a stable unresolved native tool part between groups, then one recei
   assert.deepEqual(answered[1].result, { id: "q", agent: "coordinator", answer: "reply", text: "before.ts" })
   assert.equal(answered.filter((p) => p.toolName === "ask_human").length, 1)
 })
+
+
+test("a lost send response retains its copy for a later agent receipt", async () => {
+  const copy: Sent = { id: "lost-response", text: "continue", base: 0, mode: "sending" }
+  let copies: Sent[] = []
+  const error = Object.assign(new Error("Delivery is not confirmed. Waiting for the agent's receipt."), { uncertain: true })
+  const result = await sendCopy(copy, async () => { throw error }, (update) => { copies = update(copies) })
+  assert.equal(result.ok, false)
+  assert.deepEqual(copies, [copy])
+  assert.equal(composerNotice(error.message, null)?.title, "Checking delivery")
+})

@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useId, useRef, useState, type ReactNode } from "react"
-import { answerRunAsk, AskAnswerError } from "@/lib/api"
+import { answerRunAsk, AskAnswerError, fetchRun } from "@/lib/api"
 import { reloadRun, type RunState } from "@/lib/runModel"
 import { COORDINATOR, formatAskChoiceReply, type AskAnswer, type AskReceipt, type HumanAsk } from "@/lib/types"
 import { Button } from "@/components/ui/button"
@@ -33,7 +33,8 @@ export function AskHumanProvider({ runId, state, live, children }: { runId: stri
   useEffect(() => {
     for (const ask of state?.humanAsks ?? []) {
       const draft = current.current.drafts[ask.id]
-      if (draft?.accepted && ask.receipt) patch(ask.id, { accepted: undefined, candidate: undefined })
+      if (draft && ask.answer && (draft.pending || draft.uncertain || draft.error || (draft.accepted && ask.receipt))) patch(ask.id, { pending: false, uncertain: false, error: undefined,
+        ...(ask.receipt ? { accepted: undefined, candidate: undefined } : {}) })
     }
   }, [state])
   const submit = async (original: HumanAsk, body: AskAnswer, choices?: string[]) => {
@@ -50,6 +51,20 @@ export function AskHumanProvider({ runId, state, live, children }: { runId: stri
       if (result.ok !== true || result.receipt.id !== ask.id || result.receipt.agent !== ask.agent || result.receipt.answer !== expected) throw new Error("The accepted answer did not match this question. Refresh its status.")
       patch(ask.id, { pending: false, uncertain: false, accepted: result.receipt, error: undefined })
     } catch (cause) {
+      // HTTP can fail after the worker accepted the reply. Trust its saved receipt.
+      if (!(cause instanceof AskAnswerError) || cause.uncertain) {
+        try {
+          const saved = await fetchRun(runId)
+          const receipt = saved.events.findLast((e) => e.ev === "ask-receipt" && e.id === ask.id && e.agent === ask.agent)
+          const expected = "reply" in body ? "reply" : body.done ? "done" : "cancel"
+          if (receipt?.answer === expected) {
+            patch(ask.id, { pending: false, uncertain: false, error: undefined, accepted: { id: ask.id, agent: ask.agent, answer: expected, ...(typeof receipt.text === "string" ? { text: receipt.text } : {}) } })
+            reloadRun(runId)
+            return
+          }
+        } catch { /* Retain the original answer until delivery is known. */ }
+      }
+      if (current.current.state?.humanAsks.some((a) => a.id === ask.id && a.agent === ask.agent && a.answer)) return
       const uncertain = draft.uncertain === true || !(cause instanceof AskAnswerError) || cause.uncertain
       patch(ask.id, { pending: false, uncertain, candidate: uncertain ? body : undefined, error: cause instanceof Error ? cause.message : "The answer was not accepted." })
       throw cause

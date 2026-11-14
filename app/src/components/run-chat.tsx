@@ -213,6 +213,7 @@ export function RunChat({
   // succeeds, so it never blinks off and on.
   const [pending, setPending] = useState(false)
   const pendingRef = useRef(false)
+  const unconfirmed = useRef<Sent | null>(null)
   const send = async (text: string, restore = true) => {
     // assistant-ui empties the composer before it hands the message over. Put
     // the text back in the same tick, so the box never blinks empty.
@@ -222,20 +223,31 @@ export function RunChat({
     pendingRef.current = true
     setPending(true)
     setSent((xs) => xs.filter((x) => !settled.current.has(x.id)))
-    const copy: Sent = { id: messageId(), text, base: state.events.length, mode: "sending", restore }
+    const copy: Sent = unconfirmed.current?.text === text ? unconfirmed.current : { id: messageId(), text, base: state.events.length, mode: "sending", restore }
     const res = await sendCopy(copy, () => steerRun(run.id, text, copy.id), setSent)
     pendingRef.current = false
     setPending(false)
     if (res.ok) {
+      unconfirmed.current = null
       setSendError(null)
       // The copy now carries the text. Empty the box, unless the operator
       // changed it meanwhile.
       if (composer && composer.getState().text === text) composer.setText("")
       if (res.followUp) reloadRun(run.id)
     } else {
+      if (res.uncertain) { unconfirmed.current = copy; reloadRun(run.id) }
       setSendError(res.error)
     }
   }
+
+  useEffect(() => {
+    const copy = unconfirmed.current
+    if (!copy || outcomes.get(copy.id) !== "echoed") return
+    unconfirmed.current = null
+    setSendError(null)
+    const composer = runtimeRef.current?.thread.composer
+    if (copy.restore && composer?.getState().text === copy.text) composer.setText("")
+  }, [outcomes, sendError])
 
   // A copy the agent never read: its text goes back in the composer once.
   const restored = useRef(new Set<string>())
