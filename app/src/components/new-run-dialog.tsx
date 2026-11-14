@@ -104,7 +104,13 @@ export function NewRunDialog({
   const field = "h-9 w-full rounded-lg border-input bg-background px-3 text-[13px]"
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={(next, details) => {
+      if (!next && modulesMissing && details.reason === "escape-key") {
+        setModulesMissing(false)
+        return
+      }
+      onOpenChange(next)
+    }}>
       <DialogContent className="flex max-h-[calc(100svh-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-[440px]" showCloseButton={false}>
         <div className="flex h-12 shrink-0 items-center border-b px-5">
           <DialogTitle className="text-sm font-semibold">New run</DialogTitle>
