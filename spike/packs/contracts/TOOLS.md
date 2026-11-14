@@ -262,6 +262,11 @@ the value is credited to the test party. After completing the table, the backsto
 - Aderyn runs on the host, not in Docker. Untrusted code is parsed outside the
   sandbox. Move it into a container.
 - The fuzz template covers vault accounting only. Other targets get no fuzz leads.
+- A replay trace has a hard ceiling (256 MiB, about 200 state-writing iterations).
+  A bug that needs a longer loop is not judged, and the agent is told to record it
+  as a candidate. Measured on the pinned image: a 50-iteration dust theft is 23 MiB,
+  100 is 45 MiB, 200 is 89 MiB. The trace is read back into memory at its own size,
+  which is why the ceiling is a number rather than unlimited.
 - Halmos runs only properties the target ships. A target with no `check_*`
   functions gets no symbolic leads.
 - Chimera runs only a suite the target ships. Most targets ship none, so they

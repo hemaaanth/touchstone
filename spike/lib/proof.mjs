@@ -17,6 +17,8 @@ import { readdirSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { writePoc, forgeTestJson, FORGE_OUTPUT_CAP } from "./sandbox.mjs";
 import { extractControlTrace, controlTakeovers, word, asAddress, isAddressWord, ADMIN_SLOT, IMPLEMENTATION_SLOT } from "./control-trace.mjs";
+import { judgePinnedHarm, pinnedTargets } from "./oracle-deployed.mjs";
+import { judgeLocked } from "./oracle-locked.mjs";
 import { keccak256 } from "ethers";
 // The one amount formatter the console and the report share, so the engine never
 // shows a harm number cut: exact when it fits six significant decimals, else
@@ -138,7 +140,7 @@ function findResult(parsed, contract) {
 // Every replay runs at full state verbosity (-vvvvv): the harm gate needs the
 // storage writes. `stateTrace` only decides whether the large controlTrace is
 // kept on the returned delta (packs that judge control harm themselves ask).
-export async function proofDelta(ws, { source, contract, timeoutMs = 180_000, stateTrace = false } = {}) {
+export async function proofDelta(ws, { source, contract, timeoutMs = 180_000, stateTrace = false, pin = null } = {}) {
   if (source) writePoc(ws, source);
   const { raw, timedOut, overflow } = await forgeTestJson(ws, { matchContract: contract, timeoutMs, stateTrace: true });
   // The replay output was larger than the cap, so it was cut. A cut trace is never
@@ -153,7 +155,24 @@ export async function proofDelta(ws, { source, contract, timeoutMs = 180_000, st
   const flows = netFlows(r.traces);
   const transfers = transferTable(flows, lowerKeys(r.labeled_addresses));
   const controlTrace = extractControlTrace(r.traces);
-  const harm = judgeHarm(r.traces, { scope: scopeCode(ws), controlTrace, layouts: scopeLayouts(ws), balances: scopeBalances(ws) });
+  // Two oracles, one verdict. The offline channels look for harm to a contract the
+  // test deployed from source. When the run carries a chain PIN, the deployed
+  // oracle looks for harm to a real address instead (lib/oracle-deployed.mjs), and
+  // the two are combined: either may prove, and the pinned one never relaxes the
+  // offline rules. A run with no pin takes exactly the old path.
+  //
+  // The pin is read from the workspace config, not from an argument, so no caller
+  // can replay a forked run's proof under the offline rules by forgetting to pass
+  // it: the run's own record decides.
+  const offline = judgeHarm(r.traces, { scope: scopeCode(ws), controlTrace, layouts: scopeLayouts(ws), balances: scopeBalances(ws) });
+  const cfgPin = pin ?? (() => { try { return JSON.parse(readFileSync(join(ws, ".touchstone.json"), "utf8"))?.forkTargets ?? null; } catch { return null; } })();
+  const pinned = pinnedTargets(cfgPin);
+  const deployed = pinned ? judgePinnedHarm(r.traces, { pinned, net: scanTargets(r.traces, scopeCode(ws)).net, controlTrace }) : null;
+  // The locked channel: value that is stuck rather than transferred. It is tried only
+  // when the transfer channels found nothing, because a drain that succeeds is
+  // already the better finding, and a lock is what is left when nothing moved.
+  const locked = offline.ok ? null : judgeLocked(r.traces, { ws, targets: scanTargets(r.traces, scopeCode(ws)).targets });
+  const harm = deployed?.ok ? deployed : offline.ok ? offline : locked?.ok ? locked : offline;
   return {
     tool: "Foundry",
     source: "engine-replay",
@@ -176,7 +195,7 @@ export async function proofDelta(ws, { source, contract, timeoutMs = 180_000, st
   };
 }
 
-export const TRACE_TOO_LARGE = `the replay trace is larger than ${FORGE_OUTPUT_CAP / 1048576} MiB, so it was cut and the gate does not judge it. A forge-std deal(token, …) in the test body makes a very large trace (about 10 MiB for each call). Move it to setUp(), and keep the test body to the attack itself. But use deal in setUp() only to fund a scope contract: a deal that funds the attacker with a scope token writes that token's storage and is refused too. So get the attacker's tokens through the protocol, or use a token outside the scope`;
+export const TRACE_TOO_LARGE = `the replay trace is larger than ${FORGE_OUTPUT_CAP / 1048576} MiB, so it was cut and the gate does not judge it. That is the harness ceiling, not a judgement on the bug: the test does an enormous number of state-writing steps. Two ways forward. (1) Keep the same root cause but make the test shorter: attack with ONE decisive call where the contract allows it, or start the fixture in setUp() so the body holds only the attack. A forge-std deal(token, …) in the test BODY costs about 10 MiB per call, so move it to setUp(). (2) If the bug genuinely needs a long loop (a dust theft repeated hundreds of times), record it with submit_candidate and say so: the proof model cannot measure it, but a human can read the loop. Do not discard it.`;
 function traceTooLarge(contract, timedOut) {
   const harm = { ok: false, reason: TRACE_TOO_LARGE, targets: [] };
   return { tool: "Foundry", source: "engine-replay", contract, test: null, status: "fail", pass: false, reason: TRACE_TOO_LARGE, gasUsed: null, logs: [], transfers: [], harm, timedOut };
@@ -860,7 +879,7 @@ function netTokenDrains(drains, traces, targets, funded) {
 const BACKSTOP_FIX = {
   state: "do not restore an earlier state inside the proof test",
   exec: "remove gas metering cheatcodes from the proof test",
-  fork: "the replay is offline: do not create, select or roll a fork, or replay a transaction, in the proof test",
+  fork: "do not roll, re-select or replay a transaction inside the test body (a fork may be created once in setUp)",
   account: "the gate has no rule for this cheatcode: keep it out of the proof test",
   mock: "the gate has no rule for this cheatcode: keep it out of the proof test",
   unknown: "use only the cheatcodes of the pinned forge-std Vm.sol",
@@ -879,7 +898,15 @@ function backstopNote(controlTrace) {
     const what = [...new Set(broken.map((e) => `vm.${e.name} (in ${e.where})`))].join(", ");
     return `the test used ${what}, but the trace shows no reverted call for it to expect (the call it was armed for succeeded, or no call followed), so the trace and the test disagree and no scope target counts. To repair: make the expected call really revert, or remove the expectation from the proof test.`;
   }
-  const hits = controlTrace?.backstop ?? [];
+  // A `fork` hit is NOT fatal on a forked run, and the two cases differ sharply:
+  //   - setUp may create and select the fork. That is the point of a forked run,
+  //     and it grants no state to the body: the fork is read from the chain.
+  //   - the BODY must not roll, re-select or replay. A rollFork/rollFork-tx inside
+  //     the attack is how a test rewinds time to make a loss look bigger, so it
+  //     stays refused.
+  // So a fork hit only counts when it happened in the test BODY. Each entry says
+  // `where: "body" | "setUp"` (control-trace.mjs), which is exactly the split.
+  const hits = (controlTrace?.backstop ?? []).filter((h) => !(h.class === "fork" && h.where === "setUp"));
   if (!hits.length) return null;
   const seen = new Map();
   for (const h of hits) {
