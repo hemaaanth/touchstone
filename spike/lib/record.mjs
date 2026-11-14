@@ -75,7 +75,10 @@ export async function proveFindings(ws, submitted, events, log = () => {}, { sta
     const pocProved = forgePassed && proof?.pass === true && proof?.harm?.ok === true;
     // The submitted test, not proof.source (that label is "engine-replay").
     const source = typeof f.source === "string" && f.source.trim() ? f.source : undefined;
-    out.push({ n: f.n, title: f.title, severity: f.severity, poc: f.poc, explanation: f.explanation, forgePassed, pocProved, proof, ...(source ? { source } : {}) });
+    // `class` is carried through: it is how the operator reads which attack classes
+    // this audit actually covered, and dropping it here left every proved finding with
+    // no class in the record (found on a real run, 2026-11-14).
+    out.push({ n: f.n, title: f.title, severity: f.severity, ...(f.class ? { class: f.class } : {}), poc: f.poc, explanation: f.explanation, forgePassed, pocProved, proof, ...(source ? { source } : {}) });
   }
   return out;
 }
