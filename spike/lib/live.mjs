@@ -53,7 +53,7 @@ export function liveTarget(ws) {
   const net = cfg.live?.net;
   const gate = cfg.live?.gate;
   const baseUrl = cfg.baseUrl ?? cfg.live?.baseUrl;
-  if (!net || !gate) throw new Error("this live run has no confinement boundary (it was not set up by the prepass)");
+  if (!net || !gate) throw new Error("Live requests are unavailable: this workspace has no confinement boundary. It was not prepared, or its live route has ended. Do not retry request scripts. Start a new run for live testing; saved files can still be inspected.");
   if (!baseUrl) throw new Error("this live run has no base URL");
   if (!cfg.live?.image) throw new Error("this live run has no script image");
   return { net, gate, baseUrl, image: cfg.live.image };
