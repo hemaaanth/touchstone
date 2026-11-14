@@ -44,6 +44,10 @@ export type StepKind =
   | "read"
   | "poc"
   | "cap"
+  // A scripted request the probe engine sent at the target (an MCP tool call,
+  // a crafted HTTP body). `label` is the probe's name; `detail` says how many
+  // calls it made and whether it matched a known attack pattern.
+  | "request"
   | "decided"
   | "note"
   | "operator"
@@ -498,6 +502,50 @@ export function reduceEvents(events: RunEvent[]): RunState {
           phase,
           label: "Hit the exploit attempt budget",
           detail: num(e.attempts) != null ? `${num(e.attempts)} attempts used` : "No attempts remaining",
+        })
+        break
+      case "run_request_script":
+        // The probe engine sent a scripted request at the target. It resolves
+        // into a call count (and a matched attack pattern, if any) when its
+        // `-done` lands. A lead, never a finding: it stays neutral.
+        steps.push({
+          key,
+          kind: "request",
+          phase,
+          label: str(e.label) || "Request probe",
+          attempt: num(e.attempt) ?? undefined,
+          state: "running",
+        })
+        break
+      case "run_request_script-done": {
+        // Resolve the most recent still-running request this same agent sent
+        // under this label. `matched` is an attack-pattern id (never a proof);
+        // `calls` is how many requests the script made.
+        const label = str(e.label)
+        const matched = str(e.matched) || null
+        const calls = num(e.calls)
+        for (let j = steps.length - 1; j >= 0; j--) {
+          const s = steps[j]
+          if (s.kind === "request" && s.state === "running" && s.label === label && (s.agent ?? null) === who) {
+            // Neutral: a matched request is a lead to test, not a finding.
+            s.state = "pass"
+            s.detail = matched
+              ? `Matched ${matched}`
+              : calls != null
+                ? `${calls} call${calls === 1 ? "" : "s"}`
+                : undefined
+            break
+          }
+        }
+        break
+      }
+      case "run_request_script-capped":
+        steps.push({
+          key,
+          kind: "cap",
+          phase,
+          label: "Hit the request budget",
+          detail: num(e.attempts) != null ? `${num(e.attempts)} requests used` : "No requests remaining",
         })
         break
       case "thinking-delta": {

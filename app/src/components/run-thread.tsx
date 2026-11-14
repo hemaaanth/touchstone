@@ -12,6 +12,7 @@ import {
   ArrowUp,
   ArrowDown,
   Brain,
+  Check,
   ChevronRight,
   FileCode2,
   GitBranch,
@@ -44,7 +45,7 @@ import { cn } from "cn"
 import { composerRoomRef } from "@/lib/run-layout"
 import { Button } from "@/components/ui/button"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
-import { card, cardInteractive, ShimmerLabel, StatusMark, type Mark } from "@/components/assistant-ui/elements/surfaces"
+import { card, cardInteractive, mono, ShimmerLabel, StatusMark, type Mark } from "@/components/assistant-ui/elements/surfaces"
 import { ToolGroup, type GroupedTool } from "@/components/assistant-ui/elements/tool-group"
 import { AgentHandoff } from "@/components/assistant-ui/elements/agent-handoff"
 import { Markdown } from "@/components/markdown"
@@ -479,6 +480,7 @@ const StepPart: ToolCallMessagePartComponent = ({ args }) => {
     tail?: boolean
     eyebrow?: string
     spawn?: Step[]
+    work?: Step[]
     fleetFinding?: boolean
     stepKey?: string
     waiting?: boolean
@@ -507,6 +509,7 @@ const StepPart: ToolCallMessagePartComponent = ({ args }) => {
         proofArtifactId={a.proofArtifactId ?? null}
         stepKey={a.stepKey}
       />
+  if (a.work) return <WorkCard work={a.work} />
   if (a.group) return <ToolGroupPart group={a.group} />
   if (a.artifact && a.version && !a.step)
     return (
@@ -746,6 +749,7 @@ const TOOL_NAME: Partial<Record<Step["kind"], string>> = {
   scan: "scan",
   note: "read",
   cap: "cap",
+  request: "run",
 }
 
 // A contiguous run of the agent's non-cognition steps, folded into one card that
@@ -757,9 +761,14 @@ function ToolGroupPart({ group }: { group: Step[] }) {
     id: s.key,
     name: TOOL_NAME[s.kind] ?? s.kind,
     target: s.detail ? `${s.label} — ${s.detail}` : s.label,
-    state: s.state === "fail" ? "failed" : "done",
+    state: s.state === "running" ? "running" : s.state === "fail" ? "failed" : "done",
   }))
-  const label = group.length === 1 ? group[0].label : (candidateGroupLabel(group.map((s) => s.label)) ?? "Recon & static analysis")
+  const label =
+    group.length === 1
+      ? group[0].label
+      : group.every((s) => s.kind === "request")
+        ? `Sent ${group.length} requests`
+        : (candidateGroupLabel(group.map((s) => s.label)) ?? "Recon & static analysis")
   return (
     <ToolGroup
       className="max-w-none"
@@ -800,6 +809,63 @@ function ReasoningBody({ text, tail }: { text: string; tail: boolean }) {
 }
 
 const RAIL = "mt-1.5 border-l-2 border-border pl-3 text-[13px] leading-relaxed text-muted-foreground"
+
+// A think → probe → think stretch, folded into one card that is collapsed by
+// default. The header counts what happened ("Worked · 14 requests · thought 15
+// times"); opening it shows every thought and tool call in the order they
+// happened, so the agent reads as one worker, not a wall of "Thought it
+// through". Neutral throughout: a request probe is a lead to test, never a
+// finding, so no row turns red or green here.
+function WorkCard({ work }: { work: Step[] }) {
+  const [open, setOpen] = useState(false)
+  const thoughts = work.filter((s) => s.kind === "reasoning").length
+  const requests = work.filter((s) => s.kind === "request").length
+  const reads = work.length - thoughts - requests
+  const running = work.some((s) => s.state === "running")
+  const counts: string[] = []
+  if (requests) counts.push(`${requests} request${requests === 1 ? "" : "s"}`)
+  if (reads) counts.push(`${reads} step${reads === 1 ? "" : "s"}`)
+  counts.push(`thought ${thoughts} time${thoughts === 1 ? "" : "s"}`)
+  return (
+    <div className={cn(card, "flex w-full max-w-160 flex-col overflow-hidden")}>
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen(!open)}
+        className="flex items-center gap-2.5 px-3.5 py-2.5 text-start transition-colors hover:bg-foreground/[0.03]"
+      >
+        <ChevronRight className={cn("size-3 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")} />
+        <Brain className="size-3.5 shrink-0 text-muted-foreground" />
+        <span className="shrink-0 text-[13.5px] font-medium">Worked</span>
+        <span className={cn(mono, "min-w-0 truncate text-muted-foreground tabular-nums")}>· {counts.join(" · ")}</span>
+        <StatusMark className="ml-auto" mark={running ? "running" : "done"} />
+      </button>
+      {open ? (
+        <div className="flex flex-col gap-1 border-t border-foreground/[0.06] px-3.5 py-2.5 animate-in fade-in slide-in-from-top-1 duration-200">
+          {work.map((s) =>
+            s.kind === "reasoning" ? (
+              <Markdown key={s.key} text={s.label} className={cn(RAIL, "my-1")} />
+            ) : (
+              <div key={s.key} className="flex items-center gap-2.5 py-1">
+                <span className="flex size-3.5 shrink-0 items-center justify-center">
+                  {s.state === "running" ? (
+                    <Loader2 className="size-3 animate-spin text-muted-foreground motion-reduce:animate-none" />
+                  ) : (
+                    <Check className="size-3 text-muted-foreground" />
+                  )}
+                </span>
+                <span className={cn(mono, "shrink-0 text-muted-foreground")}>{TOOL_NAME[s.kind] ?? s.kind}</span>
+                <span className="min-w-0 flex-1 truncate text-[13px] text-foreground/80">
+                  {s.detail ? `${s.label} — ${s.detail}` : s.label}
+                </span>
+              </div>
+            ),
+          )}
+        </div>
+      ) : null}
+    </div>
+  )
+}
 
 // Streamed assistant prose, rendered as Markdown. While it streams, it reveals
 // word by word instead of in the uneven chunks the transport sends.
