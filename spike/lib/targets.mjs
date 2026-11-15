@@ -557,7 +557,9 @@ export function prepareWorkspace(target, { modules = [] } = {}) {
   // reach is a confinement gate, so the kind must survive the copy.
   if (target.kind === "live" && pack === "review" && target.members?.length) {
     const ws = prepareScopeWorkspace({ ...target, kind: "scope" }, { modules })
-    writeTouchstone(ws, { ...readTouchstone(ws), kind: "live" })
+    // The live lane aims at the scope's first origin, the same base a bare live
+    // target would use; without it the pre-pass cannot bind.
+    writeTouchstone(ws, { ...readTouchstone(ws), kind: "live", baseUrl: liveOrigins(target)[0] })
     return ws
   }
   if (target.kind === "live" && pack === "contracts" && (target.members?.length || target.contracts?.length)) return prepareWorkspace({ ...target, kind: "scope" }, { modules })
