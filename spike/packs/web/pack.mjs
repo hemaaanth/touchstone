@@ -14,10 +14,10 @@
 // independent oracle reads the recorded transcript, never the script's own
 // console output, to decide whether the harm is real. See SKILL.md and
 // TOOLS.md.
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { defineTool } from "@earendil-works/pi-durable";
-import { obj, str } from "@earendil-works/pi-schema";
+import { arr, bool, obj, opt, str, unknown } from "@earendil-works/pi-schema";
 import { Wallet } from "ethers";
 import { event } from "../../lib/event.mjs";
 import { attemptCap, leftText } from "../../lib/attempt-cap.mjs";
@@ -27,6 +27,7 @@ import {
   httpProof,
   readLabHandle,
   runRequestScript,
+  serialize,
   startLab,
   teardownPersistedLab,
   writeLabHandle,
@@ -34,10 +35,14 @@ import {
   teardownPersistedScan,
   requireImage,
 } from "../../lib/proof-http.mjs";
+import { captureThrough, CLIENT_PRELUDE, keepHar } from "../../lib/intercept.mjs";
+import { BROWSER_IMAGE, browserProof, captureBrowser, checkSteps } from "../../lib/browser-client.mjs";
+import { closeSession, openSession, operatorHasControl, sessionFor } from "../../lib/browser-stream.mjs";
+import { writeFileSync as writeFile } from "node:fs";
 
 import { scanWeb, docQueryUrls } from "./scan.mjs";
 import { extraScans, foldScan } from "./discovery.mjs";
-import { isLive, liveProof, runLiveScript, LIVE_SCRIPT_TIMEOUT_MS } from "../../lib/live.mjs";
+import { isLive, liveTarget as liveTargetOf, liveProof, replayLiveBrowser, runLiveCapture, runLiveScript, LIVE_SCRIPT_TIMEOUT_MS } from "../../lib/live.mjs";
 import { livePrepass } from "./live.mjs";
 import { fp, scrubBody, scrubProof, scrubText } from "./redact.mjs";
 import { CANDIDATE_HINT, SCRIPT_POC, candidateTool, withCandidateLine, recordScript, scriptLookup } from "../../lib/candidate.mjs";
@@ -48,6 +53,7 @@ const LEADS_FILE = ".web-leads.json";
 // Total run_request_script attempts for the whole audit. Three root causes
 // are planted; this leaves room to explore and still re-try a failed attempt.
 const MAX_SCRIPT_RUNS = attemptCap("MAX_HTTP_RUNS");
+const MAX_CAPTURES = attemptCap("MAX_CAPTURES");
 
 // --- Oracles: each reads the independently-recorded transcript, never the
 // script's own console.log claims, and decides if a known harm pattern
@@ -389,6 +395,12 @@ const siteOf = (host) => String(host ?? "").toLowerCase().split(".").slice(-2).j
 // Proof: the response echoed back a foreign Origin the script chose, with
 // `access-control-allow-credentials: true`. A bare `*` is NOT enough (it cannot
 // be used with credentials), so it never fires on a public JSON API by itself.
+//
+// A DEV origin does not count. QomX, Arctide and Synthra all echo
+// `http://localhost:3000` and that is true of most apps, so matching it promoted
+// the same weak note to a finding on every site (2026-11-14). The rigged origin
+// must be one no app would list by default.
+export const DEV_ORIGIN = /^(localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0)$|\.local$/;
 function corsCredentialOracle() {
   return {
     name: "cors-credentialed-reflection",
@@ -400,12 +412,14 @@ function corsCredentialOracle() {
         if (!allow || !/^true$/i.test(creds)) continue;
         const sent = String(e.reqHeaders?.origin ?? e.reqHeaders?.Origin ?? "").trim();
         if (!sent || allow !== sent) continue;
-        const sentSite = siteOf(hostOf(sent));
+        const sentHost = hostOf(sent);
+        const sentSite = siteOf(sentHost);
         const targetSite = siteOf(hostOf(e.url ?? ""));
         if (!sentSite || sentSite === targetSite) continue;
+        if (DEV_ORIGIN.test(String(sentHost ?? "").replace(/:\d+$/, ""))) continue;
         return { pass: true, detail: `${e.method} ${e.path} answered a request from ${sent} with access-control-allow-origin: ${allow} AND access-control-allow-credentials: true, so any page on that origin can read the response with the visitor's cookies attached.` };
       }
-      return { pass: false, detail: "no response reflected a foreign Origin together with access-control-allow-credentials: true" };
+      return { pass: false, detail: "no response reflected a foreign, non-dev Origin together with access-control-allow-credentials: true (a dev origin such as http://localhost:3000 is expected anywhere and does not count)" };
     },
   };
 }
@@ -546,6 +560,18 @@ Rules of the environment:
   run_request_script: write a short script, it runs against the live lab, and you get
   back the exact request/response transcript the engine recorded (never trust your own
   console.log about what happened — read the transcript the tool prints back).
+- When a suspect lives in a client FLOW (a sign-in that reuses a nonce, a session
+  used after sign-out, an ordered JSON-RPC sequence), use capture_traffic with
+  the same script globals. The client runs behind a recording proxy, so the
+  transcript is just as independent, and it writes a HAR you can read. Prefer one
+  capture for a whole flow over many single requests. On a live run its traffic
+  still passes the scope gate.
+- When the suspect needs a RENDERED page (a login form, a JS-rendered route, a
+  wallet prompt), use capture_browser with steps instead of a script. It records
+  the same way and its findings replay as browser runs.
+- When a HUMAN must act (a login with an OTP, a captcha, a wallet approval), use
+  browser_session: start it, give the operator the URL, wait, then state and
+  stop. The browser sits behind the same proxy and gate.
 - Inside a script, three globals are already defined:
   - await request(method, path, { headers, body }) — one real HTTP call. Returns
     { status, resBody, resHeaders }.
@@ -623,6 +649,13 @@ function readWorkspaceText(ws, name) {
   } catch {
     return null;
   }
+}
+
+// Keep a session's HAR (already a Buffer) next to the run, named by kind.
+function keepHarBytes(ws, bytes, label) {
+  mkdirSync(join(ws, "captures"), { recursive: true });
+  const file = `captures/${label}.har`;
+  try { writeFile(join(ws, file), bytes); return file; } catch { return null; }
 }
 
 function kickoff(ws, env = {}) {
@@ -714,6 +747,224 @@ function tools(ws, state) {
     },
   });
 
+  // Capture, not a one-shot script. Same evidence rules: the proxy records the
+  // transcript, so an oracle can match it and submit_finding accepts the label.
+  // A client script is what a scanner cannot be: a session holder that signs in,
+  // repeats a session, or speaks JSON-RPC in order.
+  const captureTraffic = defineTool({
+    name: "capture_traffic",
+    description: "Run a short CLIENT program against the target through a recording MITM proxy and read what it actually sent. Use it when the bug lives in a client flow, not one request: a sign-in that reuses a nonce, a wallet that signs twice, a JSON-RPC sequence in order, a session used after sign-out. Inside the script the same globals as run_request_script exist (await request(method, path, { headers, body }), buildSiwe(), signPersonal()) but every call goes through the proxy and is recorded independently. The captured session is a real transcript: if it trips a harm pattern you get a MATCH and submit_finding works with the same label. A healthy capture is still only a lead. Writes a HAR file you can list. On a live run the client goes through the recording proxy and then the scope gate, so the same grant still decides every host, and the operator's scope session headers are already on same-origin calls (send your own to override one).",
+    parameters: obj({
+      label: str({ description: "a short, unique name for this capture, e.g. \"signin-replay\" (pass this same label to submit_finding on a match)" }),
+      script: str({ description: "JS client source using request()/buildSiwe()/signPersonal(); finish with the summary you want read" }),
+    }),
+    replay: "unsafe",
+    execute: async (args) => {
+      const label = String(args.label);
+      const script = String(args.script);
+      if (operatorHasControl(ws)) {
+        return { output: [{ type: "text", text: "The operator has the browser right now. Wait for them, or take it back with browser_session action view." }], isError: true };
+      }
+      const live = isLive(ws);
+      const handle = live ? null : readLabHandle(ws);
+      if (!live && !handle) {
+        return { output: [{ type: "text", text: "The lab is not running (no persisted handle). This is an infrastructure error, not something your script can fix." }], isError: true };
+      }
+      const attempt = (state.captures ?? 0) + 1;
+      if (attempt > MAX_CAPTURES) {
+        event("capture_traffic-capped", { label, attempt });
+        return { output: [{ type: "text", text: `Capture budget exhausted (${MAX_CAPTURES} captures used). Use run_request_script from here on.` }], isError: true };
+      }
+      state.captures = attempt;
+      event("capture_traffic", { label, attempt });
+      let run;
+      let harPath = null;
+      try {
+        // A live run already queues its scripts on the workspace; the lab queue
+        // is the proxy name. Either way a capture takes the same turn as a
+        // script, because overlapping runs would interleave one transcript.
+        if (live) {
+          run = await runLiveCapture(ws, script, { label });
+          harPath = run.harPath;
+        } else {
+          const safe = label.replace(/[^a-z0-9._-]+/gi, "-").slice(0, 40) || "capture";
+          const dir = join(ws, "capture-scratch", safe);
+          mkdirSync(dir, { recursive: true });
+          writeFileSync(join(dir, "client.mjs"), `${CLIENT_PRELUDE}\n(async () => {\n${script}\n})().catch((e) => { console.error(String(e?.stack ?? e)); process.exitCode = 1; });\n`);
+          run = await serialize(handle.proxyName, () => captureThrough(
+            { net: handle.net, upstream: handle.netBaseUrl, probeSecret: handle.probeSecret, origin: handle.netBaseUrl },
+            { image: handle.image ?? IMAGE, cmd: ["/app/_run/client.mjs"], workdir: "/app", entrypoint: "node" },
+            { dir, timeoutMs: 90_000 },
+          ));
+          harPath = keepHar(ws, dir, label);
+          rmSync(dir, { recursive: true, force: true });
+        }
+      } catch (err) {
+        event("capture_traffic-done", { label, ok: false });
+        return { output: [{ type: "text", text: `Capture failed to run: ${String(err?.message ?? err).slice(0, 400)}` }], isError: true };
+      }
+      const match = matchOracle(run.transcript, run);
+      if (match) state.passed.set(label, { script, oracleName: match.oracle.name });
+      recordScript(state, label, script, run.transcript, match);
+      event("capture_traffic-done", { label, calls: run.transcript.length, matched: match?.oracle.name ?? null, proxied: run.proxied });
+      const lines = run.transcript.map((e, i) => {
+        const body = typeof e.resBody === "string" ? e.resBody : JSON.stringify(e.resBody);
+        return `${i + 1}. ${e.method} ${e.path} -> ${e.status} ${(body ?? "").slice(0, 300)}`;
+      });
+      const harNote = run.proxied && harPath ? `\n\nHAR saved: ${harPath.replace(ws + "/", "")}` : "";
+      const verdictText = match
+        ? `\n\nMATCH: ${match.oracle.name} — ${match.verdict.detail}\nThis is a real proof. Call submit_finding now with label "${label}", unless this same root cause is already recorded.`
+        : "\n\nNo known harm pattern matched. The capture is a lead: read it and try the next step. " + CANDIDATE_HINT;
+      const outNote = run.stdout ? `\n\nclient output:\n${run.stdout.slice(-2000)}` : "";
+      const stderrNote = run.stderr ? `\n\nstderr: ${run.stderr.slice(0, 500)}` : "";
+      return { output: [{ type: "text", text: `${lines.join("\n") || "(no requests recorded)"}${outNote}${harNote}${verdictText}${stderrNote}\n\n(${leftText(MAX_CAPTURES, attempt, "capture")})` }] };
+    },
+  });
+
+  // The browser client. A login form, a rendered route, a wallet prompt: things
+  // a script client cannot do. Same evidence rules and the same gate.
+  const captureBrowserTool = defineTool({
+    name: "capture_browser",
+    description: "Drive a real Chromium through the recording proxy with a list of STEPS, then read what the page actually sent. Use it when the bug needs a rendered page: a login form, a JS-rendered route, a wallet prompt, a captcha-then-retry flow. Each step is an object with exactly one key: { goto: '/path' }, { fill: 'value', target: '#selector' }, { click: '#selector' }, { press: 'Enter' }, { waitFor: 1500 }, { expectText: 'text' }, { expectStatus: 200 }, { screenshot: 'name' }, { evaluate: '() => document.title' }. A failing step is reported with its number. The run is recorded by the proxy: a harm pattern match lets submit_finding use the same label, and the finding replays as a browser run. Set save_session to export the resulting browser state (cookies + localStorage) so a later run starts logged in. A live scope may already carry a stored state. Works on a lab and on a live run.",
+    parameters: obj({
+      label: str({ description: "a short, unique name for this capture, e.g. \"login-bola\" (pass this same label to submit_finding on a match)" }),
+      steps: arr(unknown(), { description: "the ordered step objects, at most 30", minItems: 1, maxItems: 30 }),
+      save_session: opt(bool({ description: "export the resulting browser state so a later run starts logged in" })),
+    }),
+    replay: "unsafe",
+    execute: async (args) => {
+      const label = String(args.label);
+      let steps;
+      try { steps = checkSteps(args.steps); } catch (err) {
+        return { output: [{ type: "text", text: `Bad steps: ${String(err?.message ?? err)}` }], isError: true };
+      }
+      if (operatorHasControl(ws)) {
+        return { output: [{ type: "text", text: "The operator has the browser right now. Wait for them, or take it back with browser_session action view." }], isError: true };
+      }
+      const live = isLive(ws);
+      const handle = live ? null : readLabHandle(ws);
+      if (!live && !handle) {
+        return { output: [{ type: "text", text: "The lab is not running (no persisted handle). This is an infrastructure error, not something your steps can fix." }], isError: true };
+      }
+      const attempt = (state.captures ?? 0) + 1;
+      if (attempt > MAX_CAPTURES) {
+        event("capture_browser-capped", { label, attempt });
+        return { output: [{ type: "text", text: `Capture budget exhausted (${MAX_CAPTURES} captures used). Use run_request_script from here on.` }], isError: true };
+      }
+      state.captures = attempt;
+      event("capture_browser", { label, attempt, steps: steps.length, live });
+      const saveSession = args.save_session === true;
+      let run;
+      try {
+        if (live) {
+          const t = liveTargetOf(ws);
+          run = await serialize(ws, () => captureBrowser(
+            { net: t.net, upstream: t.gate, origin: t.baseUrl },
+            ws,
+            { baseUrl: t.baseUrl, steps, storageState: t.storageState ?? null, saveSession, label, timeoutMs: 180_000 },
+          ));
+        } else {
+          run = await serialize(handle.proxyName, () => captureBrowser(
+            { net: handle.net, upstream: handle.netBaseUrl, probeSecret: handle.probeSecret, origin: handle.netBaseUrl },
+            ws,
+            { baseUrl: handle.netBaseUrl, steps, saveSession, label, timeoutMs: 180_000 },
+          ));
+        }
+      } catch (err) {
+        event("capture_browser-done", { label, ok: false });
+        return { output: [{ type: "text", text: `Browser capture failed to run: ${String(err?.message ?? err).slice(0, 400)}` }], isError: true };
+      }
+      const match = matchOracle(run.transcript, run);
+      const summary = `// browser steps\n${JSON.stringify(steps)}`;
+      if (match) state.passed.set(label, { script: summary, steps, oracleName: match.oracle.name });
+      recordScript(state, label, summary, run.transcript, match);
+      event("capture_browser-done", { label, calls: run.transcript.length, matched: match?.oracle.name ?? null, failed: run.failed?.step ?? null });
+      const lines = run.transcript.map((e, i) => `${i + 1}. ${e.method} ${e.path} -> ${e.status} ${String(typeof e.resBody === "string" ? e.resBody : JSON.stringify(e.resBody)).slice(0, 200)}`);
+      const stepLines = run.log.map((l) => l.done ? `done at ${l.url}` : l.saved ? "state saved" : `${l.step}. ${l.kind} ${l.ok ? "ok" : "FAILED: " + l.error}`);
+      const failNote = run.failed ? `\n\nThe browser stopped at step ${run.failed.step} (${run.failed.kind}): ${run.failed.error}. The calls above are real; fix the step and try again.` : "";
+      const savedNote = run.state ? `\n\nBrowser state saved: ${run.state.path}` : "";
+      const shotNote = run.shots.length ? `\n\nScreenshots: ${run.shots.join(", ")}` : "";
+      const harNote = run.harPath ? `\n\nHAR saved: ${run.harPath}` : "";
+      const verdict = match
+        ? `\n\nMATCH: ${match.oracle.name} — ${match.verdict.detail}\nThis is a real proof. Call submit_finding now with label "${label}", unless this same root cause is already recorded.`
+        : "\n\nNo known harm pattern matched. The capture is a lead: read it and try the next step. " + CANDIDATE_HINT;
+      return { output: [{ type: "text", text: `steps:\n${stepLines.join("\n")}${failNote}\n\nrecorded calls:\n${lines.join("\n") || "(none)"}${harNote}${shotNote}${savedNote}${verdict}\n\n(${leftText(MAX_CAPTURES, attempt, "capture")})` }] };
+    },
+  });
+
+  // The human step. A person watches a real browser through a stream, signs in,
+  // and the session is exported so later runs start logged in. The browser is
+  // still behind mitm and the gate.
+  const browserSession = defineTool({
+    name: "browser_session",
+    description: "Open a STREAMED browser for a human: start returns a URL the operator opens in a tab, and the run shows it as a card. Actions: start, state, takeover, view, handoff, stop. `handoff` gives control and marks the card as needing them; `view` takes it back. Use it when a login, an OTP mail, a captcha or a wallet approval needs a person; while it is open the run keeps its other tools. `state` exports the browser session (cookies and localStorage) to captures/session.json and `stop` closes it and keeps the HAR. The browser is behind the recording proxy and the scope gate, so its traffic is still recorded and still confined. Start it, tell the operator the URL, wait for them, then call state and stop.",
+    parameters: obj({
+      action: str({ description: "start | state | takeover | view | handoff | stop" }),
+      view_only: opt(bool({ description: "start: true (default) lets the operator watch without typing; false gives control" })),
+    }),
+    replay: "safe",
+    execute: async (args) => {
+      const action = String(args.action || "").trim();
+      if (operatorHasControl(ws)) {
+        return { output: [{ type: "text", text: "The operator has the browser right now. Wait for them, or take it back with browser_session action view." }], isError: true };
+      }
+      const live = isLive(ws);
+      const handle = live ? null : readLabHandle(ws);
+      if (!live && !handle) return { output: [{ type: "text", text: "The lab is not running (no persisted handle)." }], isError: true };
+      if (action === "start") {
+        const current = sessionFor(ws);
+        if (current) return { output: [{ type: "text", text: `A session is already open: ${current.url}\nCall state to export it, or stop to close it.` }] };
+        const t = live ? liveTargetOf(ws) : null;
+        const ctx = live
+          ? { net: t.net, upstream: t.gate, origin: t.baseUrl }
+          : { net: handle.net, upstream: handle.netBaseUrl, probeSecret: handle.probeSecret, origin: handle.netBaseUrl };
+        const baseUrl = live ? t.baseUrl : handle.netBaseUrl;
+        const storageState = live ? (t.storageState ?? null) : null;
+        let stream;
+        try {
+          const appOrigin = process.env.TOUCHSTONE_CONSOLE_ORIGIN;
+          stream = await openSession(ws, ctx, { baseUrl, storageState, viewOnly: args.view_only !== false, appOrigins: appOrigin ? [appOrigin] : [] });
+        } catch (err) {
+          event("browser_session-failed", { error: String(err?.message ?? err).slice(0, 200) });
+          return { output: [{ type: "text", text: `Could not start the session: ${String(err?.message ?? err).slice(0, 400)}` }], isError: true };
+        }
+        event("browser_session", { viewOnly: stream.viewOnly, url: stream.url });
+        return { output: [{ type: "text", text: `Session open (${stream.viewOnly ? "view only" : "control"}). Give the operator this URL:\n\n${stream.url}\n\nIt stays open for the run. When they are done: call browser_session with action state to save the login, then action stop.` }] };
+      }
+      if (action === "takeover" || action === "view" || action === "handoff") {
+        const stream = sessionFor(ws);
+        if (!stream) return { output: [{ type: "text", text: "No session is open. Call start first." }], isError: true };
+        const wantViewOnly = action === "view";
+        try { await stream.setMode(wantViewOnly); } catch (err) {
+          return { output: [{ type: "text", text: `Could not switch the session: ${String(err?.message ?? err).slice(0, 300)}` }], isError: true };
+        }
+        const handoff = action === "handoff";
+        event("browser_session-mode", { viewOnly: wantViewOnly, handoff });
+        return { output: [{ type: "text", text: handoff
+          ? "The operator now has control and the card shows that you asked for them. Tell them exactly what to do in one short step, wait, then call state and continue. Switch back with action view when you are ready to drive again."
+          : `The session is now ${wantViewOnly ? "view only" : "under operator control"}.` }] };
+      }
+      if (action === "state") {
+        const stream = sessionFor(ws);
+        if (!stream) return { output: [{ type: "text", text: "No session is open. Call start first." }], isError: true };
+        const state = await stream.state();
+        if (!state) return { output: [{ type: "text", text: "The browser exported no state (it may not have finished loading)." }], isError: true };
+        mkdirSync(join(ws, "captures"), { recursive: true });
+        writeFile(join(ws, "captures", "session.json"), JSON.stringify(state, null, 2));
+        event("browser_session-state", { cookies: state.cookies?.length ?? 0 });
+        return { output: [{ type: "text", text: `Saved the session: ${state.cookies?.length ?? 0} cookie(s). It is at captures/session.json. Paste it into the scope's Browser state field to reuse it, or keep using this session.` }] };
+      }
+      if (action === "stop") {
+        const closed = await closeSession(ws);
+        if (!closed) return { output: [{ type: "text", text: "No session was open." }], isError: true };
+        const kept = closed.har ? keepHarBytes(ws, closed.har, "session") : null;
+        event("browser_session-stop", { har: Boolean(kept) });
+        return { output: [{ type: "text", text: `Session closed.${kept ? ` HAR saved: ${kept}` : ""}` }] };
+      }
+      return { output: [{ type: "text", text: "action must be start, state or stop." }], isError: true };
+    },
+  });
+
   const submitFinding = defineTool({
     name: "submit_finding",
     description: "Record one proven vulnerability: one root cause. Call it right after run_request_script reports a MATCH for a label. Never submit a second finding for the same matched root cause.",
@@ -748,7 +999,8 @@ function tools(ws, state) {
         severity: String(args.severity),
         poc: label,
         explanation: String(args.explanation),
-        script: entry.script,
+        ...(entry.script ? { script: entry.script } : {}),
+        ...(entry.steps ? { steps: entry.steps } : {}),
         oracleName: entry.oracleName,
       };
       state.found.push(finding);
@@ -769,7 +1021,7 @@ function tools(ws, state) {
   });
 
   const submitCandidate = candidateTool({ pack: "web", state, lookup: scriptLookup(state), poc: SCRIPT_POC, scrub: (v) => scrubBody(v), scrubLine: (t) => scrubText(t) });
-  return [webLeads, runScript, submitFinding, submitCandidate];
+  return [webLeads, runScript, captureTraffic, captureBrowserTool, browserSession, submitFinding, submitCandidate];
 }
 
 // The prepass does two things.
@@ -829,7 +1081,7 @@ async function prove(ws, found, _events, log) {
   if (!live) await teardownPersistedLab(ws);
   const out = [];
   for (const f of sortFindings(found ?? [])) {
-    if (!f?.script || !f?.oracleName) {
+    if ((!f?.script && !f?.steps) || !f?.oracleName) {
       out.push({ ...f, proof: { kind: "http", status: "fail", detail: "no request script recorded for this finding", oracle: { name: f?.oracleName ?? "", detail: "", passed: false }, log: [] } });
       continue;
     }
@@ -841,7 +1093,14 @@ async function prove(ws, found, _events, log) {
     log?.(`replaying #${f.n} ${f.title} against ${live ? "the live target" : "a fresh lab"} (${oracle.name})`);
     let proof;
     try {
-      proof = scrubProof(live ? await liveProof(ws, f.script, oracle) : await httpProof({ image: IMAGE }, f.script, oracle));
+      if (f.steps?.length) {
+        // A browser finding replays as a browser run, not as a request script.
+        proof = scrubProof(live
+          ? await replayLiveBrowser(ws, f.steps, oracle)
+          : await browserProof({ image: IMAGE, steps: f.steps }, oracle));
+      } else {
+        proof = scrubProof(live ? await liveProof(ws, f.script, oracle) : await httpProof({ image: IMAGE }, f.script, oracle));
+      }
     } catch (err) {
       proof = { kind: "http", status: "fail", detail: `replay infrastructure error: ${String(err?.message ?? err).slice(0, 300)}`, oracle: { name: oracle.name, detail: "", passed: false }, log: [] };
     }
@@ -895,7 +1154,8 @@ The checks this module can prove (a match is the ONLY thing that makes a finding
 Checks 5 to 9 need no account and fit any website. Most real sites are proved
 with one of these, not with 1-3:
 5. CORS with credentials: send an \`origin\` header for a foreign site you invent
-   (e.g. \`https://touchstone.test\`). The reply echoes that exact origin AND sets
+   (e.g. \`https://touchstone.test\`). A dev origin like \`http://localhost:3000\`
+   does NOT count: every app allowlists one. The reply echoes that exact origin AND sets
    \`access-control-allow-credentials: true\`, so that page can read the response
    with the visitor's cookies.
 6. Open redirect: a parameter that takes a URL or host, sent as a link target.

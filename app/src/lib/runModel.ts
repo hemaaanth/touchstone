@@ -49,6 +49,8 @@ export type StepKind =
   // a crafted HTTP body). `label` is the probe's name; `detail` says how many
   // calls it made and whether it matched a known attack pattern.
   | "request"
+  // A streamed browser the operator watches or takes over. `label` is its URL.
+  | "session"
   | "decided"
   | "note"
   | "operator"
@@ -110,6 +112,10 @@ export interface Step {
   // `subagent-done` with `interrupted: true`). It did not fail.
   cut?: boolean
   ask?: HumanAsk
+  // "session" step: the streamed browser's URL and whether the operator may type.
+  session?: { url: string; viewOnly: boolean }
+  // "session" step: the agent's model calls are held by the pause gate.
+  paused?: boolean
 }
 
 // Lower is worse. Matches spike/lib/record.mjs so the UI and the recorder agree
@@ -551,6 +557,93 @@ export function reduceEvents(events: RunEvent[]): RunState {
         }
         break
       }
+      case "capture_traffic":
+      case "capture_browser": {
+        // A client capture: a scripted client, or a real browser. Neutral like a
+        // request probe; the label names what it does.
+        const browser = e.ev === "capture_browser"
+        steps.push({
+          key,
+          kind: "request",
+          phase,
+          label: str(e.label) || (browser ? "Browser capture" : "Client capture"),
+          attempt: num(e.attempt) ?? undefined,
+          state: "running",
+          ...(browser ? { detail: num(e.steps) != null ? `${num(e.steps)} step${num(e.steps) === 1 ? "" : "s"}` : undefined } : {}),
+        })
+        break
+      }
+      case "capture_traffic-done":
+      case "capture_browser-done": {
+        const label = str(e.label)
+        const matched = str(e.matched) || null
+        const calls = num(e.calls)
+        const failed = num(e.failed)
+        for (let j = steps.length - 1; j >= 0; j--) {
+          const s = steps[j]
+          if (s.kind === "request" && s.state === "running" && s.label === label && (s.agent ?? null) === who) {
+            s.state = failed != null ? "fail" : "pass"
+            s.detail = failed != null
+              ? `Stopped at step ${failed}`
+              : matched
+                ? `Matched ${matched}`
+                : calls != null
+                  ? `${calls} call${calls === 1 ? "" : "s"}`
+                  : undefined
+            break
+          }
+        }
+        break
+      }
+      case "browser_session": {
+        const url = str(e.url)
+        if (!url) break
+        steps.push({ key: `session:${url}`, kind: "session", phase, label: url, state: "running", session: { url, viewOnly: e.viewOnly === true } })
+        break
+      }
+      case "browser_session-mode": {
+        const s = [...steps].reverse().find((x) => x.kind === "session")
+        if (s?.session) {
+          s.session = { ...s.session, viewOnly: e.viewOnly === true }
+          s.detail = e.handoff === true ? "needs you" : e.viewOnly === true ? "view only" : "you can type"
+        }
+        break
+      }
+      case "agent-paused": {
+        const s = [...steps].reverse().find((x) => x.kind === "session")
+        if (s) { s.paused = true; s.detail = "agent paused" }
+        break
+      }
+      case "agent-pause-cut": {
+        const s = [...steps].reverse().find((x) => x.kind === "session")
+        if (s) { s.paused = true; s.detail = "paused · call cut" }
+        break
+      }
+      case "agent-resumed": {
+        const s = [...steps].reverse().find((x) => x.kind === "session")
+        if (s) { s.paused = false; if (s.detail === "agent paused" || s.detail === "paused · call cut") s.detail = undefined }
+        break
+      }
+      case "browser_session-state": {
+        const s = [...steps].reverse().find((x) => x.kind === "session" && x.state === "running")
+        if (s) s.detail = `${num(e.cookies) ?? 0} cookie(s) saved`
+        break
+      }
+      case "browser_session-stop": {
+        const s = [...steps].reverse().find((x) => x.kind === "session" && x.state === "running")
+        if (s) { s.state = "pass"; s.detail = s.detail ?? "closed" }
+        break
+      }
+      case "capture_traffic-capped":
+      case "capture_browser-capped":
+        steps.push({
+          key,
+          kind: "cap",
+          phase,
+          label: "Hit the capture budget",
+          detail: num(e.attempts) != null ? `${num(e.attempts)} captures used` : "No captures remaining",
+        })
+        break
       case "run_request_script-capped":
         steps.push({
           key,

@@ -2,7 +2,9 @@
 # Adapted from BB sandboxes docker/display-start.sh. MIT; see LICENSE.bb.
 set -eu
 [ "${TOUCHSTONE_ROAM_RUNTIME:-}" = 1 ] || { echo 'Remote runtime only' >&2; exit 1; }
-state=/run/touchstone
+# The streamed-browser image runs as a fixed non-root uid, which cannot create
+# /run/touchstone; the session sets its own state dir under /tmp.
+state=${TOUCHSTONE_STATE_DIR:-/run/touchstone}
 install -d -m 700 "$state"
 # Serialize starts without inspecting any unrelated processes or environments.
 exec 9>"$state/display.lock"

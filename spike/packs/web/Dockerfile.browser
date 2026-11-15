@@ -1,0 +1,39 @@
+# Chromium + Playwright, for the browser client of a capture.
+#
+# ONE BROWSER ONLY. The public Playwright image ships Chromium, Firefox and
+# WebKit (~6 GB unpacked); a capture needs Chromium, so this builds from a slim
+# Node base and installs only that. Playwright is pinned to the version the Wave
+# 4 plan pinned (spike/roam/desktop/README.md), and its Chromium build is pinned
+# by that version.
+#
+# TRUST. A capture terminates TLS at mitm, so the browser must accept our CA.
+# Chromium has no env var for an extra CA, so the client sets
+# `ignoreHTTPSErrors` on the context and documents the limit: a page with a
+# PINNED key still fails. That is deliberate -- the traffic is ours.
+#
+# Runs as a fixed non-root uid. The screenshot folder and the profile are under
+# /tmp so a read-only mount of /app/_run never blocks them.
+FROM node:22-bookworm-slim@sha256:e9f565d32859f0cbfb52125eafe8be39390f24dac302dc3cdf566e8ba3ab21ee
+
+ARG PLAYWRIGHT_VERSION=1.65.1
+
+# Chromium's shared libraries, then the browser itself. `--with-deps` installs
+# the distro packages; the browser goes to a shared path any uid can read.
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates; \
+    rm -rf /var/lib/apt/lists/*; \
+    npm install --global --no-fund --no-audit "playwright@${PLAYWRIGHT_VERSION}"; \
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright npx --yes "playwright@${PLAYWRIGHT_VERSION}" install --with-deps chromium; \
+    chmod -R a+rX /ms-playwright; \
+    rm -rf /root/.npm
+
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
+    NODE_PATH=/usr/local/lib/node_modules \
+    HOME=/tmp
+
+# The base image already has `node` at uid 1000, which is the uid runTool uses
+# on the host.
+USER node
+WORKDIR /app
+ENTRYPOINT []

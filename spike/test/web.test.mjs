@@ -19,6 +19,8 @@ import { cleanupWorkspace, makeWorkspace, readTouchstone } from "../lib/sandbox.
 import { proofView } from "../lib/proof-view.mjs";
 
 const nonceReplay = ORACLES.find((o) => o.name === "siwe-nonce-replay");
+import { startLab, stopLab, writeLabHandle } from "../lib/proof-http.mjs";
+import { MITM_IMAGE } from "../lib/intercept.mjs";
 const bola = ORACLES.find((o) => o.name === "bola-wallet-idor");
 const debugLeak = ORACLES.find((o) => o.name === "debug-route-signer-key-leak");
 const xss = ORACLES.find((o) => o.name === "reflected-xss");
@@ -322,7 +324,7 @@ test("the web pack is registered and has a stable tool set", () => {
   assert.equal(typeof web.prove, "function");
   const state = { poc: 0, passed: new Map(), found: [] };
   const names = web.tools("/nonexistent", state).map((t) => t.name);
-  assert.deepEqual(names, ["web_leads", "run_request_script", "submit_finding", "submit_candidate"]);
+  assert.deepEqual(names, ["web_leads", "run_request_script", "capture_traffic", "capture_browser", "browser_session", "submit_finding", "submit_candidate"]);
   assert.equal(web.nudge({ poc: 0, passed: new Map(), found: [] }), null);
 });
 
@@ -491,6 +493,18 @@ const hasImage = (() => {
 const LAB = new URL("../packs/web/lab/dapp", import.meta.url).pathname;
 
 const ALICE = { addr: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266", pk: "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80" };
+const BOB = { addr: "0x70997970C51812dc3A010C7d01b50e0d17dc79C8", pk: "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d" };
+const hasMitm = (() => {
+  try { execFileSync("docker", ["image", "inspect", MITM_IMAGE], { stdio: "ignore" }); return true; } catch { return false; }
+})();
+const CAPTURE_SKIP = (!hasImage && "lab image not built") || (!hasMitm && "mitmproxy image not pulled");
+const signIn = (who) => `
+const n = await request("GET", "/siwe/nonce");
+const message = buildSiwe({ domain: "touchstone.lab", address: ${JSON.stringify(who.addr)}, uri: "http://touchstone.lab/siwe", version: "1", chainId: 31337, nonce: n.resBody.nonce, issuedAt: new Date().toISOString() });
+const signature = await signPersonal(${JSON.stringify(who.pk)}, message);
+const v = await request("POST", "/siwe/verify", { body: { message, signature } });
+return v.resBody.token;
+`;
 
 const scriptFor = (name) => ({
   "nonce-replay": `
@@ -562,6 +576,40 @@ test("web smoke: run_request_script finds all four planted bugs and prove() repl
       assert.doesNotMatch(shown, /[0-9a-fA-F]{64}|sk-lab-|PAYROLL/, `${finding.poc}: a raw secret is rendered`);
     }
   } finally {
+    cleanupWorkspace(ws);
+  }
+});
+
+// ---- capture: needs Docker, the lab image and the proxy image. No model spend.
+//
+// The point of capture_traffic is a multi-step CLIENT, which no single-request
+// script can express in one attempt: two sign-ins and one cross-user read here.
+// The proxy records it, the same oracle reads it, and submit_finding accepts the
+// label -- the proof path must not care where the transcript came from.
+test("capture_traffic records a two-session flow, matches BOLA and backs a finding", { skip: CAPTURE_SKIP, timeout: 300_000 }, async () => {
+  const ws = makeWorkspace(LAB);
+  const handle = await startLab({ image: "touchstone/web-lab:dev" });
+  writeLabHandle(ws, handle);
+  try {
+    const state = { poc: 0, passed: new Map(), found: [] };
+    const tools = Object.fromEntries(web.tools(ws, state).map((t) => [t.name, t]));
+    const script = `const alice = await (async () => {${signIn(ALICE)}})(); const bob = await (async () => {${signIn(BOB)}})();` +
+      `\nconst leak = await request("GET", "/api/users/2", { headers: { authorization: "Bearer " + alice } });` +
+      `\nconsole.log("bob token", Boolean(bob), "id", leak.resBody?.id);`;
+    const run = await tools.capture_traffic.execute({ label: "bola-capture", script });
+    assert.ok(!run.isError, run.output?.[0]?.text);
+    assert.match(run.output[0].text, /MATCH: bola-wallet-idor/, run.output[0].text);
+    assert.equal(state.passed.get("bola-capture")?.oracleName, "bola-wallet-idor");
+    assert.match(run.output[0].text, /HAR saved: captures\/bola-capture\.har/);
+
+    const sub = await tools.submit_finding.execute({ title: "cross-user read", severity: "high", label: "bola-capture", explanation: "x. Fix: x" });
+    assert.ok(!sub.isError, sub.output?.[0]?.text);
+    assert.equal(state.found.length, 1);
+    const proved = await web.prove(ws, state.found, [], () => {});
+    assert.equal(proved.length, 1, "the captured script replays against a fresh lab");
+    assert.equal(proved[0].proof.oracle.passed, true);
+  } finally {
+    await stopLab(handle);
     cleanupWorkspace(ws);
   }
 });

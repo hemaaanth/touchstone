@@ -234,7 +234,11 @@ const alwaysOn = (p) => p?.live === true && p.proof !== "http" && !p.grants
 export function eligiblePacks(target) {
   const own = packOf(target)
   if (target?.kind === "live" && !target.github) {
-    const ticked = (Array.isArray(target.packs) ? target.packs : [own]).filter((id) => PACKS[id]?.live === true && !PACKS[id].grants)
+    // Code-capable modules count when the scope carries code: they are live for
+    // this scope even though they never drive a bare website, and the operator's
+    // declared one must stay first so it remains the default.
+    const hasCode = Boolean(target.members?.length || target.contracts?.length)
+    const ticked = (Array.isArray(target.packs) ? target.packs : [own]).filter((id) => (hasCode && (id === "review" || id === "contracts")) || (PACKS[id]?.live === true && !PACKS[id].grants))
     return [...new Set([...ticked, ...Object.keys(PACKS).filter((id) => alwaysOn(PACKS[id])), ...(target.members?.length ? ["review"] : []), ...(target.contracts?.length || target.members?.some((m) => m.kind === "repo") || solidityKnown(target.members ?? []) ? ["contracts"] : [])])]
   }
   if (target?.kind === "scope") {
@@ -434,6 +438,9 @@ function scopeNotes(target, packs) {
   // included. A live token reaches only the root agent, in its first message
   // (the web and ai-mcp kickoffs read it from .touchstone.json), as before.
   if (held.includes("supply-chain") && Array.isArray(target.github)) lines.push("", "GitHub repos and orgs (read-only API reads, nothing is cloned or run):", ...target.github.map((g) => `- ${g}`))
+  // Names only, never values: these notes reach every child of the run.
+  const sessionNames = Object.keys(target.session?.headers ?? {})
+  if (sessionNames.length) lines.push("", `The operator supplied a session. Every request to ${origins[0] ?? "the base URL"} already carries: ${sessionNames.join(", ")}. Send extra auth only to override it, and expect it to stop working when the session expires.`)
   if (target.blurb) lines.push("", String(target.blurb))
   return [lines.join("\n"), assets].filter(Boolean).join("\n\n")
 }
@@ -548,7 +555,17 @@ export function prepareWorkspace(target, { modules = [] } = {}) {
     writeTouchstone(ws, { kind: "brief", solc: "auto", pack, modules, links: Array.isArray(target.links) ? target.links : [] })
     return ws
   }
-  if (target.kind === "live" && ["contracts", "review"].includes(pack) && (target.members?.length || target.contracts?.length)) return prepareWorkspace({ ...target, kind: "scope" }, { modules })
+  // A live scope that also carries code gets the code workspace, but stays
+  // live: the review pack's run_request_script checks isLive(ws), and the run's
+  // reach is a confinement gate, so the kind must survive the copy.
+  if (target.kind === "live" && pack === "review" && target.members?.length) {
+    const ws = prepareScopeWorkspace({ ...target, kind: "scope" }, { modules })
+    // The live lane aims at the scope's first origin, the same base a bare live
+    // target would use; without it the pre-pass cannot bind.
+    writeTouchstone(ws, { ...readTouchstone(ws), kind: "live", baseUrl: liveOrigins(target)[0] })
+    return ws
+  }
+  if (target.kind === "live" && pack === "contracts" && (target.members?.length || target.contracts?.length)) return prepareWorkspace({ ...target, kind: "scope" }, { modules })
   if (target.kind === "live") {
     // No code to copy. The agent learns the exact websites and their base URLs
     // from scopeEnv; the request tool reads where to aim from the config.
@@ -567,8 +584,12 @@ export function prepareWorkspace(target, { modules = [] } = {}) {
     // A live AI/MCP target can carry its own credential. It rides in the config
     // (the tool reads it) and in the agent's instructions (scopeEnv).
     const mcp = target.mcp ?? null
+    // A live site behind a login carries the operator's own session headers. The
+    // request harness adds them to same-origin calls (lib/live.mjs), so the agent
+    // starts logged in. Nothing is inferred from them.
+    const session = target.session ?? null
     const ws = makeBriefWorkspace()
-    const live = { kind: "live", pack, modules, hosts, origins, baseUrl, contracts: target.contracts ?? [], ...(mcp ? { mcp } : {}) }
+    const live = { kind: "live", pack, modules, hosts, origins, baseUrl, contracts: target.contracts ?? [], ...(mcp ? { mcp } : {}), ...(session ? { session } : {}) }
     // The domain packs capture one root domain into a pinned snapshot. They read
     // `domain` and `reach`; the network is the egress one (their tools resolve
     // DNS over UDP, which an HTTP proxy cannot carry), and the grant is asserted

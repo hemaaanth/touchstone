@@ -12,17 +12,23 @@
 // is the whole store; we read and rewrite it in full on each change. There is
 // one long-lived Node process (the Vite dev server), so there is no concurrent
 // writer to coordinate with.
-import { existsSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
-import { addGrant, loadGrants, loadStore, saveStore, removeGrant, privateLabHostError, withStoreLock } from "./grant-store.mjs";
+import { addGrant, loadGrants, loadStore, removeGrant, privateLabHostError, withStoreLock } from "./grant-store.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.resolve(HERE, "../data");
 // TOUCHSTONE_SCOPES_FILE exists only so tests use a throwaway store. Read on
 // each call, so a test can set it after import.
 const scopesFile = () => process.env.TOUCHSTONE_SCOPES_FILE || path.join(DATA_DIR, "scopes.json");
+// One file per scope, next to the index. An organisation-wide scope is past
+// V8's ~512 MB string limit on both write AND read, so a scope's body can no
+// longer live in the shared file. scopes.json holds summaries only: members
+// with their paths and no content.
+const scopesDir = () => path.join(path.dirname(scopesFile()), "scopes");
+const bodyFile = (id) => path.join(scopesDir(), `${id}.json`);
 
 // The one proof surface a brief run is allowed: an isolated, offline Foundry
 // workspace. Mirrors targets.mjs SANDBOX_FOUNDRY so a brief can never be proven
@@ -35,22 +41,118 @@ const SANDBOX_FOUNDRY = {
 // The scopes for a mutation. A missing file is an empty store. A file that
 // exists but cannot be read or parsed throws, so a mutation never writes over it.
 // Exported for a reader that must tell a damaged store from a scope that is gone.
-export const loadScopes = () => loadStore(scopesFile(), "scope store");
+export const loadScopes = () => scopesReadable().map(hydrate);
+
+function scopesReadable() {
+  try {
+    return readIndex();
+  } catch (e) {
+    if (e?.code === "ENOENT") return [];
+    throw new Error(`Refused: the scope store file ${scopesFile()} cannot be read (${e.code || e.message}). Nothing was changed. Repair it or move it away, then try again.`);
+  }
+}
 
 // Read the whole store for a list or a lookup. A missing file is an empty list.
 // A damaged file also reads as "no user scopes", so the list still renders. It
 // is never written over: every add and remove refuses it (loadScopes).
 export function readScopes() {
   try {
-    return loadScopes();
+    return scopesReadable();
   } catch {
     return [];
   }
 }
 
-// Temp file in the same directory, then rename (see saveStore).
+// A scope's file contents make the store far too large for one
+// JSON.stringify: V8 refuses a string over ~512 MB, and an organisation-wide
+// scope is past 400 MB. Write it as a stream instead — one scope, one member,
+// one file at a time — into the same temp-then-rename shape saveStore uses.
+function writeJsonStream(fd, value) {
+  if (Array.isArray(value)) {
+    writeSync(fd, "[");
+    value.forEach((item, i) => {
+      if (i) writeSync(fd, ",");
+      writeJsonStream(fd, item);
+    });
+    writeSync(fd, "]");
+    return;
+  }
+  if (value && typeof value === "object") {
+    writeSync(fd, "{");
+    Object.entries(value).forEach(([k, v], i) => {
+      if (i) writeSync(fd, ",");
+      writeSync(fd, JSON.stringify(k) + ":");
+      writeJsonStream(fd, v);
+    });
+    writeSync(fd, "}");
+    return;
+  }
+  writeSync(fd, JSON.stringify(value ?? null));
+}
+
+// A summary for the index: members keep their paths so a list can count them,
+// their content lives in the body file.
+const summaryOf = (scope) => ({
+  ...scope,
+  ...(scope.members
+    ? { members: scope.members.map((m) => (m.files ? { ...m, files: m.files.map((f) => (typeof f === "string" ? f : { path: f.path })) } : m)) }
+    : {}),
+});
+
+function writeJsonFile(file, value) {
+  mkdirSync(path.dirname(file), { recursive: true });
+  // Keep the mode the operator gave the file. A new file gets the default mode.
+  let mode = 0o666;
+  try {
+    mode = statSync(file).mode & 0o777;
+  } catch {
+    /* no file yet */
+  }
+  const tmp = `${file}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
+  const fd = openSync(tmp, "w", mode);
+  try {
+    // Always stream: JSON.stringify of a 460 MB scope is itself past the limit.
+    writeJsonStream(fd, value);
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+  renameSync(tmp, file);
+}
+
+// Full scopes to the body files, summaries to the index. Bodies are written one
+// at a time; the index last, so a crash mid-write leaves the old index pointing
+// at still-valid bodies.
 function writeScopes(arr) {
-  saveStore(scopesFile(), arr);
+  const file = scopesFile();
+  mkdirSync(scopesDir(), { recursive: true });
+  const ids = new Set(arr.map((s) => s.id));
+  for (const scope of arr) writeJsonFile(bodyFile(scope.id), scope);
+  for (const name of readdirSync(scopesDir())) {
+    if (name.endsWith(".json") && !ids.has(name.slice(0, -5))) rmSync(path.join(scopesDir(), name), { force: true });
+  }
+  writeJsonFile(file, arr.map(summaryOf));
+}
+
+// The index, which is small enough to stringify. A legacy store that still
+// holds full bodies is split on the way through.
+function readIndex() {
+  const raw = readFileSync(scopesFile(), "utf8");
+  const arr = JSON.parse(raw);
+  if (!Array.isArray(arr)) throw new Error("not a list");
+  if (arr.some((s) => s?.members?.some((m) => m?.files?.some((f) => f && typeof f === "object" && "content" in f)))) {
+    writeScopes(arr);
+    return arr.map(summaryOf);
+  }
+  return arr;
+}
+
+function hydrate(summary) {
+  try {
+    return JSON.parse(readFileSync(bodyFile(summary.id), "utf8"));
+  } catch {
+    return summary;
+  }
 }
 
 // Add one new scope on top, under the store lock (grant-store withStoreLock).
@@ -157,11 +259,13 @@ export function addBriefScope({ title, brief, blurb } = {}) {
 // These are workspace intake limits, not reading limits: the hunter navigates
 // with the codebase-memory index and reads files on demand, so a real monorepo
 // is the normal case, not the exception. 200 files refused privacy-pools-core
-// (292) on 2026-11-14. 4,000 files / 40 MB fits a large app while keeping the
-// scope store and a per-run workspace copy sane.
-export const MAX_FILES = 4000;
-export const MAX_BYTES = 40 * 1024 * 1024;
-export const MAX_MEMBERS = 20;
+// (292) on 2026-11-14. Raised for whole-organisation audits: 40,000 files /
+// 750 MB / 200 members holds every application repo of a real company, which is
+// 31,844 files and 701 MB today. The store stays a single JSON, so this is the
+// point where a bigger scope wants a database.
+export const MAX_FILES = 40000;
+export const MAX_BYTES = 750 * 1024 * 1024;
+export const MAX_MEMBERS = 200;
 
 // Folders that hold dependencies or build output, not the code under test.
 // Their files are dropped, never stored. Hidden folders (.git, .next, .venv)
@@ -270,10 +374,13 @@ export function folderFiles(files, budget = { files: 0, bytes: 0 }) {
       dropped[why] = (dropped[why] ?? 0) + 1;
       continue;
     }
-    if (f.content.includes("\u0000")) throw new Error("Attach text source files only.");
-    budget.bytes += Buffer.byteLength(f.content);
+    // A NUL does not make a source file binary: webapp/…/outcome.ts embeds one in
+    // a template string, and refusing it failed the whole folder. The extension
+    // already decided this is source, so drop the stray byte and keep the file.
+    const content = f.content.includes("\u0000") ? f.content.split("\u0000").join("") : f.content;
+    budget.bytes += Buffer.byteLength(content);
     if (budget.bytes > MAX_BYTES) throw new Error(`Source files must be under ${MAX_BYTES / 1024 / 1024} MB in total.`);
-    kept.push({ path: name, content: f.content });
+    kept.push({ path: name, content });
   }
   if (!kept.length) throw new Error("No source files left after skipping dependency, build, secret, and non-source files.");
   return { files: kept, dropped };
@@ -387,8 +494,11 @@ export function solidityKnown(members) {
   return members.some((m) => (m.kind === "folder" ? m.files.some((f) => isSolidity(f.path)) : isSolidity(new URL(m.url).pathname)));
 }
 
-// The pack for a set of members. Content decides. Any known Solidity means
-// Contracts. A scope with no known Solidity is "review", with one tie-break:
+// The pack for a set of members. An operator's explicit "review" wins over
+// content: two fixture .sol files inside a 5,000-file TypeScript monorepo do
+// not make it a Foundry audit. Otherwise content decides — any known Solidity
+// means Contracts. A scope with no known Solidity is "review", with one
+// tie-break:
 // when it has repos and the operator added it under Contracts (`declared`), it
 // runs under Contracts, because only a fetch can show what the repos hold. That
 // hint grants no proof surface. Such a run is content-gated (proofOpen in
@@ -401,6 +511,7 @@ export function solidityKnown(members) {
 // a pinned lab snapshot). Operator code is not that lab, so none of those
 // oracles fits it.
 export function scopePack(members, declared) {
+  if (declared === "review") return "review";
   if (solidityKnown(members)) return "contracts";
   if (declared === "contracts" && members.some((m) => m.kind === "repo")) return "contracts";
   return "review";
@@ -522,6 +633,62 @@ export function liveAssistant(a) {
   return { path, budget };
 }
 
+// ---- Session injection ------------------------------------------------------
+//
+// A live site behind a login needs a session. The operator pastes the request
+// headers their own browser sends (a Cookie, an Authorization, an API key). The
+// live harness adds them to every request it sends to the scope's own origin, so
+// an agent starts logged in instead of signing in by hand. Nothing is derived:
+// a wrong header is the operator's text, and the target's answer shows it.
+//
+// Values are stored as plain text, like the AI/MCP bearer token already is. They
+// are scrubbed from anything the app renders (runs.mjs secretsOf).
+const HOP_HEADERS = new Set(["host", "connection", "content-length", "transfer-encoding", "upgrade", "te"]);
+export const SESSION_HEADERS_MAX = 12;
+
+// A browser session is a Playwright storageState, not a header. It is the same
+// thing with more shape (cookies plus localStorage), so it lives in the same
+// field. Validated loosely on purpose: Playwright owns the exact shape, and a
+// malformed one fails at the first navigation, not at save time.
+export const STORAGE_STATE_MAX = 32768;
+
+function checkStorageState(raw) {
+  if (raw == null) return null;
+  const text = typeof raw === "string" ? raw : JSON.stringify(raw);
+  if (text.length > STORAGE_STATE_MAX) throw new Error(`The storage state is too long (${text.length} bytes, ${STORAGE_STATE_MAX} max).`);
+  let parsed;
+  try { parsed = typeof raw === "string" ? JSON.parse(raw) : raw; } catch { throw new Error("The storage state must be JSON."); }
+  if (!parsed || !Array.isArray(parsed.cookies) || !Array.isArray(parsed.origins)) throw new Error("A storage state needs cookies[] and origins[].");
+  return parsed;
+}
+
+export function checkSession(s) {
+  if (s == null) return null;
+  if (s.storageState != null) {
+    const storageState = checkStorageState(s.storageState);
+    const headers = s.headers ? checkSession({ headers: s.headers })?.headers : null;
+    return { ...(headers ? { headers } : {}), storageState };
+  }
+  const raw = typeof s === "object" && !Array.isArray(s) ? (s.headers ?? s) : null;
+  if (!raw || typeof raw !== "object") throw new Error("Session headers must be an object of header name to value.");
+  const headers = {};
+  for (const [name, value] of Object.entries(raw)) {
+    const n = String(name).trim();
+    if (!n) continue;
+    if (!/^[A-Za-z0-9-]{1,64}$/.test(n)) throw new Error(`Bad session header name: ${n}`);
+    if (HOP_HEADERS.has(n.toLowerCase())) continue;
+    const v = String(value ?? "").trim();
+    if (!v) continue;
+    headers[n] = v;
+  }
+  const count = Object.keys(headers).length;
+  if (!count) return null;
+  if (count > SESSION_HEADERS_MAX) throw new Error(`Use at most ${SESSION_HEADERS_MAX} session headers.`);
+  const size = JSON.stringify(headers).length;
+  if (size > 8192) throw new Error(`The session headers are too long (${size} bytes, ${8192} max).`);
+  return { headers };
+}
+
 // A live scope is one or more real websites the operator wants tested. The
 // operator ticks one box to say they have permission to test them. We record
 // that tick as a grant (grant-store.mjs) linked to this scope, so the reach gate
@@ -534,12 +701,13 @@ export function liveAssistant(a) {
 // loopback name or a loopback/private IP (privateLabHostError), so an opted-in
 // grant never covers a public host. The HTTP route still requires the console
 // grant token for any live scope (runs-http.mjs).
-export function addLiveScope({ title, hosts, members, contracts, pack, blurb, permission, token, tokens, toolScope, assistant, allowPrivate, networkPolicy } = {}) {
+export function addLiveScope({ title, hosts, members, contracts, pack, blurb, permission, token, tokens, toolScope, assistant, session, allowPrivate, networkPolicy } = {}) {
   if (permission !== true) throw new Error("Tick the box to confirm you have permission to test these sites.");
   if (networkPolicy != null && !["strict", "public"].includes(networkPolicy)) throw new Error("Unknown network policy");
   const code = members === undefined || (Array.isArray(members) && !members.length) ? [] : validateMembers(members);
   const deployments = validateContracts(contracts);
   const chat = liveAssistant(assistant);
+  const sess = checkSession(session);
   const list = (Array.isArray(hosts) ? hosts : [hosts]).map((h) => String(h ?? "").trim()).filter(Boolean);
   if (!list.length) throw new Error("A live scope needs at least one website.");
   if (list.length > 20) throw new Error("A live scope holds at most 20 websites.");
@@ -612,6 +780,7 @@ export function addLiveScope({ title, hosts, members, contracts, pack, blurb, pe
     // port. `hosts` above is only the gate's allow-list; this is the aim.
     origins,
     ...(mcp ? { mcp } : {}),
+    ...(sess ? { session: sess } : {}),
     permission: { confirmedAt: grant.approvedAt, grantId: grant.id, ...(priv ? { allowPrivate: true } : {}) },
     proofSurface: {
       kind: "live",
@@ -651,7 +820,7 @@ export function checkBrief(text) {
   return brief;
 }
 
-// Set or clear the brief of one scope. Writes the store atomically (saveStore)
+// Set or clear the brief of one scope. Writes the store atomically (writeScopes)
 // and refuses a damaged store (loadScopes). Returns the stored scope. An empty
 // brief removes the field, so the record looks like one that never had a brief.
 export function setScopeBrief(id, text) {
@@ -682,7 +851,8 @@ export function setScopeNetworkPolicy(id, networkPolicy) {
 }
 
 export function getUserScope(id) {
-  return readScopes().find((s) => s.id === id) ?? null;
+  const summary = readScopes().find((s) => s.id === id) ?? null;
+  return summary ? hydrate(summary) : null;
 }
 
 // Remove a scope by id. Returns true if one was removed.

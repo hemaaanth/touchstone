@@ -9,6 +9,7 @@ import { isRetryableAssistantError } from "@earendil-works/pi-ai/utils/retry";
 import { activeProvider, providerKey } from "./providers.mjs";
 import { charge, guard, runSpend } from "./inference.mjs";
 import { event, withAgent } from "./event.mjs";
+import { onCut, waitIfPaused } from "./pause.mjs";
 import { scrubUrl } from "./redact-url.mjs";
 
 // Charge each response before the harness can start another call, including
@@ -17,14 +18,23 @@ export function budgetedApi(api, agentForSession = () => undefined) {
   const wrap = (method) => (model, context, options) => {
     const output = createAssistantMessageEventStream();
     withAgent(agentForSession(options?.sessionId), async () => {
+      let uncut;
       try {
+        // An operator with the browser holds new model calls, so a turn cannot
+        // start while they are typing.
+        await waitIfPaused();
         const check = () => {
           try { guard(); }
           catch (err) { event("budget-reached", { ...runSpend(), error: err.message }); throw err; }
         };
         check();
+        // A takeover cuts this call where it stands. The turn settles; the resume
+        // path continues it (agent-run.mjs).
+        const controller = new AbortController();
+        uncut = onCut(() => controller.abort());
         const source = api[method](model, context, {
           ...options,
+          signal: options?.signal ?? controller.signal,
           onPayload: async (payload, m) => {
             check();
             return options?.onPayload ? options.onPayload(payload, m) : undefined;
@@ -52,7 +62,7 @@ export function budgetedApi(api, agentForSession = () => undefined) {
           usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
           stopReason: "error", errorMessage: scrubUrl(transientMessage(err?.message ?? err), model.baseUrl), timestamp: Date.now(),
         } });
-      } finally { output.end(); }
+      } finally { uncut?.(); output.end(); }
     });
     return output;
   };

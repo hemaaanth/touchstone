@@ -475,7 +475,7 @@ function labHost(hostname: string): boolean {
 // Live websites go as { kind: "live", hosts, pack, permission }: `pack` is the
 // list of modules the operator ticked, and the checkbox is the operator saying
 // they may test the websites. The server records it as a grant.
-function scopeBody(sources: Source[], name: string, modules: string[], permission: boolean, token: string, chat: { path: string; budget: string }, allowPrivate: boolean, publicNetwork: boolean): Parameters<typeof attachScope>[0] {
+function scopeBody(sources: Source[], name: string, modules: string[], permission: boolean, token: string, chat: { path: string; budget: string }, session: string, storageState: string, allowPrivate: boolean, publicNetwork: boolean): Parameters<typeof attachScope>[0] {
   const title = name || sources.map(sourceLabel).join(" + ").slice(0, 120)
   // Plain websites first: a run sends its requests to the first one, and a
   // wildcard entry is a grant pattern, not a website.
@@ -486,12 +486,14 @@ function scopeBody(sources: Source[], name: string, modules: string[], permissio
   const chatPath = chat.path.trim()
   const assistant = chatPath || chat.budget.trim() ? { path: chatPath, budget: Number(chat.budget) } : null
   const contracts = sources.flatMap((s) => s.kind === "contract" ? [{ chainId: s.chainId, address: s.address }] : [])
+  // "Cookie: a=b" per line. The server validates every name and caps the size.
+  const sessionHeaders = Object.fromEntries(session.split("\n").map((line) => line.split(/:(.*)/s)).filter(([k, v]) => k?.trim() && v?.trim()).map(([k, v]) => [k.trim(), v.trim()]))
   const members = sources.flatMap((s): ScopeMember[] =>
     s.kind === "site" || s.kind === "contract" ? [] : s.kind === "folder" && "path" in s ? [{ kind: "folder", name: s.name, path: s.path }] : [s],
   )
   if (sites.length) {
     const mcp = modules.includes("ai-mcp")
-    return { kind: "live", title, members, contracts, hosts: sites, permission, pack: modules, networkPolicy: publicNetwork && !allowPrivate ? "public" : "strict", ...(bearer && mcp ? { token: bearer } : {}), ...(assistant && mcp ? { assistant } : {}), ...(allowPrivate ? { allowPrivate: true } : {}) }
+    return { kind: "live", title, members, contracts, hosts: sites, permission, pack: modules, networkPolicy: publicNetwork && !allowPrivate ? "public" : "strict", ...(bearer && mcp ? { token: bearer } : {}), ...(assistant && mcp ? { assistant } : {}), ...(Object.keys(sessionHeaders).length || storageState.trim() ? { session: { ...(Object.keys(sessionHeaders).length ? { headers: sessionHeaders } : {}), ...(storageState.trim() ? { storageState: storageState.trim() } : {}) } } : {}), ...(allowPrivate ? { allowPrivate: true } : {}) }
   }
   return { title, members, contracts }
 }
@@ -530,6 +532,10 @@ export function AddScope({
   const [busy, setBusy] = useState(false)
   const [permission, setPermission] = useState(false)
   const [token, setToken] = useState("")
+  // The operator's own session headers, one "Name: value" per line.
+  const [sessionText, setSessionText] = useState("")
+  // A Playwright storageState, pasted as JSON (cookies plus localStorage).
+  const [stateText, setStateText] = useState("")
   const [chatPath, setChatPath] = useState("")
   const [chatBudget, setChatBudget] = useState("")
   // The modules ticked for a website scope. A run picks from them at start.
@@ -648,7 +654,7 @@ export function AddScope({
     setBusy(true)
     onError(null)
     try {
-      onAttached(await attachScope(scopeBody(sources, name.trim(), siteModules, permission, token, { path: chatPath, budget: chatBudget }, lab && allowPrivate, live && !lab && publicNetwork)))
+      onAttached(await attachScope(scopeBody(sources, name.trim(), siteModules, permission, token, { path: chatPath, budget: chatBudget }, sessionText, stateText, lab && allowPrivate, live && !lab && publicNetwork)))
       close()
     } catch (e) {
       onError((e as Error).message)
@@ -889,6 +895,34 @@ export function AddScope({
             <label className="flex cursor-pointer items-start gap-2.5 py-2 pr-2 pl-2.5 text-xs leading-relaxed">
               <input type="checkbox" checked={publicNetwork} disabled={busy} onChange={(e) => setPublicNetwork(e.target.checked)} className="mt-0.5 size-3.5 shrink-0 accent-foreground" />
               <span>Allow public network access<span className="block text-muted-foreground">Off by default. Lets request tools reach other public hosts, including redirects and subdomains. Private addresses stay blocked.</span></span>
+            </label>
+          ) : null}
+          {live ? (
+            <label className={formRow}>
+              <span className={formLabel}>Browser state</span>
+              <textarea
+                value={stateText}
+                disabled={busy}
+                onChange={(e) => setStateText(e.target.value)}
+                rows={2}
+                placeholder={"Optional. A Playwright storageState JSON (cookies, localStorage) for browser runs."}
+                aria-label="Playwright storageState JSON of a logged-in session"
+                className="min-w-0 flex-1 resize-y bg-transparent py-1 font-mono text-[11px] outline-none placeholder:font-sans placeholder:text-muted-foreground"
+              />
+            </label>
+          ) : null}
+          {live ? (
+            <label className={formRow}>
+              <span className={formLabel}>Session</span>
+              <textarea
+                value={sessionText}
+                disabled={busy}
+                onChange={(e) => setSessionText(e.target.value)}
+                rows={2}
+                placeholder={"Optional. One header per line, like\nCookie: sid=…"}
+                aria-label="Request headers of a logged-in session, one Name: value per line"
+                className="min-w-0 flex-1 resize-y bg-transparent py-1 font-mono text-[11.5px] outline-none placeholder:font-sans placeholder:text-muted-foreground"
+              />
             </label>
           ) : null}
           {live ? (

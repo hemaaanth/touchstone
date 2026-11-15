@@ -33,6 +33,8 @@ import { openReach } from "./lib/reach.mjs";
 import { currentAgent, event, exitAfterEvents } from "./lib/event.mjs";
 import { watchCognition } from "./lib/cognition.mjs";
 import { createFleet } from "./lib/fleet.mjs";
+import { applySessionMode } from "./lib/browser-stream.mjs";
+import { clearCut, pause as pauseAgent, resume as resumeAgent, wasCutByPause } from "./lib/pause.mjs";
 import { askHumanTool, answerAsk, disposeAsks } from "./lib/ask.mjs";
 import { packFor } from "./packs/index.mjs";
 import { sourceNavTools, NAV_SYSTEM } from "./packs/source-nav/pack.mjs";
@@ -294,7 +296,7 @@ async function chargeUsage(harness, base = {}) {
 // whenBusy:"steer" (pi-durable native steering), so it rides into the running
 // generation instead of queuing a fresh run. "operator-message" is emitted only
 // once the steer is admitted, so the transcript shows it when it really landed.
-function readSteers(root, control) {
+function readSteers(root, control, onSessionMode) {
   let steerSeq = 0;
   let stdinBuf = "";
   process.stdin.setEncoding("utf8");
@@ -315,6 +317,31 @@ function readSteers(root, control) {
         continue;
       }
       if (Object.hasOwn(message, "ask")) { answerAsk(message); continue; }
+      // A watch/control switch for a streamed browser session. It never becomes
+      // model text: the tool sees the new mode and the UI sees the event.
+      // The operator's own pause switch for the agent, independent of the
+      // browser mode. Resuming continues a turn the pause cut.
+      if (typeof message.agentPause === "boolean") {
+        if (message.agentPause) pauseAgent("operator");
+        else {
+          resumeAgent("operator");
+          if (wasCutByPause()) {
+            clearCut();
+            root.submit({ type: "input", requestId: `resume-${Date.now()}`, content: "Continue.", whenBusy: "steer" }, ctx).catch(() => {});
+          }
+        }
+        continue;
+      }
+      if (message.sessionMode && typeof message.sessionMode.viewOnly === "boolean") {
+        const continuing = message.sessionMode.viewOnly === true && wasCutByPause();
+        void onSessionMode?.(message.sessionMode.viewOnly, message.sessionMode.touch === true).catch(() => {});
+        // Handing the browser back also continues a turn the pause cut.
+        if (continuing) {
+          clearCut();
+          root.submit({ type: "input", requestId: `resume-${Date.now()}`, content: "Continue.", whenBusy: "steer" }, ctx).catch(() => {});
+        }
+        continue;
+      }
       const { text, id } = message;
       if (typeof text !== "string" || !text.trim()) continue;
       // The UI's id for this message. The echo carries it back, so the UI can
@@ -356,7 +383,7 @@ async function chat({ harness, root, reports, state, fleet, control }) {
   const priorCandidates = new Set(state.candidates.map((c) => c.poc));
   const before = (await harness.usage(ctx)).models ?? {};
   await streamCognition(harness, Number(process.env.ATTEMPT_BASE ?? 0));
-  readSteers(root, control);
+  readSteers(root, control, applySessionMode);
   const sub = await root.submit({
     type: "input", requestId: `followup-${Date.now()}`,
     // BRIEF_CHANGE: the scope brief changed since the session started (targets.mjs briefChange).
@@ -407,7 +434,7 @@ async function child([, , , mode, db, ws]) {
       // Stream the agent's thinking and prose to the UI for the whole live turn.
       // In CLI mode stdin is /dev/null, so the steer reader never fires.
       await streamCognition(harness, Number(process.env.ATTEMPT_BASE ?? 0));
-      readSteers(root, control);
+      readSteers(root, control, applySessionMode);
     }
 
     let settled = await sub.wait(ctx);

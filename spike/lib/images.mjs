@@ -91,6 +91,15 @@ export const MANIFEST = [
     ref: "projectdiscovery/nuclei:v3.4.10@sha256:aeb5ea2db32a252b8135707d2ad0e89b90e19a18ea7816d38759bc51efb46b97" },
   { tag: "hahwul/dalfox:v2.12.0", group: "web", kind: "pull",
     ref: "hahwul/dalfox:v2.12.0@sha256:11c1249ef35f8eb3482d180e247304b351b37da2929eecd518dd8057d2687dc7" },
+  { tag: "touchstone/web-browser:1.65.1", group: "web", kind: "build", optional: true,
+    file: "spike/packs/web/Dockerfile.browser", context: "spike/packs/web",
+    note: "Chromium + Playwright, the browser client of a capture. ~1.9 GB and optional." },
+  { tag: "touchstone/web-browser:stream", group: "web", kind: "build", optional: true,
+    file: "spike/packs/web/Dockerfile.stream", context: "spike.",
+    note: "The streamed browser (Xvfb, openbox, Voxl) for human takeover. Built ON TOP of touchstone/web-browser:1.65.1, so build that first." },
+  { tag: "mitmproxy/mitmproxy:12.3.1", group: "web", kind: "pull",
+    ref: "mitmproxy/mitmproxy:12.3.1@sha256:2711066c855659b5af8b1dbb84494ed3eff69b42ece439c60b4fe09a2db829d4",
+    note: "Client traffic capture (lib/intercept.mjs). The image is only the proxy; the client image belongs to the pack." },
 
   // ---- ai-mcp ----
   { tag: "touchstone/ai-mcp-lab:dev", group: "ai-mcp", kind: "build",

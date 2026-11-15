@@ -27,8 +27,16 @@ test("CORS fires only on a foreign reflected origin WITH credentials", () => {
   const noCreds = entry({ reqHeaders: { origin: "https://touchstone.test" }, resHeaders: { "access-control-allow-origin": "https://touchstone.test" }, resBody: {} });
   assert.equal(oracle("cors-credentialed-reflection").check([noCreds]).pass, false);
 
-  const own = entry({ reqHeaders: { origin: "https://www.site.test" }, resHeaders: { "access-control-allow-origin": "https://www.site.test", "access-control-allow-credentials": "true" }, resBody: {} });
+  const own = entry({ reqHeaders: { origin: "https://site.test" }, resHeaders: { "access-control-allow-origin": "https://site.test", "access-control-allow-credentials": "true" }, resBody: {} });
   assert.equal(oracle("cors-credentialed-reflection").check([own]).pass, false, "same site is not a finding");
+
+  // Every app allowlists a dev origin; matching only that is the weak case.
+  for (const dev of ["http://localhost:3000", "http://127.0.0.1:5173", "http://dev.local"]) {
+    const row = entry({ reqHeaders: { origin: dev }, resHeaders: { "access-control-allow-origin": dev, "access-control-allow-credentials": "true" }, resBody: {} });
+    assert.equal(oracle("cors-credentialed-reflection").check([row]).pass, false, `${dev} is a dev origin`);
+  }
+  // A rigged .test origin still counts.
+  assert.equal(oracle("cors-credentialed-reflection").check([ok]).pass, true);
 });
 
 test("open redirect fires only when the off-site Location came from the query", () => {

@@ -29,11 +29,13 @@
 // the helper never calls global fetch, so monkeypatching fetch cannot fake it.
 import { requestWithRedirects, retrySend } from "./redirect-request.mjs";
 import { execFile } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { requireImage } from "./proof-http.mjs";
 import { readTouchstone, writeTouchstone } from "./sandbox.mjs";
+import { MITM_IMAGE, MITM_PORT, captureThrough } from "./intercept.mjs";
+import { captureBrowser } from "./browser-client.mjs";
 
 // The scan stage needs a route to the internet, so it runs on the default bridge
 // network and is aimed straight at the base URL. The scan only produces leads;
@@ -57,8 +59,13 @@ export function liveTarget(ws) {
   if (!net || !gate) throw new Error("Live requests are unavailable: this workspace has no confinement boundary. It was not prepared, or its live route has ended. Do not retry request scripts. Start a new run for live testing; saved files can still be inspected.");
   if (!baseUrl) throw new Error("this live run has no base URL");
   if (!cfg.live?.image) throw new Error("this live run has no script image");
-  return { net, gate, baseUrl, image: cfg.live.image };
+  const session = cfg.session ?? cfg.live.session ?? {};
+  return { net, gate, baseUrl, image: cfg.live.image, session: session.headers ?? {}, storageState: session.storageState ?? null };
 }
+
+// The session headers as one env value. Empty object when the scope has none, so
+// the harness needs no branch.
+const sessionEnv = (t) => JSON.stringify(t.session ?? {});
 
 // Persist the boundary on the workspace, so the agent tool AND the later proof
 // replay (a different call site) find the same one.
@@ -80,6 +87,11 @@ import { SiweMessage } from "siwe";
 
 const BASE = process.env.TOUCHSTONE_BASE_URL;
 const PROXY = new URL(process.env.TOUCHSTONE_SCOPE_PROXY);
+const SESSION = (() => { try { return JSON.parse(process.env.TOUCHSTONE_SESSION || "{}") || {}; } catch { return {}; } })();
+const ORIGIN = new URL(BASE).origin;
+// The operator's own session headers, for the scope's origin ONLY. A cookie must
+// not ride to a third-party host that a page or redirect points at.
+const sessionFor = (url) => (url.origin === ORIGIN ? SESSION : {});
 const OUT = process.env.TOUCHSTONE_TRANSCRIPT;
 const LIMIT = 200_000;
 
@@ -124,9 +136,14 @@ async function openTunnel(host) {
   });
 }
 
+// "host:port" for a CONNECT line. url.host drops a default port, and a mitm
+// proxy (lib/intercept.mjs) answers a portless CONNECT with 400. The gate
+// defaults to 443, so an explicit port is right for both paths.
+const connectAuthority = (u) => u.port ? u.host : u.hostname + ":" + (u.protocol === "https:" ? 443 : 80);
+
 async function send(url, method, headers, body) {
   const secure = url.protocol === "https:";
-  const sock = secure ? await openTunnel(url.host) : await connectProxy();
+  const sock = secure ? await openTunnel(connectAuthority(url)) : await connectProxy();
   // A fresh agent per call whose connection IS the socket we already made, so
   // the request cannot re-resolve the name or open a second route. Per call, so
   // a torn socket is never reused.
@@ -155,7 +172,7 @@ const sendRetrying = retrySend(send);
 
 globalThis.request = async function request(method, path, o = {}) {
   const url = new URL(path, BASE);
-  const headers = { "content-type": "application/json", "accept-encoding": "identity", ...(o.headers || {}) };
+  const headers = { ...sessionFor(url), "content-type": "application/json", "accept-encoding": "identity", ...(o.headers || {}) };
   const hasBody = o.body !== undefined;
   const body = hasBody ? (typeof o.body === "string" ? o.body : JSON.stringify(o.body)) : undefined;
   return requestWithRedirects(sendRetrying, record, method, url, headers, body, o);
@@ -223,6 +240,7 @@ export async function runLiveScript(ws, script, { timeoutMs = LIVE_SCRIPT_TIMEOU
         "-v", `${dir}:/app/_run`, "-w", "/app",
         "-e", `TOUCHSTONE_BASE_URL=${t.baseUrl}`,
         "-e", `TOUCHSTONE_SCOPE_PROXY=${t.gate}`,
+        "-e", `TOUCHSTONE_SESSION=${sessionEnv(t)}`,
         "-e", "TOUCHSTONE_TRANSCRIPT=/app/_run/transcript.jsonl",
         "--entrypoint", "node", t.image, "/app/_run/run.mjs",
       ], { timeoutMs });
@@ -231,6 +249,88 @@ export async function runLiveScript(ws, script, { timeoutMs = LIVE_SCRIPT_TIMEOU
         .filter(Boolean)
         .flatMap((line) => { try { return [JSON.parse(line)]; } catch { return []; } });
       return { transcript, stdout: r.stdout.trim(), stderr: r.stderr.trim(), code: r.code, timedOut: r.timedOut };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+}
+
+// A live CAPTURE: the same harness and the same gate, with mitmproxy between the
+// client and the gate. mitm forward-proxies to the gate (`--mode upstream`), and
+// the client network has no other peer, so the gate still decides every host and
+// still pins the address it checks. mitm records the HAR; the gate records
+// nothing new. The client talks to mitm exactly as it talks to the gate, so the
+// harness needs only a different TOUCHSTONE_SCOPE_PROXY value.
+//
+// Two records exist here. The HAR is the out-of-band one (the client cannot
+// write it). The harness's own transcript.jsonl stays as a fallback for a proxy
+// that died mid-run, and as the live proof's input shape. The HAR wins when it
+// has entries.
+export async function runLiveCapture(ws, script, { timeoutMs = LIVE_SCRIPT_TIMEOUT_MS, label = "capture" } = {}) {
+  return serialize(ws, async () => {
+    const t = liveTarget(ws);
+    await requireImage(t.image, t.image.includes("ai-mcp") ? "ai-mcp" : "web");
+    await requireImage(MITM_IMAGE, "web");
+    const dir = mkdtempSync(join(tmpdir(), "touchstone-live-cap-"));
+    try {
+      chmodSync(dir, 0o777);
+      writeFileSync(join(dir, "run.mjs"), `${HARNESS}\n(async () => {\n${script}\n})().catch((e) => { console.error(String(e && e.stack || e)); process.exitCode = 1; });\n`);
+      writeFileSync(join(dir, "transcript.jsonl"), "");
+      const run = await captureThrough(
+        { net: t.net, upstream: t.gate, origin: t.baseUrl },
+        {
+          image: t.image, cmd: ["/app/_run/run.mjs"], workdir: "/app", entrypoint: "node", rw: true,
+          env: {
+            TOUCHSTONE_BASE_URL: t.baseUrl,
+            TOUCHSTONE_SCOPE_PROXY: `http://mitm:${MITM_PORT}`,
+            TOUCHSTONE_SESSION: sessionEnv(t),
+            TOUCHSTONE_TRANSCRIPT: "/app/_run/transcript.jsonl",
+          },
+        },
+        { dir, timeoutMs },
+      );
+      const fallback = readFileSync(join(dir, "transcript.jsonl"), "utf8")
+        .split("\n")
+        .filter(Boolean)
+        .flatMap((line) => { try { return [JSON.parse(line)]; } catch { return []; } });
+      const transcript = run.transcript.length ? run.transcript : fallback;
+      let harPath = null;
+      if (run.transcript.length) {
+        const safe = String(label).replace(/[^a-z0-9._-]+/gi, "-").slice(0, 60) || "capture";
+        mkdirSync(join(ws, "captures"), { recursive: true });
+        harPath = join(ws, "captures", `${safe}.har`);
+        try { writeFileSync(harPath, readFileSync(run.harPath)); } catch { harPath = null; }
+      }
+      return { transcript, harPath, proxied: Boolean(run.transcript.length), stdout: run.stdout.trim(), stderr: run.stderr.trim(), code: run.code, timedOut: run.timedOut };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+}
+
+// A browser replay against the live site for one finding whose evidence came from
+// a browser capture. Same return shape as liveProof().
+export async function replayLiveBrowser(ws, steps, oracle) {
+  return serialize(ws, async () => {
+    const t = liveTarget(ws);
+    await requireImage(t.image, t.webImage ?? "web");
+    const dir = mkdtempSync(join(tmpdir(), "touchstone-live-br-"));
+    try {
+      const run = await captureBrowser(
+        { net: t.net, upstream: t.gate, origin: t.baseUrl, proxyPort: MITM_PORT },
+        dir,
+        { baseUrl: t.baseUrl, steps, storageState: t.storageState ?? null, label: "proof", timeoutMs: LIVE_SCRIPT_TIMEOUT_MS },
+      );
+      let verdict;
+      try { verdict = await oracle.check(run.transcript, run); } catch (err) { verdict = { pass: false, detail: `oracle threw: ${String(err?.message ?? err).slice(0, 300)}` }; }
+      const detail = verdict.detail ?? "";
+      return {
+        kind: "http",
+        status: verdict.pass ? "pass" : "fail",
+        detail,
+        oracle: { name: oracle.name ?? "", detail, passed: Boolean(verdict.pass) },
+        log: run.transcript.map((e, i) => ({ label: `${i + 1}. ${e.method} ${e.path}`, request: { method: e.method, url: e.url, headers: e.reqHeaders, body: e.reqBody }, response: { status: e.status, headers: e.resHeaders, body: e.resBody } })),
+      };
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

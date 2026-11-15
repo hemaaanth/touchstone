@@ -62,6 +62,8 @@ export function buildMessages(
   // Each module's proof kind (PackChoice.proof), for a card whose recorded
   // finding has not arrived yet.
   packProof: Record<string, string> = {},
+  // The run id, for a card that needs to call the server (the streamed session).
+  runId: string | null = null,
 ): ThreadMessageLike[] {
   if (!state) return []
   const msgs: ThreadMessageLike[] = []
@@ -212,6 +214,18 @@ export function buildMessages(
         toolName: "ask_human",
         args: { ask: step.ask },
         ...(step.ask.answer ? { result: step.ask.receipt ?? { answer: step.ask.answer, interrupted: step.ask.interrupted === true } } : {}),
+      })
+      return
+    }
+    // A streamed browser session stays visible on its own: the operator needs
+    // the frame while it is open, so it never folds into a work card.
+    if (step.kind === "session" && step.session) {
+      ;(buf.parts as unknown[]).push({
+        type: "tool-call",
+        toolCallId: step.key,
+        toolName: "session",
+        args: { step, ...(runId ? { runId } : {}) },
+        result: "done",
       })
       return
     }

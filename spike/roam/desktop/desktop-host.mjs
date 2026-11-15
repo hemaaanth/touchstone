@@ -6,20 +6,27 @@ import { ViewerLease, viewerPage, viewerScript } from './desktop-viewer.mjs';
 import { launchVoxl } from './voxl-process.mjs';
 
 export const VIEW_TTL_MS = 15 * 60_000;
+// A published container port is fixed, so a local session binds one. 0 keeps the
+// Daytona behaviour (an ephemeral port).
+const VIEW_PORT = Number(process.env.TOUCHSTONE_DESKTOP_PORT || 0) || 0;
 const publicFiles = new Set(['/client.js', '/worker.js', '/audio.js', '/mic.js', '/favicon.ico', '/inter.woff2']);
 const systemClock = { now: Date.now, setTimeout, clearTimeout };
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
+// A live capture runs locally, so its viewer is plain http on loopback. A Daytona
+// preview is https. Anything else (a hostname over http) is refused: the token
+// would travel in clear text on a network.
 function origin(value) {
   if (typeof value !== 'string') throw Error('Invalid origin');
   const url = new URL(value);
-  if (url.protocol !== 'https:' || url.origin !== value || url.username || url.password) throw Error('Invalid origin');
+  const loopback = url.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname);
+  if ((url.protocol !== 'https:' && !loopback) || url.origin !== value || url.username || url.password) throw Error('Invalid origin');
   return value;
 }
-async function listen(server, host) {
+async function listen(server, host, port = 0) {
   await new Promise((resolve, reject) => {
     server.once('error', reject);
-    server.listen(0, host, resolve);
+    server.listen(port, host, resolve);
   });
   return server.address().port;
 }
@@ -93,7 +100,10 @@ export class DesktopRuntime {
     s.server.on('upgrade', (req, socket, head) => this.upgrade(s, req, socket, head));
     try {
       // Daytona reaches the wrapper. Voxl itself never listens beyond loopback.
-      s.port = await listen(s.server, '0.0.0.0');
+      // 0.0.0.0 even locally: a published port is forwarded to the container IP, so
+    // a loopback-only listener would be unreachable. The host mapping keeps it
+    // on 127.0.0.1.
+    s.port = await listen(s.server, '0.0.0.0', VIEW_PORT || 0);
       this.session = s;
       s.timer = this.clock.setTimeout(() => this.retire(s), VIEW_TTL_MS);
       s.timer.unref?.();

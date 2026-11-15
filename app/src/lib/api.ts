@@ -38,6 +38,15 @@ async function getJson<T>(url: string): Promise<T> {
   return (await res.json()) as T
 }
 
+// Watch/control switch for a run's streamed browser session. 202: the worker
+// applies it and emits the event the thread renders.
+export const setSessionMode = (
+  id: string,
+  viewOnly: boolean,
+  opts: { touch?: boolean; agentPause?: boolean; pauseOnly?: boolean } = {},
+) =>
+  postJson<{ ok: boolean; viewOnly: boolean }>(`/api/runs/${encodeURIComponent(id)}/session-mode`, { viewOnly, ...opts })
+
 async function postJson<T>(url: string, body: unknown): Promise<T> {
   const res = await fetch(url, {
     method: "POST",

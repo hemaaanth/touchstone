@@ -15,6 +15,12 @@
 // so a lead survives a later model error, a stop, or a server restart. The run
 // record and the run view read leads from those events.
 //
+// A scope that also names live hosts gets one extra tool, run_request_script:
+// the same live lane the Web pack uses (lib/live.mjs) — real requests through
+// the run's confinement gate, every call recorded in a transcript the script
+// cannot edit. The sandbox itself still has no network. A code-only scope gets
+// no such tool. Results stay leads; this pack proves nothing.
+//
 // Reads are confined: the real path (symlinks resolved) must stay inside the
 // workspace under src/ or vendor/, and it must be a regular,
 // allowlisted, non-secret file. fetch_source fetches only the scope's own repo
@@ -27,8 +33,11 @@ import { int, obj, oneOf, opt, str } from "@earendil-works/pi-schema";
 import { readTouchstone } from "../../lib/sandbox.mjs";
 import { moduleOn } from "../../lib/modules.mjs";
 import { fetchSource } from "../../lib/fetch.mjs";
+import { recordScript } from "../../lib/candidate.mjs";
 import { classifyPath, githubRepoUrl } from "../../lib/scopes-store.mjs";
 import { event } from "../../lib/event.mjs";
+import { bindLive, isLive, liveTarget, runLiveScript } from "../../lib/live.mjs";
+import { requireImage } from "../../lib/proof-http.mjs";
 
 const READ_ROOTS = ["src", "vendor"];
 const FILE_READ_CAP = 512 * 1024;
@@ -105,6 +114,12 @@ What this run can and cannot do:
   shares a note with other agents; it does not record a lead.
 - The sandbox has no network. Only fetch_source reaches out, on the host, and
   only for the repos the scope lists.
+- When the scope also names live hosts, you get run_request_script: real HTTP
+  through the run's gate, path relative to the scope's base URL, with the
+  operator's test credentials. Every call is recorded in a transcript. Use it to
+  turn a read lead into a demonstrated one: send the request a second account
+  would send and quote the label in the lead's proof. A script result still does
+  not mark anything proven — nothing does in this pack.
 
 How to review:
 - Map the code first: entry points, trust boundaries, where input comes in, where
@@ -215,6 +230,35 @@ export function tools(ws, state = {}) {
     },
   });
 
+  // Only a live scope gets this. The boundary is bound by the pre-pass; a
+  // scope without one gets a clear refusal rather than a silent no-op.
+  const runScript = defineTool({
+    name: "run_request_script",
+    description: "Run a short JS script against the live scope and read what happened. `path` is resolved against the scope's base URL. Inside the script, await request(method, path, { headers, body }) makes one real HTTP call and returns { status, resBody, resHeaders }. Every request and response lands in a transcript the script cannot edit. Use it to demonstrate an access-control or SSRF lead against the real service with the operator's test keys.",
+    parameters: obj({
+      label: str({ description: "a short, unique name for this attempt, e.g. \"handle-guess-1\"" }),
+      script: str({ description: "JS source using request(), e.g. const r = await request(\"GET\", \"/api/v1/deployments/x\"); console.log(r.status, r.resBody.slice(0, 400))" }),
+    }),
+    replay: "unsafe",
+    execute: async (args) => {
+      if (!isLive(ws)) return text("This scope is code only; it has no live lane. Use read_source and record_lead.", true);
+      const label = String(args.label ?? "").trim();
+      event("run_request_script", { label, attempt: ++state.poc });
+      let run;
+      try {
+        run = await runLiveScript(ws, String(args.script));
+      } catch (err) {
+        event("run_request_script-done", { label, ok: false });
+        return text(`Script failed to run: ${String(err?.message ?? err).slice(0, 300)}`, true);
+      }
+      recordScript(state, label, String(args.script), run.transcript, null);
+      event("run_request_script-done", { label, calls: run.transcript.length, ...(run.timedOut ? { timedOut: true } : {}) });
+      const lines = run.transcript.slice(-12).map((c) => `${c.method ?? "?"} ${c.path ?? c.url ?? "?"} -> ${c.status ?? "no response"}\n${String(c.resBody ?? c.body ?? "").slice(0, 1200)}`).join("\n---\n");
+      const tail = String(run.stdout ?? "").trim();
+      return text(`Attempt ${label}: ${run.transcript.length} call(s)${run.timedOut ? ", timed out" : ""}.${tail ? `\nScript output:\n${tail.slice(0, 1500)}` : ""}\n${lines}${run.stderr ? `\nstderr: ${String(run.stderr).slice(0, 600)}` : ""}\nRecord a lead with record_lead and quote this label in its proof.`);
+    },
+  });
+
   // One lead per file:line, by a stable id. A second call on the same line
   // returns the first lead's id and writes no event.
   const recorded = new Set();
@@ -258,7 +302,7 @@ export function tools(ws, state = {}) {
     },
   });
 
-  return [listSources, readSource, searchSource, recordLead, ...(moduleOn(cfg.modules, "fetch") && links.size ? [fetchSourceTool] : [])];
+  return [listSources, readSource, searchSource, recordLead, ...(isLive(ws) ? [runScript] : []), ...(moduleOn(cfg.modules, "fetch") && links.size ? [fetchSourceTool] : [])];
 }
 
 export default {
@@ -273,6 +317,18 @@ export default {
   // only read the workspace.
   fetches: ["github"],
   system: () => SYSTEM,
+  // A live scope binds the confinement gate before the agent starts. A code-only
+  // scope has no reach and falls through to no pre-pass.
+  prepass: async (ws, { emit = () => {}, reach } = {}) => {
+    if (!reach?.confine) return undefined;
+    const { baseUrl } = readTouchstone(ws);
+    if (!baseUrl) return undefined;
+    const image = "touchstone/web-lab:dev";
+    await requireImage(image, "web");
+    bindLive(ws, { net: reach.confine.netClient, gate: reach.confine.gateUrl, baseUrl, image });
+    emit({ ev: "review-live-target", baseUrl });
+    return undefined;
+  },
   tools: (ws, state) => tools(ws, state),
   kickoff: () => KICKOFF,
   nudge: (state) => (state?.leads ? null : NUDGE),
