@@ -200,6 +200,11 @@ async function runScript({ toolset, script, net, target, work = null, timeoutMs 
       // that leaves a child running (nc, a shell) is still reaped.
       "run", "--rm", "--init", "--pull=never", "--network", net,
       "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+      // The mounts come from the operator's own user: a root process without
+      // CAP_DAC_OVERRIDE cannot traverse a 0700 staging dir or workspace. Run as
+      // the caller so ownership matches, and whatever the script writes into
+      // /work stays theirs.
+      ...(process.getuid ? ["--user", `${process.getuid()}:${process.getgid()}`] : []),
       "--pids-limit", "256", "--memory", "1g",
       "-v", `${dir}:/run:ro`,
       ...(work ? ["-v", `${work}:/work`, "-w", "/work"] : []),
