@@ -108,13 +108,33 @@ It is A's second pipeline on a free tier whose key-scoped create route refuses t
 pipeline (`403 "reached the Turbo pipelines limit"`) because the internal plugin runs no
 billing/limit hooks.
 
-## Delete
+## Delete, and the key-scoped draft hole (proven live)
 
-Not driven live end-to-end: `_gs_fetch_abi` is GET-only and sink/handler transforms are
-POST-only, so a pipeline can reach apply but not the agent's `DELETE /pipeline/:p/:n`.
-The delete handler sits on the same path behind the same `check_project_access` gate
-(`main.rs:540-553`, `api.rs:1605-1615`), and the internal compose DELETE has the same appId
-trust, so it is covered by the same missing check. It is marked unverified-live here.
+The agent's own `DELETE /pipeline/:p/:n` is reachable only from a pod, and a pipeline can issue
+GET and POST but not DELETE, so the in-cluster delete is source-proven: it sits on the same path
+behind the same `check_project_access` gate as the GET/POST above
+(`main.rs:540-553`, `api.rs:1605-1615`), and the internal compose DELETE carries the same appId
+trust.
+
+The draft routes give a fully live, key-only delete — plus a takeover that the pipeline routes
+do not have. `PUT` and `DELETE /api/admin/pipelines/v1/turbo/drafts/:id` resolve the row by id
+alone, and the update writes the caller's `project_id`:
+
+- `draftClient.ts:151-170` — `turboDraft.update({ data: { …, project_id: project.id }, where: { id } })`
+- `draftClient.ts:186-198` — `turboDraft.delete({ where: { id } })`
+
+With A's key: `POST /api/admin/pipelines/v1/turbo/drafts/draft-a` → `cmwhbu34h000a296kpexafx1t`.
+Then with B's key:
+
+```
+GET    /api/admin/pipelines/v1/turbo/drafts/cmwhbu34h000a296kpexafx1t          -> 404
+PUT    …/turbo/drafts/cmwhbu34h000a296kpexafx1t  {…,"description":"overwritten-by-B"} -> 200
+DELETE …/turbo/drafts/cmwhbu34h000a296kpexafx1t                                -> 204
+```
+
+After the PUT, A's `GET …/drafts/<id>` is 404 and A's list is empty while B's list holds the
+draft with B's description — the draft moved project. The DELETE then removes it for good. Draft
+ids appear in the dashboard URL `/dashboard/pipelines/turbo/drafts/<id>`.
 
 ## Impact
 
