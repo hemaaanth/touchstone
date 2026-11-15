@@ -49,6 +49,13 @@ async function exec(tool, args) {
   return tool.execute(args, { signal: undefined });
 }
 
+test("run_request_script appears only on a live scope, never on a code-only one", () => {
+  const { ws } = workspace();
+  assert.ok(!review.tools(ws, {}).some((x) => x.name === "run_request_script"), "a code-only scope has no live lane");
+  writeFileSync(join(ws, ".touchstone.json"), JSON.stringify({ pack: "review", kind: "live", baseUrl: "https://api.example.test" }));
+  assert.ok(review.tools(ws, {}).some((x) => x.name === "run_request_script"), "a live scope can send requests");
+});
+
 test("Review offers record_lead; a lead becomes an event with file, line and reason, never proven", async (t) => {
   const { ws, events } = workspace();
   t.mock.method(console, "log", () => {});

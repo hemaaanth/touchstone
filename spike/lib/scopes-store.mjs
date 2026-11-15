@@ -12,7 +12,7 @@
 // is the whole store; we read and rewrite it in full on each change. There is
 // one long-lived Node process (the Vite dev server), so there is no concurrent
 // writer to coordinate with.
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, renameSync, statSync, writeSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
@@ -23,6 +23,12 @@ const DATA_DIR = path.resolve(HERE, "../data");
 // TOUCHSTONE_SCOPES_FILE exists only so tests use a throwaway store. Read on
 // each call, so a test can set it after import.
 const scopesFile = () => process.env.TOUCHSTONE_SCOPES_FILE || path.join(DATA_DIR, "scopes.json");
+// One file per scope, next to the index. An organisation-wide scope is past
+// V8's ~512 MB string limit on both write AND read, so a scope's body can no
+// longer live in the shared file. scopes.json holds summaries only: members
+// with their paths and no content.
+const scopesDir = () => path.join(path.dirname(scopesFile()), "scopes");
+const bodyFile = (id) => path.join(scopesDir(), `${id}.json`);
 
 // The one proof surface a brief run is allowed: an isolated, offline Foundry
 // workspace. Mirrors targets.mjs SANDBOX_FOUNDRY so a brief can never be proven
@@ -35,14 +41,23 @@ const SANDBOX_FOUNDRY = {
 // The scopes for a mutation. A missing file is an empty store. A file that
 // exists but cannot be read or parsed throws, so a mutation never writes over it.
 // Exported for a reader that must tell a damaged store from a scope that is gone.
-export const loadScopes = () => loadStore(scopesFile(), "scope store");
+export const loadScopes = () => scopesReadable().map(hydrate);
+
+function scopesReadable() {
+  try {
+    return readIndex();
+  } catch (e) {
+    if (e?.code === "ENOENT") return [];
+    throw new Error(`Refused: the scope store file ${scopesFile()} cannot be read (${e.code || e.message}). Nothing was changed. Repair it or move it away, then try again.`);
+  }
+}
 
 // Read the whole store for a list or a lookup. A missing file is an empty list.
 // A damaged file also reads as "no user scopes", so the list still renders. It
 // is never written over: every add and remove refuses it (loadScopes).
 export function readScopes() {
   try {
-    return loadScopes();
+    return scopesReadable();
   } catch {
     return [];
   }
@@ -75,8 +90,16 @@ function writeJsonStream(fd, value) {
   writeSync(fd, JSON.stringify(value ?? null));
 }
 
-function writeScopes(arr) {
-  const file = scopesFile();
+// A summary for the index: members keep their paths so a list can count them,
+// their content lives in the body file.
+const summaryOf = (scope) => ({
+  ...scope,
+  ...(scope.members
+    ? { members: scope.members.map((m) => (m.files ? { ...m, files: m.files.map((f) => (typeof f === "string" ? f : { path: f.path })) } : m)) }
+    : {}),
+});
+
+function writeJsonFile(file, value) {
   mkdirSync(path.dirname(file), { recursive: true });
   // Keep the mode the operator gave the file. A new file gets the default mode.
   let mode = 0o666;
@@ -88,12 +111,48 @@ function writeScopes(arr) {
   const tmp = `${file}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
   const fd = openSync(tmp, "w", mode);
   try {
-    writeJsonStream(fd, arr);
+    // Always stream: JSON.stringify of a 460 MB scope is itself past the limit.
+    writeJsonStream(fd, value);
     fsyncSync(fd);
   } finally {
     closeSync(fd);
   }
   renameSync(tmp, file);
+}
+
+// Full scopes to the body files, summaries to the index. Bodies are written one
+// at a time; the index last, so a crash mid-write leaves the old index pointing
+// at still-valid bodies.
+function writeScopes(arr) {
+  const file = scopesFile();
+  mkdirSync(scopesDir(), { recursive: true });
+  const ids = new Set(arr.map((s) => s.id));
+  for (const scope of arr) writeJsonFile(bodyFile(scope.id), scope);
+  for (const name of readdirSync(scopesDir())) {
+    if (name.endsWith(".json") && !ids.has(name.slice(0, -5))) rmSync(path.join(scopesDir(), name), { force: true });
+  }
+  writeJsonFile(file, arr.map(summaryOf));
+}
+
+// The index, which is small enough to stringify. A legacy store that still
+// holds full bodies is split on the way through.
+function readIndex() {
+  const raw = readFileSync(scopesFile(), "utf8");
+  const arr = JSON.parse(raw);
+  if (!Array.isArray(arr)) throw new Error("not a list");
+  if (arr.some((s) => s?.members?.some((m) => m?.files?.some((f) => f && typeof f === "object" && "content" in f)))) {
+    writeScopes(arr);
+    return arr.map(summaryOf);
+  }
+  return arr;
+}
+
+function hydrate(summary) {
+  try {
+    return JSON.parse(readFileSync(bodyFile(summary.id), "utf8"));
+  } catch {
+    return summary;
+  }
 }
 
 // Add one new scope on top, under the store lock (grant-store withStoreLock).
@@ -734,7 +793,8 @@ export function setScopeNetworkPolicy(id, networkPolicy) {
 }
 
 export function getUserScope(id) {
-  return readScopes().find((s) => s.id === id) ?? null;
+  const summary = readScopes().find((s) => s.id === id) ?? null;
+  return summary ? hydrate(summary) : null;
 }
 
 // Remove a scope by id. Returns true if one was removed.

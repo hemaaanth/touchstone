@@ -548,7 +548,15 @@ export function prepareWorkspace(target, { modules = [] } = {}) {
     writeTouchstone(ws, { kind: "brief", solc: "auto", pack, modules, links: Array.isArray(target.links) ? target.links : [] })
     return ws
   }
-  if (target.kind === "live" && ["contracts", "review"].includes(pack) && (target.members?.length || target.contracts?.length)) return prepareWorkspace({ ...target, kind: "scope" }, { modules })
+  // A live scope that also carries code gets the code workspace, but stays
+  // live: the review pack's run_request_script checks isLive(ws), and the run's
+  // reach is a confinement gate, so the kind must survive the copy.
+  if (target.kind === "live" && pack === "review" && target.members?.length) {
+    const ws = prepareScopeWorkspace({ ...target, kind: "scope" }, { modules })
+    writeTouchstone(ws, { ...readTouchstone(ws), kind: "live" })
+    return ws
+  }
+  if (target.kind === "live" && pack === "contracts" && (target.members?.length || target.contracts?.length)) return prepareWorkspace({ ...target, kind: "scope" }, { modules })
   if (target.kind === "live") {
     // No code to copy. The agent learns the exact websites and their base URLs
     // from scopeEnv; the request tool reads where to aim from the config.
