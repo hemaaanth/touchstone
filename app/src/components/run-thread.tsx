@@ -1,4 +1,4 @@
-import { useContext, useState } from "react"
+import { useContext, useEffect, useRef, useState } from "react"
 import {
   AuiIf,
   useAuiState,
@@ -17,6 +17,7 @@ import {
   FileCode2,
   GitBranch,
   Network,
+  Monitor,
   Play,
   ShieldX,
   TerminalSquare,
@@ -45,7 +46,7 @@ import { cn } from "cn"
 import { composerRoomRef } from "@/lib/run-layout"
 import { Button } from "@/components/ui/button"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
-import { card, cardInteractive, mono, ShimmerLabel, StatusMark, type Mark } from "@/components/assistant-ui/elements/surfaces"
+import { card, cardInteractive, ghostButton, mono, ShimmerLabel, StatusMark, type Mark } from "@/components/assistant-ui/elements/surfaces"
 import { ToolGroup, type GroupedTool } from "@/components/assistant-ui/elements/tool-group"
 import { AgentHandoff } from "@/components/assistant-ui/elements/agent-handoff"
 import { Markdown } from "@/components/markdown"
@@ -54,6 +55,9 @@ import { useSmoothText } from "@/components/assistant-ui/elements/streaming-text
 import { agentName, FleetContext, fleetSpend, stepAge, ThreadOwner } from "@/components/fleet-view"
 import { agentLook, FindingNote, MarkedStep, OpenArtifact, sentence, type CardState, type RunStartView } from "@/components/thread-model"
 import { AskHuman } from "@/components/ask-human"
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog"
+import { setSessionMode } from "@/lib/api"
+import { WebPreview } from "@/components/assistant-ui/elements/web-preview"
 import { DEMO_ADMIN_MESSAGE, isDemoMode } from "@/lib/demo"
 
 // The run's thread: the message list, its part renderers, and the composer.
@@ -469,6 +473,7 @@ const Text: TextMessagePartComponent = ({ text }) => <Markdown text={text} class
 const StepPart: ToolCallMessagePartComponent = ({ args }) => {
   const a = args as {
     step?: Step
+    runId?: string
     ask?: HumanAsk
     group?: Step[]
     pending?: PendingApproval
@@ -520,6 +525,7 @@ const StepPart: ToolCallMessagePartComponent = ({ args }) => {
   const step = a.step
   if (!step) return null
 
+  if (step.kind === "session" && step.session) return <SessionCard step={step} runId={a.runId} />
   if (step.kind === "reasoning") return <ReasoningPart step={step} tail={!!a.tail} />
   if (step.kind === "say") return <SayPart step={step} tail={!!a.tail} />
   if (step.kind === "subagent") return <HandoffRow step={step} />
@@ -864,6 +870,126 @@ function WorkCard({ work }: { work: Step[] }) {
             ),
           )}
         </div>
+      ) : null}
+    </div>
+  )
+}
+
+// A streamed browser the operator watches, and can take over. The chrome is the
+// assistant-ui WebPreview element; the frame is our own viewer URL, sandboxed to
+// itself. Compact inline, a real dialog when it needs room, and the agent can
+// hand control over (which stands its capture tools down).
+export function SessionCard({ step, runId, defaultBig = false }: { step: Step; runId?: string; defaultBig?: boolean }) {
+  const session = step.session
+  const [big, setBig] = useState(defaultBig)
+  const [loading, setLoading] = useState(true)
+  const [key, setKey] = useState(0)
+  const [busy, setBusy] = useState(false)
+  const frame = useRef<HTMLIFrameElement>(null)
+  const renew = useRef<ReturnType<typeof setInterval> | null>(null)
+  const closed = step.state === "pass"
+  const needsYou = step.detail === "needs you"
+  const paused = step.paused === true
+  const switchMode = (viewOnly: boolean) => {
+    if (!runId || busy) return
+    setBusy(true)
+    setSessionMode(runId, viewOnly).finally(() => setBusy(false))
+  }
+  // Typing happens in another origin, so the parent hears no keys. Focus on the
+  // frame is the signal: while it holds focus, renew the idle window.
+  const stopRenew = () => { if (renew.current) { clearInterval(renew.current); renew.current = null } }
+  const onFrameFocus = () => {
+    if (!runId || session?.viewOnly !== false) return
+    void setSessionMode(runId, false, { touch: true })
+    stopRenew()
+    renew.current = setInterval(() => {
+      if (document.activeElement !== frame.current) return stopRenew()
+      void setSessionMode(runId, false, { touch: true })
+    }, 30_000)
+  }
+  useEffect(() => {
+    if (session?.viewOnly !== false) stopRenew()
+    return stopRenew
+  }, [session?.viewOnly])
+  if (!session) return null
+  return (
+    <div className={cn(card, "flex w-full max-w-160 flex-col overflow-hidden")} data-session={step.key}>
+      <div className="flex items-center gap-2.5 px-3.5 py-2.5">
+        <Monitor className="size-3.5 shrink-0 text-muted-foreground" />
+        <span className="shrink-0 text-[13.5px] font-medium">{session.viewOnly ? "Watching the browser" : "Browser control"}</span>
+        {needsYou ? <span className={cn(mono, "shrink-0 text-muted-foreground")}>· the agent needs you</span> : null}
+        {paused ? <span className={cn(mono, "shrink-0 text-muted-foreground")}>· agent paused</span> : null}
+        {!needsYou && !paused && step.detail ? <span className={cn(mono, "min-w-0 truncate text-muted-foreground")}>· {step.detail}</span> : null}
+        <StatusMark className="ml-auto" mark={closed ? "done" : "running"} />
+      </div>
+      {closed ? null : (
+        <WebPreview
+          origin={new URL(session.url).host}
+          loading={loading}
+          className="max-w-none rounded-none border-x-0 border-b-0"
+          onReload={() => { setLoading(true); setKey((k) => k + 1) }}
+          onOpenExternal={() => window.open(session.url, "_blank", "noopener,noreferrer")}
+        >
+          <iframe
+            key={key}
+            ref={frame}
+            onFocus={onFrameFocus}
+            title="Streamed browser"
+            src={session.url}
+            sandbox="allow-scripts allow-same-origin allow-forms"
+            onLoad={() => setLoading(false)}
+            className="h-44 w-full border-0 bg-black"
+          />
+        </WebPreview>
+      )}
+      {closed ? null : (
+        <div className="flex items-center gap-2 border-t border-foreground/[0.06] px-3.5 py-2">
+          <button type="button" onClick={() => setBig(true)} className={cn(ghostButton, "text-xs")}>Bigger</button>
+          <button
+            type="button"
+            disabled={busy || !runId}
+            onClick={() => switchMode(!session.viewOnly)}
+            className={cn(ghostButton, "text-xs")}
+          >
+            {session.viewOnly ? "Take over" : "Back to view only"}
+          </button>
+          {paused ? (
+            <button
+              type="button"
+              disabled={busy || !runId}
+              onClick={() => {
+                if (!runId) return
+                setBusy(true)
+                setSessionMode(runId, session.viewOnly, { agentPause: false, pauseOnly: true }).finally(() => setBusy(false))
+              }}
+              className={cn(ghostButton, "text-xs")}
+            >
+              Resume agent
+            </button>
+          ) : null}
+          <a href={session.url} target="_blank" rel="noreferrer" className={cn(ghostButton, "ml-auto text-xs")}>New tab</a>
+        </div>
+      )}
+      {big && !closed ? (
+        <Dialog open onOpenChange={(next) => { if (!next) setBig(false) }}>
+          <DialogContent className="flex h-[92vh] w-[96vw] flex-col gap-0 p-0 sm:max-w-none">
+            <DialogTitle className="px-4 py-2.5 text-sm">{session.viewOnly ? "Watching the browser" : "Browser control"} — {new URL(session.url).host}</DialogTitle>
+            <iframe
+              title="Streamed browser, full size"
+              ref={frame}
+              onFocus={onFrameFocus}
+              src={session.url}
+              sandbox="allow-scripts allow-same-origin allow-forms"
+              className="min-h-0 flex-1 border-0 bg-black"
+            />
+            <div className="flex items-center gap-2 border-t border-foreground/[0.06] px-4 py-2">
+              <button type="button" disabled={busy || !runId} onClick={() => switchMode(!session.viewOnly)} className={cn(ghostButton, "text-xs")}>
+                {session.viewOnly ? "Take over" : "Back to view only"}
+              </button>
+              <a href={session.url} target="_blank" rel="noreferrer" className={cn(ghostButton, "ml-auto text-xs")}>New tab</a>
+            </div>
+          </DialogContent>
+        </Dialog>
       ) : null}
     </div>
   )

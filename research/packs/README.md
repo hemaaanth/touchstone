@@ -20,6 +20,26 @@ Baseline: `main` at `5f7b850`. Research date: 2026-11-10.
 | `domains` | [domains.md](domains.md) | `evidence` | openrdap, checkdmarc | No tool compares the live dapp bundle with an approved list of addresses and script origins |
 | `people-brand` | [people-brand.md](people-brand.md) | `evidence` | Polkadot phishing lists, Sherlock | Feeds list known-bad hosts. They do not tie a lookalike to this team's addresses, handles and claim lures |
 | `infra-cloud` | [infra-cloud.md](infra-cloud.md) | `evidence`, plus a moto posture check | Cartography, Cloud Custodian | No scanner shows which principal or network path can make the signer sign |
+| `intercept` (new) | [intercept.md](intercept.md) | `http` | mitmproxy `mitmdump` (MIT), built-in HAR writer | Captured client traffic is never tied to this team's signer, session or RPC host |
+| `client` (new) | [client.md](client.md) | `evidence`, `forge` | REA (MIT), jadx, apktool, tshark | No module reads the wallet client where the key actually lives |
+
+## Gaps inside the existing packs (ranked, 2026-11-15)
+
+Ranked by proof value, not by effort. Each row names the pack and the
+survey that already recommended it. Licenses were read today.
+
+| # | Pack | Tool | License | Fills |
+|---|---|---|---|---|
+| 1 | `surface` | [naabu](https://github.com/projectdiscovery/naabu) + a chain port list (8545/8546, 8551, 5052, 9000, 30303, 26656/26657, 8899/8900, 3030) | [MIT](https://github.com/projectdiscovery/naabu/blob/dev/LICENSE.md) | Inventory sees only what DNS advertises; node ports are never in DNS |
+| 2 | `surface` | our own Nuclei templates for `personal_*`/`admin_*`/`debug_*`, beacon API, keymanager API, web3signer, mev-boost, CometBFT, Solana, bitcoind | own, lifted from [MIT templates](https://github.com/projectdiscovery/nuclei-templates/blob/main/LICENSE.md) | Community templates have EVM client detect only; the whole chain-service class is absent |
+| 3 | `chain-watch` | [cryo](https://github.com/paradigmxyz/cryo) state diffs | [Apache-2.0](https://github.com/paradigmxyz/cryo/blob/main/LICENSE-APACHE) | Balance and storage diffs per block, which a Forta rule alone cannot reconstruct |
+| 4 | `keys` | [safe-cli](https://github.com/safe-global/safe-cli) `pending` path + our own pre-sign oracle | [MIT](https://github.com/safe-global/safe-cli/blob/main/LICENSE) | Pending multisig transactions are not checked before signers sign |
+| 5 | `domains` | ERC-7730 clear-signing registry data | [CC0-1.0](https://github.com/ethereum/clear-signing-erc7730-registry/blob/master/LICENSE) | No check compares what a signer RENDERS with what a contract emits |
+| 6 | `domains` | [openrdap](https://github.com/openrdap/rdap) | [MIT](https://github.com/openrdap/rdap/blob/main/LICENSE) | Registrar, expiry and lock state are absent from the WHOIS side of a domain check |
+| 7 | `infra-cloud` | [Cartography](https://github.com/cartography-cncf/cartography), [Cloud Custodian](https://github.com/cloud-custodian/cloud-custodian) | [Apache-2.0](https://github.com/cartography-cncf/cartography/blob/master/LICENSE), [Apache-2.0](https://github.com/cloud-custodian/cloud-custodian/blob/master/LICENSE) | Which principal or network path can reach the signer |
+| 8 | `ai-mcp` | [agent-scan](https://github.com/snyk/agent-scan) (mcp-scan successor), REA `discover_webmcp_tools` | [Apache-2.0](https://github.com/snyk/agent-scan/blob/main/LICENSE), MIT | Tool poisoning and a live WebMCP tool inventory |
+| 9 | `web` | mitmproxy WebSocket and JSON-RPC tap addon | ours | Subscription and streaming bugs are invisible to a one-shot script |
+| 10 | `supply-chain` | [Aikido Safe Chain](https://github.com/AikidoSec/safe-chain) | AGPL-3.0 + commercial (read only) | Wallet-draining code in a fresh package, before an advisory exists |
 
 ## Method
 

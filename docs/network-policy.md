@@ -18,6 +18,33 @@ and connects to the checked address for both HTTP and HTTPS CONNECT. Public
 mode refuses private, loopback, link-local, metadata, and reserved destinations.
 Private labs keep their explicit opt-in and strict host confinement.
 
+## Sessions
+
+A site behind a login needs a session. In **Scopes → Add scope**, paste the
+request headers your own browser sends, one `Name: value` per line (a `Cookie`,
+an `Authorization`, an API key). The live request harness adds them to
+same-origin calls only, so a redirect or a cross-origin call does not carry your
+cookie. A script can still send its own header to override one.
+
+Values are stored as plain text in the scope file, like the AI/MCP bearer token.
+They are scrubbed from the workspace when a run ends and restored for a
+follow-up. Expiry is yours to watch: nothing refreshes a session.
+
+A live **capture** (`capture_traffic`) adds mitmproxy but not a second route.
+mitm joins the same client network and forward-proxies to the gate
+(`--mode upstream`), so the client's only peer is still the gate side: granted
+hosts are decided by the same allow-list, and a raw address is still refused in
+strict mode. mitm records the HAR; the gate still decides.
+
+A streamed session can hand the browser to the operator (`viewOnly: false`).
+While a human has control, capture tools stand down and NEW MODEL CALLS are held
+before they reach the provider, so a turn cannot start under the operator's hands.
+A call already in flight is cut at the provider. Focus on the frame renews a
+five-minute idle window; when it lapses, or on stop, control returns and the cut
+turn continues. The card's **Resume agent** button releases the hold without
+handing the browser back. The switch is a control line on the
+worker's stdin, not a second HTTP path into the session.
+
 Host-local proxy callers also stay strict. Public mode through openReach requires
 container confinement. The setting does not expand permission to test unrelated targets.
 

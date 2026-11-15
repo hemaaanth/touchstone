@@ -296,3 +296,27 @@ test("a module that was not ticked is refused, and supply-chain is never mixed w
   assert.throws(() => addLiveScope({ hosts: ["app.example.com"], pack: ["web", "supply-chain"], permission: true }), /GitHub repos/);
   assert.equal(readGrants().length, 1, "the refused scope wrote no grant");
 });
+
+// Session headers: the operator's own logged-in headers, added by the live
+// harness to same-origin calls. Stored plain; validated so a bad paste fails at
+// save time instead of at the first request.
+test("session headers are stored trimmed, with hop headers and blanks dropped", () => {
+  const scope = addLiveScope({ hosts: ["app.example.com"], pack: ["web"], permission: true, session: { headers: {
+    Cookie: "  sid=abc; theme=dark  ", Authorization: "Bearer t", Host: "ignored", "content-length": "3", Empty: "   ",
+  } } });
+  assert.deepEqual(scope.session.headers, { Cookie: "sid=abc; theme=dark", Authorization: "Bearer t" });
+  assert.deepEqual(readScopes()[0].session.headers, { Cookie: "sid=abc; theme=dark", Authorization: "Bearer t" });
+});
+
+test("a bad or oversized session is refused before the grant is written", () => {
+  const base = { hosts: ["app.example.com"], pack: ["web"], permission: true };
+  assert.throws(() => addLiveScope({ ...base, session: { headers: { "bad name": "x" } } }), /Bad session header name/);
+  assert.throws(() => addLiveScope({ ...base, session: { headers: { Cookie: "x".repeat(9000) } } }), /too long/);
+  assert.throws(() => addLiveScope({ ...base, session: { headers: Object.fromEntries(Array.from({ length: 13 }, (_, i) => [`X-${i}`, "v"])) } }), /at most 12/);
+  assert.equal(readGrants().length, 0, "no grant is left behind by a refused scope");
+});
+
+test("a session of only blanks stores nothing", () => {
+  const scope = addLiveScope({ hosts: ["app.example.com"], pack: ["web"], permission: true, session: { headers: { Empty: " " } } });
+  assert.equal(scope.session, undefined);
+});

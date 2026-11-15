@@ -8,6 +8,8 @@
 #   spike/scripts/build-labs.sh arjun      # the Web pack's hidden-parameter image (not in the default list)
 #   spike/scripts/build-labs.sh schemathesis  # the Web pack's API schema-fuzz image (not in the default list)
 #   spike/scripts/build-labs.sh jwt_tool   # the Web pack's JWT crack/analysis image (not in the default list)
+#   spike/scripts/build-labs.sh browser    # the Web pack's Chromium + Playwright image (~1.9 GB, optional)
+#   spike/scripts/build-labs.sh stream     # streamed browser for human takeover (needs the browser image first)
 #
 # garak (about 3 GB, CPU torch) is not in the default list. Build it only if
 # you will run the AI/MCP pack live with an assistant budget.
@@ -29,6 +31,8 @@ build_inspector() { docker build -f packs/ai-mcp/Dockerfile.inspector -t touchst
 build_shield()    { docker build -f packs/ai-mcp/Dockerfile.shield -t touchstone/mcp-shield:1.0.4 packs/ai-mcp; }
 build_garak()     { docker build -f packs/ai-mcp/Dockerfile.garak -t touchstone/garak:0.17.1 packs/ai-mcp; }
 build_strix()     { bash tools/build-strix-image.sh; }
+build_browser()   { docker build -f packs/web/Dockerfile.browser -t touchstone/web-browser:1.65.1 packs/web; }
+build_stream()    { docker build -f packs/web/Dockerfile.stream -t touchstone/web-browser:stream .; }
 
 targets=("$@")
 [ ${#targets[@]} -eq 0 ] && targets=(web ai-mcp inspector shield)
@@ -44,7 +48,9 @@ for t in "${targets[@]}"; do
     shield) build_shield ;;
     garak) build_garak ;;
     strix) build_strix ;;
-    *) echo "unknown target: $t (use web, ffuf, arjun, schemathesis, jwt_tool, ai-mcp, inspector, shield, garak or strix)" >&2; exit 2 ;;
+    browser) build_browser ;;
+    stream) build_stream ;;
+    *) echo "unknown target: $t (use web, ffuf, arjun, schemathesis, jwt_tool, browser, stream, ai-mcp, inspector, shield, garak or strix)" >&2; exit 2 ;;
   esac
 done
 echo "built: ${targets[*]}"
