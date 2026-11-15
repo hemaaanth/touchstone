@@ -21,6 +21,10 @@ export const MODULE_TOKENS = [
   "--module-purple",
   "--module-orchid",
   "--module-pink",
+  "--module-amber",
+  "--module-olive",
+  "--module-steel",
+  "--module-periwinkle",
 ] as const
 
 export type ModuleToken = (typeof MODULE_TOKENS)[number] | typeof MODULE_FALLBACK_TOKEN
@@ -43,6 +47,10 @@ export const MODULE_COLOR: Readonly<Record<string, (typeof MODULE_TOKENS)[number
   "chain-watch": "--module-sky",
   "infra-cloud": "--module-violet",
   "keys": "--module-orchid",
+  "host": "--module-amber",
+  "crypto": "--module-olive",
+  "forensics": "--module-steel",
+  "binary": "--module-periwinkle",
 }
 
 export function moduleToken(id: string | null | undefined): ModuleToken {

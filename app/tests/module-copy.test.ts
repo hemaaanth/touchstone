@@ -15,12 +15,16 @@ const NOTE: Record<string, string | null> = {
   "supply-chain": "A live run reads a GitHub repo or org you've granted, through read-only GitHub reads.",
   "domains": "It can reach a host you've granted. Its scanners run on an open network.",
   "surface": "It can reach a host you've granted. Its scanners run on an open network.",
-  "phishing": "It can reach a host you've granted. Its scanners run on an open network.",
-  "web": "It can reach a host you've granted. Its scanners run on an open network.",
+  "phishing": "It can reach a host you've granted. Its scanners run on an open network. It is built for an agent's own machine: it wants a real toolbelt and an open network.",
+  "web": "It can reach a host you've granted. Its scanners run on an open network. It is built for an agent's own machine: it wants a real toolbelt and an open network.",
   "ai-mcp": "It can reach a host you've granted. Its scanners run on an open network. Its lab target is a rule-based stand-in.",
   "keys": "It runs only in our own offline sandbox.",
   "chain-watch": "It runs only in our own offline sandbox.",
   "infra-cloud": "It runs only in our own offline sandbox. One check also gets an HTTP replay against a private practice cloud.",
+  "host": "It can reach a host you've granted. Its scanners run on an open network. It is built for an agent's own machine: it wants a real toolbelt and an open network.",
+  "crypto": "It runs only in our own offline sandbox.",
+  "forensics": "It runs only in our own offline sandbox.",
+  "binary": "It runs only in our own offline sandbox. It is built for an agent's own machine: it wants a real toolbelt and an open network.",
 }
 
 describe("Modules page copy for each real pack", () => {

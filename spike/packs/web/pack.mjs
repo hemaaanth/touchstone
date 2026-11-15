@@ -1219,6 +1219,9 @@ export default {
   proof: "http",
   // This pack can drive its tools at a real host, not only at its own lab.
   live: true,
+  // Live work here wants a browser and an open network, so a machine child is
+  // the better host. It still runs confined against a lab.
+  roam: true,
   // A live run's lead scanners use SCAN_NETWORK (lib/live.mjs), the open bridge
   // network. Only the request scripts and replays go through the grant gate.
   scanNet: "open",

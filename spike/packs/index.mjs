@@ -13,6 +13,10 @@ import aiMcp from "./ai-mcp/pack.mjs";
 import infraCloud from "./infra-cloud/pack.mjs";
 import review from "./review/pack.mjs";
 import phishing from "./phishing/pack.mjs";
+import host from "./host/pack.mjs";
+import crypto from "./crypto/pack.mjs";
+import forensics from "./forensics/pack.mjs";
+import binary from "./binary/pack.mjs";
 
 import { multiPack, multiPacks } from "./multi.mjs";
 // NOTE: source navigation is NOT a selectable pack. It is the default code-reading
@@ -25,6 +29,10 @@ export const PACKS = {
   [infraCloud.id]: infraCloud,
   [aiMcp.id]: aiMcp,
   [phishing.id]: phishing,
+  [host.id]: host,
+  [crypto.id]: crypto,
+  [forensics.id]: forensics,
+  [binary.id]: binary,
   // Read-only review for operator scopes with no fitting replay oracle.
   [review.id]: review,
 };
@@ -50,7 +58,7 @@ export function packFor(cfg = {}) {
 //   scanNet     "open": a live run's scanners use the open bridge network
 //   grants      "github": a live grant names GitHub repos or orgs, not hosts
 //   extraProof  "cloud-http": one check also gets an HTTP replay on a private cloud
-const REACH_FIELDS = ["labTarget", "offline", "fetches", "scanNet", "grants", "extraProof"];
+const REACH_FIELDS = ["labTarget", "offline", "fetches", "scanNet", "grants", "extraProof", "roam"];
 
 // What the New run dialog needs to list the modules.
 export function packList() {

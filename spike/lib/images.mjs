@@ -63,6 +63,15 @@ export const MANIFEST = [
     base: "openzeppelin/openzeppelin-monitor:v1.7.0@sha256:0d5ac20151328d691cfcb90eeec77d9ce4d9f2f962ddbbb90988c8e0e7c2d616",
     note: "Base pulled by digest first, then built with --pull=false." },
 
+  // ---- the machine-layer packs (host, crypto, forensics, binary) ----
+  // The attacker toolset is ONE image for all four; each pack has its own lab.
+  { tag: "touchstone/toolset:1", group: "base", kind: "build", context: "spike/packs/_toolset", daytona: true,
+    note: "Attacker container: nmap, hydra, tshark, binwalk, exiftool, gdb, pwntools. Also baked into the roam snapshot." },
+  { tag: "touchstone/host-lab:1", group: "host", kind: "build", context: "spike/packs/host/lab", daytona: true },
+  { tag: "touchstone/crypto-lab:1", group: "crypto", kind: "build", context: "spike/packs/crypto/lab", daytona: true },
+  { tag: "touchstone/forensics-lab:1", group: "forensics", kind: "build", context: "spike/packs/forensics/lab", daytona: true },
+  { tag: "touchstone/binary-lab:1", group: "binary", kind: "build", context: "spike/packs/binary/lab", daytona: true },
+
   // ---- web ----
   { tag: "touchstone/web-lab:dev", group: "web", kind: "build",
     context: "spike/packs/web/lab/dapp/oracle" },

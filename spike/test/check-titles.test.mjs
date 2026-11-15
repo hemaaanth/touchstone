@@ -15,6 +15,10 @@ const { scannerDetectors: supplyScanners } = await import("../packs/supply-chain
 const { cosignDetectors } = await import("../packs/supply-chain/cosign.mjs");
 const { networkedDetectors } = await import("../packs/supply-chain/networked.mjs");
 const { oracle: liveOracle } = await import("../packs/infra-cloud/live-cloud.mjs");
+const { ORACLES: HOST } = await import("../packs/host/pack.mjs");
+const { ORACLES: CRYPTO } = await import("../packs/crypto/pack.mjs");
+const { ORACLES: FORENSICS } = await import("../packs/forensics/pack.mjs");
+const { ORACLES: BINARY } = await import("../packs/binary/pack.mjs");
 
 const ID_LIKE = /^[^\s]+$/;
 
@@ -23,7 +27,7 @@ test("every detector key and every oracle name has a readable title", () => {
     ...Object.keys(detectorsFor("domains")), ...Object.keys(detectorsFor("surface")),
     ...CRYPTO_CHECKS, ...Object.keys(supplyScanners()), ...Object.keys(cosignDetectors()), ...Object.keys(networkedDetectors()),
     ...Object.keys(infraCrypto()), ...Object.keys(infraScanners(SELECTED)),
-    ...[...WEB, ...MCP, liveOracle("role")].map((o) => o.name),
+    ...[...WEB, ...MCP, ...HOST, ...CRYPTO, ...FORENSICS, ...BINARY, liveOracle("role")].map((o) => o.name),
   ];
   assert.ok(ids.length > 60, `${ids.length} ids`);
   for (const id of ids) {

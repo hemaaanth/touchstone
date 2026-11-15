@@ -1,0 +1,38 @@
+#!/usr/bin/env python3
+"""carve FILE — print the byte offset of each known container magic in FILE.
+
+The one job binwalk did for these packs: say where an appended or embedded file
+starts, so the tester can cut it out with dd. It prints "offset decimal: kind", one
+line each, and nothing else. It never extracts.
+"""
+import sys
+
+MAGIC = [
+    (b"PK\x03\x04", "zip"),
+    (b"PK\x05\x06", "zip-end"),
+    (b"\x1f\x8b\x08", "gzip"),
+    (b"%PDF-", "pdf"),
+    (b"\x89PNG\r\n\x1a\n", "png"),
+    (b"\xff\xd8\xff", "jpeg"),
+    (b"RIFF", "riff"),
+    (b"BZh", "bzip2"),
+    (b"7z\xbc\xaf\x27\x1c", "7z"),
+    (b"Rar!\x1a\x07", "rar"),
+    (b"SQLite format 3\x00", "sqlite"),
+]
+
+if len(sys.argv) != 2:
+    sys.exit("usage: carve FILE")
+data = open(sys.argv[1], "rb").read()
+found = False
+for magic, kind in MAGIC:
+    start = 0
+    while True:
+        at = data.find(magic, start)
+        if at == -1:
+            break
+        found = True
+        print(f"{at}: {kind}")
+        start = at + 1
+if not found:
+    print("no known container magic")

@@ -12,6 +12,9 @@
 // listed is measured: an unknown proof kind, oracle or check is never harm.
 
 // http: the oracles whose verdict is an effect in the replayed transcript.
+// session: the machine-layer packs' capture checks. The per-instance flag was
+// planted behind the bug, so a replay that printed it took control or read a
+// secret. Not here: a banner, a version, a port list, a checksec line.
 export const HARM_ORACLES = new Set([
   // web: a captured signature mints a session; another account's data read
   // under a foreign session; a signer key returned to a caller with no
@@ -33,6 +36,18 @@ export const HARM_ORACLES = new Set([
   "assumed-role-reads-other-bucket",
   // The same oracle under the name it had before (infra-cloud validation runs).
   "assumed-role-reads-foreign-bucket",
+  "host-user-flag",
+  "host-root-flag",
+  "host-suid-root",
+  "crypto-nonce-reuse",
+  "crypto-predictable-token",
+  "crypto-weak-mac-secret",
+  "forensics-pcap-credential",
+  "forensics-carved-secret",
+  "forensics-metadata-trail",
+  "binary-overflow-shell",
+  "binary-check-bypass",
+  "binary-xor-key",
 ]);
 
 // evidence: the replay reads the pinned snapshot again and never touches the
@@ -60,7 +75,7 @@ export const MEASURED_WORDS = {
   unknown: "Unknown proof kind: not counted as proof of harm.",
 };
 
-const KINDS = ["forge", "http", "evidence"];
+const KINDS = ["forge", "http", "session", "evidence"];
 const oracleOf = (f) => f?.proof?.oracle?.name || f?.oracleName || "";
 const checkOf = (f) => f?.proof?.check || f?.evidence?.check || "";
 
@@ -76,7 +91,7 @@ export function proofClassOf(finding) {
     if (!harm) return { class: "measured", reason: "harm-not-judged", check: "forge" };
     return harm.ok === true && HARM_KINDS.has(harm.kind) ? { class: "harm", reason: null, check: `forge:${harm.kind}` } : { class: "measured", reason: "no-effect", check: "forge" };
   }
-  if (kind === "http") {
+  if (kind === "http" || kind === "session") {
     const name = oracleOf(finding);
     return HARM_ORACLES.has(name) ? { class: "harm", reason: null, check: name } : { class: "measured", reason: "no-effect", check: name };
   }

@@ -53,6 +53,14 @@ node spike/scripts/setup.mjs --only base,contracts
 Expected result: a setup summary with no failed required images. To inspect the
 full catalog without changing Docker, use `--list` or `--dry-run`.
 
+The machine-layer modules need one extra group. `base` holds
+`touchstone/toolset`, the attacker container every command of theirs runs from,
+and each module adds one small lab image:
+
+```sh
+node spike/scripts/setup.mjs --only base,host,crypto,forensics,binary
+```
+
 Prepare the compiler cache once. This uses the same pinned image as the replay
 engine; it does not install Foundry or Solidity on the host.
 

@@ -1,14 +1,15 @@
 // Read a recorded finding's proof without caring which pack made it.
 //
 // A pack's prove hook returns findings with proof: { kind, status, ... }.
-// kind is "forge" (Contracts), "http" or "evidence". A finding recorded before
-// kinds existed has a Foundry proof delta with no kind, so it reads as "forge".
+// kind is "forge" (Contracts), "http", "session" (a replayed shell script on the
+// machine-layer packs) or "evidence". A finding recorded before kinds existed has
+// a Foundry proof delta with no kind, so it reads as "forge".
 // The app server uses these to record, announce and serve findings. Every
 // field a pack sends is untrusted: we cap sizes and keep only known fields.
 import { createHash } from "node:crypto";
 import { proofClass } from "./proof-class.mjs";
 
-export const PROOF_KINDS = ["forge", "http", "evidence"];
+export const PROOF_KINDS = ["forge", "http", "session", "evidence"];
 
 export function proofKind(finding) {
   const k = finding?.proof?.kind;
@@ -86,6 +87,15 @@ export function proofView(finding) {
       kind, pass,
       oracle: { name: str(o.name ?? o.check ?? "", 120), detail: str(o.detail ?? p.detail, 600), passed: o.passed == null ? pass : Boolean(o.passed) },
       exchanges: (Array.isArray(p.log) ? p.log : Array.isArray(p.exchanges) ? p.exchanges : []).slice(0, 20).map(exchange),
+      detail: str(p.detail, 600),
+    };
+  }
+  if (kind === "session") {
+    const o = obj(p.oracle);
+    return {
+      kind, pass,
+      oracle: { name: str(o.name ?? o.check ?? "", 120), detail: str(o.detail ?? p.detail, 600), passed: o.passed == null ? pass : Boolean(o.passed) },
+      commands: (Array.isArray(p.log) ? p.log : []).slice(0, 20).map(exchange),
       detail: str(p.detail, 600),
     };
   }

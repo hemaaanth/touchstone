@@ -95,6 +95,19 @@ function harmOf(finding) {
       if (last?.response?.status != null) lines.push(`The target answered ${last.response.status} to ${last.request?.method || "GET"} ${last.request?.url || ""}.`.trim());
     }
     if (proof.detail) lines.push(String(proof.detail).trim());
+  } else if (kind === "session") {
+    const o = proof.oracle || {};
+    if (o.name || o.detail) {
+      const name = o.name ? `"${o.name}" ` : "";
+      lines.push(`The oracle ${name}${o.passed ? "fired" : "did not fire"}${o.detail ? `: ${o.detail}` : "."}`.replace(/\.?$/, "."));
+    }
+    const cmds = Array.isArray(proof.commands) ? proof.commands : [];
+    if (cmds.length) {
+      lines.push(`${cmds.length} command script${cmds.length === 1 ? "" : "s"} replayed against a fresh target instance on a private network, with a new flag planted behind the bug.`);
+      const exit = cmds[cmds.length - 1]?.response?.status;
+      if (exit != null) lines.push(`The replayed script finished with exit ${exit}.`);
+    }
+    if (proof.detail) lines.push(String(proof.detail).trim());
   } else if (kind === "evidence") {
     if (proof.check) lines.push(`The check "${proof.check}" still holds against a pinned snapshot${proof.commit ? ` at commit ${proof.commit}` : ""}.`);
     if (proof.detail) lines.push(String(proof.detail).trim());
@@ -186,6 +199,12 @@ function whereOf(finding) {
     const ex = Array.isArray(p.exchanges) ? p.exchanges : []
     const req = ex[ex.length - 1]?.request
     if (req?.url) return `${req.method || "GET"} ${req.url}`
+  }
+  if (finding.proofKind === "session") {
+    const cmds = Array.isArray(p.commands) ? p.commands : []
+    const script = cmds[cmds.length - 1]?.request?.body
+    const first = typeof script === "string" ? script.split("\n").find((l) => l.trim() && !l.trim().startsWith("#")) : null
+    if (first) return `sh: ${first.trim()}`
   }
   return finding.scope?.entry || null
 }
@@ -325,6 +344,16 @@ function proofBody(r) {
     return `<dl class="facts">${fact("Oracle", o.name)}${fact("Oracle fired", o.passed == null ? null : o.passed ? "Yes" : "No")}${fact("Exchanges", ex.length || null)}</dl>
       ${o.detail ? `<p>${esc(o.detail)}</p>` : ""}
       ${rows ? `<table><thead><tr><th>Step</th><th>Request</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table>` : ""}
+      ${detail}`
+  }
+  if (r.proofKind === "session") {
+    const o = p.oracle || {}
+    const cmds = Array.isArray(p.commands) ? p.commands : []
+    const rows = cmds.map((x) => `<tr><td>${esc(x.label)}</td><td class="mono">${esc(x.response?.status ?? "—")}</td></tr>`).join("")
+    const detail = cmds.map((x) => fold(`${esc(x.label)} · exit ${esc(x.response?.status ?? "?")}`, `<h3>Replayed script</h3><pre class="code">${esc(x.request?.body || "")}</pre><h3>Output</h3><pre class="code">${esc(x.response?.body || "")}</pre>`)).join("")
+    return `<dl class="facts">${fact("Oracle", o.name)}${fact("Oracle fired", o.passed == null ? null : o.passed ? "Yes" : "No")}${fact("Replays", cmds.length || null)}</dl>
+      ${o.detail ? `<p>${esc(o.detail)}</p>` : ""}
+      ${rows ? `<table><thead><tr><th>Step</th><th>Exit</th></tr></thead><tbody>${rows}</tbody></table>` : ""}
       ${detail}`
   }
   if (r.proofKind === "evidence") {

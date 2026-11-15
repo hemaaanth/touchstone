@@ -62,7 +62,9 @@ export function NewRunDialog({
   const [budget, setBudget] = useState(DEFAULT_BUDGET)
   // The last choice sticks, so an operator who runs fleets keeps getting one.
   const [mode, setModeState] = useState<RunMode>(() => (demo ? "fleet" : localStorage.getItem(MODE_KEY) === "solo" ? "solo" : "fleet"))
-  const [freeRoam, setFreeRoam] = useState(false)
+  // Execution on machines is the normal way to run a fleet now, so it starts on
+  // whenever the operator has a verified snapshot. Turning it off is the exception.
+  const [freeRoam, setFreeRoam] = useState(() => !demoConfig() && roamReady === true)
   const setMode = (m: RunMode) => {
     setModeState(m)
     localStorage.setItem(MODE_KEY, m)
@@ -94,7 +96,7 @@ export function NewRunDialog({
   const scopeItems = [...(demo ? [] : [{ value: RANDOM, label: "Random scope" }]), ...scopeGroups.flatMap((group) => group.targets.map((t) => ({ value: t.id, label: t.title })))]
   const demoBadge = <Badge variant="outline" className="h-[18px] shrink-0 px-1.5 text-[10.5px] font-normal text-muted-foreground">Demo</Badge>
 
-  const notice = demo ? (setupError || alias === "" ? DEMO_ADMIN_MESSAGE : runnable.length === 0 ? "No prepared demos are available right now." : error) : setupError || (needsRoamSetup ? "Set up and test Daytona in Settings to use free-roam agents. You can also turn off free-roam agents for this run." : null) || (!budgetOk
+  const notice = demo ? (setupError || alias === "" ? DEMO_ADMIN_MESSAGE : runnable.length === 0 ? "No prepared demos are available right now." : error) : setupError || (needsRoamSetup ? "Set up and test Daytona in Settings to give agents their own machine. Or switch to the harness sandbox." : null) || (!budgetOk
     ? "The budget must be between $0.01 and $1,000."
     : alias === ""
       ? "Set up a provider key and model in Settings. NEAR AI Cloud is recommended."
@@ -226,8 +228,21 @@ export function NewRunDialog({
           </div>
 
           <fieldset disabled={busy || mode !== "fleet"} aria-hidden={mode !== "fleet"} className={cn("flex flex-col gap-2 text-xs", mode !== "fleet" && "invisible")}>
-            <label className="flex items-center gap-2"><input type="checkbox" checked={freeRoam} onChange={(e) => setFreeRoam(e.target.checked)} />Allow free-roam agents</label>
-            <p className="text-muted-foreground">Free-roam agents use a remote sandbox. Their session candidates remain unproven.</p>
+            <legend className={label}>EXECUTION</legend>
+            <label className="flex items-start gap-2">
+              <input type="radio" name="execution" checked={freeRoam} onChange={() => setFreeRoam(true)} className="mt-0.5" />
+              <span className="flex flex-col gap-0.5">
+                <span className="text-foreground">Own machine per agent</span>
+                <span className="text-muted-foreground">A disposable remote machine with the full toolbelt: nmap, tshark, pwntools, an open network. The default for a fleet.</span>
+              </span>
+            </label>
+            <label className="flex items-start gap-2">
+              <input type="radio" name="execution" checked={!freeRoam} onChange={() => setFreeRoam(false)} className="mt-0.5" />
+              <span className="flex flex-col gap-0.5">
+                <span className="text-foreground">Harness sandbox</span>
+                <span className="text-muted-foreground">Agents stay on this host in the confined sandbox. No outside network; every module tool still works.</span>
+              </span>
+            </label>
           </fieldset>
 
           <label className="flex flex-col gap-1.5">

@@ -21,7 +21,7 @@ const evidence = (check) => ({ evidence: { check }, proof: { kind: "evidence", s
 const forge = (harm) => ({ pocProved: true, proof: { kind: "forge", status: "pass", pass: true, ...(harm ? { harm } : {}) } });
 
 test("http: only the oracles that show an effect are harm", () => {
-  const harm = ["siwe-nonce-replay", "bola-wallet-idor", "debug-route-signer-key-leak", "prompt-injection-forbidden-tool", "prompt-injection-data-exfil", "fetch-url-scope-escape", "mcp-tool-scope-bypass", "tool-description-poisoning", "assumed-role-reads-other-bucket", "assumed-role-reads-foreign-bucket"];
+  const harm = ["siwe-nonce-replay", "bola-wallet-idor", "debug-route-signer-key-leak", "prompt-injection-forbidden-tool", "prompt-injection-data-exfil", "fetch-url-scope-escape", "mcp-tool-scope-bypass", "tool-description-poisoning", "assumed-role-reads-other-bucket", "assumed-role-reads-foreign-bucket", "host-user-flag", "host-root-flag", "host-suid-root", "crypto-nonce-reuse", "crypto-predictable-token", "crypto-weak-mac-secret", "forensics-pcap-credential", "forensics-carved-secret", "forensics-metadata-trail", "binary-overflow-shell", "binary-check-bypass", "binary-xor-key"];
   assert.deepEqual([...HARM_ORACLES].sort(), [...harm].sort());
   for (const o of [...WEB, ...MCP, liveOracle("role")]) {
     const want = harm.includes(o.name) ? "harm" : "measured";

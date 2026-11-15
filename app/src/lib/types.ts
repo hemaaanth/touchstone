@@ -233,6 +233,18 @@ export interface HttpProof {
   detail: string
 }
 
+// The `session` proof: the replay ran the finding's shell script against a fresh
+// target instance on its own private network. Every instance carries a new random
+// flag behind the bug, so only extraction logic can pass. `commands` holds the
+// replayed script and what it printed.
+export interface SessionProof {
+  kind: "session"
+  pass: boolean
+  oracle: { name: string; detail: string; passed: boolean }
+  commands: HttpExchange[]
+  detail: string
+}
+
 // The `evidence` proof: the replay checked the cited evidence again against the
 // pinned snapshot.
 export interface EvidenceProof {
@@ -245,7 +257,7 @@ export interface EvidenceProof {
   detail: string
 }
 
-export type ProofKind = "forge" | "http" | "evidence"
+export type ProofKind = "forge" | "http" | "session" | "evidence"
 
 export interface FindingBase extends FindingSummary {
   // Which replay made the proof. Absent on a record from before kinds existed.
@@ -275,6 +287,7 @@ export type Finding = FindingBase &
   (
     | { proofKind?: "forge"; proof: Proof }
     | { proofKind: "http"; proof: HttpProof }
+    | { proofKind: "session"; proof: SessionProof }
     | { proofKind: "evidence"; proof: EvidenceProof }
   )
 
@@ -368,6 +381,9 @@ export interface PackChoice {
   proof: string
   // The module's tools can be aimed at a real host.
   live?: boolean
+  // The module is built for an agent's own machine (a real toolbelt, an open
+  // network). The console notes it; the run does not require it.
+  roam?: boolean
   // What the pack's own lab stands in for. "rule-based" means the lab
   // assistant is a rule-based stand-in, not a model.
   labTarget?: string

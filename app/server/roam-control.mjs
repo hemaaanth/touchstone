@@ -6,8 +6,10 @@ const KINDS = new Set(["question", "test-account", "wallet-fund", "wallet-spend"
 const fail = (message, status = 409) => Object.assign(new Error(message), { status })
 const closed = () => ({ kind: "closed" })
 
-// A run asks for free-roam children explicitly. Off by default: a demo run then
-// needs no Daytona at all, and the confined children still work on local Docker.
+// A run chooses where its agents execute. Machines are the normal choice for an
+// operator fleet (the New Run window defaults to them when a snapshot is verified);
+// the harness sandbox is the alternative and needs no Daytona. A demo run stays on
+// the sandbox so the sponsored demo needs no Daytona at all.
 export function roamSelection(freeRoam, options = [], mode = "fleet") {
   if (freeRoam === undefined) freeRoam = false
   if (typeof freeRoam !== "boolean" || !Array.isArray(options) || options.length !== 0) throw fail("Wallet and email capabilities are not available.", 400)

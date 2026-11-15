@@ -49,7 +49,7 @@ export function tierLabel(tier: string | undefined): string | null {
   return tier === "P" ? "Passive" : tier
 }
 
-type ReachFields = Pick<PackChoice, "tier" | "live" | "labTarget" | "offline" | "fetches" | "scanNet" | "grants" | "extraProof">
+type ReachFields = Pick<PackChoice, "tier" | "live" | "roam" | "labTarget" | "offline" | "fetches" | "scanNet" | "grants" | "extraProof">
 
 // One sentence per reach field value. Each one restates a pack field.
 export const REACH_SENTENCE = {
@@ -62,6 +62,7 @@ export const REACH_SENTENCE = {
   fetchRest: "Its other tools work offline.",
   cloudHttp: "One check also gets an HTTP replay against a private practice cloud.",
   standIn: "Its lab target is a rule-based stand-in.",
+  roam: "It is built for an agent's own machine: it wants a real toolbelt and an open network.",
 } as const
 
 // Where this module may run, as the open row states it. Each sentence comes
@@ -79,6 +80,7 @@ export function moduleNote(p: ReachFields): string | null {
   if (fetches.includes("solc")) parts.push(s.fetchSolc)
   if (fetches.includes("github") || fetches.includes("solc")) parts.push(s.fetchRest)
   if (p.extraProof === "cloud-http") parts.push(s.cloudHttp)
+  if (p.roam === true) parts.push(s.roam)
   if (p.labTarget === "rule-based") parts.push(s.standIn)
   return parts.length ? parts.join(" ") : null
 }
@@ -96,6 +98,7 @@ export function moduleAside(p: ReachFields): string | null {
   }
   if (p.offline === true) parts.push("Offline")
   if (p.fetches?.includes("github")) parts.push("Fetches GitHub links")
+  if (p.roam === true) parts.push("Wants its own machine")
   if (p.labTarget === "rule-based") parts.push("Rule-based lab")
   return parts.length ? parts.join(" · ") : null
 }

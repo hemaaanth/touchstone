@@ -198,8 +198,10 @@ async function openHarness(db, ws, state) {
   // gives it the current one with its next message (fleet.mjs createFleet).
   // Public demos have no Reply endpoint, so do not offer an unanswerable Ask.
   const sharedTools = [...(process.env.TOUCHSTONE_DEMO === "1" ? [] : [askHumanTool]), ideaTool(state)];
-  fleet = createFleet({ system, costOf, brief: process.env.SCOPE_BRIEF ?? "", briefChange, changed: process.env.BRIEF_CHANGE ?? "", roamTools: offered, sharedTools });
   const tools = [...pack.tools(ws, state), ...(navy ? sourceNavTools(ws) : [])];
+  // The same pack tools go to confined children (they keep what they already have)
+  // and to machine children, so a roaming run loses no capability.
+  fleet = createFleet({ system, costOf, brief: process.env.SCOPE_BRIEF ?? "", briefChange, changed: process.env.BRIEF_CHANGE ?? "", roamTools: offered, packTools: tools, sharedTools });
   // A tool registered with no parameters crashes prompt planning deep in the
   // framework with a bare `"undefined" is not valid JSON`. Name it here instead.
   for (const t of [...tools, ...offered, ...sharedTools]) {

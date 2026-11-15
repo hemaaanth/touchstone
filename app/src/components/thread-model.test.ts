@@ -32,7 +32,13 @@ const texts = (events: RunEvent[]) => {
 const think = (attempt: number, text: string): RunEvent => ({ ev: "thinking-delta", conv: "root", attempt, text })
 const say = (attempt: number, text: string): RunEvent => ({ ev: "assistant-delta", conv: "root", attempt, text })
 // The tool-call parts a run reduces to, in order, as the renderer sees them.
-type WorkPart = { toolName?: string; args?: { work?: { kind: string }[] } }
+type WorkPart = {
+  toolName?: string
+  args?: {
+    work?: { kind: string; label?: string; state?: string; detail?: string }[]
+    step?: { state?: string; detail?: string; paused?: boolean; session?: { viewOnly: boolean } }
+  }
+}
 const partsOf = (events: RunEvent[], live = false) => {
   const state = reduceEvents(events)
   return buildMessages(state, state.steps, "running", live).flatMap((m) =>
