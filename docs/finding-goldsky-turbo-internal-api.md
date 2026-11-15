@@ -131,6 +131,45 @@ Authenticate `/internal/*` and the agent (e.g. mTLS or a service token), or at m
 the internal compose routes verify the appId against the DB and have the agent check
 ownership with the api-server instead of an allowlist.
 
+
+## Secondary: support-bot shell injection
+
+`packages/support-bot/src/debug-subgraph/debugSubgraph.ts` takes `subgraphDeploymentId` from the
+operator prompt (:206-208) and interpolates it unquoted into `kubectl exec … graphman info -s ${id}`
+(:27, also :61, :97, :124, :239). `utils.ts:170-183` runs it through `child_process.exec`, i.e.
+`/bin/sh -c`. It is also interpolated into ClickHouse SQL, `WHERE subgraph_id = '${id}'` (:47-52).
+
+Demonstrated with a stub `kubectl`:
+
+```
+CMD: kubectl exec --namespace default deploy/indexer-indexer-0-graph-node -- graphman info -s QmX; echo INJECTED; id -un
+OUT: kubectl args: … -s QmX
+     INJECTED
+     hemanth
+```
+
+The bot runs on a support engineer's laptop with kubeconfig and Doppler/ClickHouse credentials in
+the environment, so a hostile id pasted from a ticket is code execution there. `subgraphInfo.chain`,
+read back out of `graphman`, is interpolated the same way.
+
+## Secondary: /internal is log-only beyond compose
+
+`internal-api-plugin.ts:18-27` never rejects; the token is hashed and logged only, and
+`/internal/compose` returns before even that. Other routes in the same plugin take the project from
+the body with no relationship check: `free-trial/index.ts:20-31` (`pause-subgraphs`),
+`internalComposeWalletTablePlugin.ts:31-45` (appId → solution lookup). Any in-cluster tenant caller
+can pause another project's subgraphs or read its wallet-table cursor.
+
+## Secondary: two SSRF primitives without a private-range guard
+
+- `edge-api/boost-providers/probe.ts:112-120` and `http.ts` fetch a customer-supplied provider URL
+  with plain `fetch`; nothing checks for loopback/RFC1918/link-local. The probe's classification
+  (`ENOTFOUND` vs `ECONNREFUSED` vs status, unresolved vs unreachable) makes it a service oracle.
+- The chatbot's contract lookup builds `https://${network}.blockscout.com/api/v2` from the raw
+  `network` argument (`core/src/utils/contracts/explorer.ts:130-131` default branch, `network.ts`
+  passes through). `network = "example.com#"` yields `https://example.com#.blockscout.com/api/v2`,
+  so the fragment escapes the suffix and the tool fetches an arbitrary host root with path.
+
 ## Artifacts
 
 - Traffic echo token: `https://webhook.site/1bd5895c-8e0d-47ec-a444-bcd2aba09b6c`
