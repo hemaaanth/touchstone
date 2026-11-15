@@ -633,6 +633,62 @@ export function liveAssistant(a) {
   return { path, budget };
 }
 
+// ---- Session injection ------------------------------------------------------
+//
+// A live site behind a login needs a session. The operator pastes the request
+// headers their own browser sends (a Cookie, an Authorization, an API key). The
+// live harness adds them to every request it sends to the scope's own origin, so
+// an agent starts logged in instead of signing in by hand. Nothing is derived:
+// a wrong header is the operator's text, and the target's answer shows it.
+//
+// Values are stored as plain text, like the AI/MCP bearer token already is. They
+// are scrubbed from anything the app renders (runs.mjs secretsOf).
+const HOP_HEADERS = new Set(["host", "connection", "content-length", "transfer-encoding", "upgrade", "te"]);
+export const SESSION_HEADERS_MAX = 12;
+
+// A browser session is a Playwright storageState, not a header. It is the same
+// thing with more shape (cookies plus localStorage), so it lives in the same
+// field. Validated loosely on purpose: Playwright owns the exact shape, and a
+// malformed one fails at the first navigation, not at save time.
+export const STORAGE_STATE_MAX = 32768;
+
+function checkStorageState(raw) {
+  if (raw == null) return null;
+  const text = typeof raw === "string" ? raw : JSON.stringify(raw);
+  if (text.length > STORAGE_STATE_MAX) throw new Error(`The storage state is too long (${text.length} bytes, ${STORAGE_STATE_MAX} max).`);
+  let parsed;
+  try { parsed = typeof raw === "string" ? JSON.parse(raw) : raw; } catch { throw new Error("The storage state must be JSON."); }
+  if (!parsed || !Array.isArray(parsed.cookies) || !Array.isArray(parsed.origins)) throw new Error("A storage state needs cookies[] and origins[].");
+  return parsed;
+}
+
+export function checkSession(s) {
+  if (s == null) return null;
+  if (s.storageState != null) {
+    const storageState = checkStorageState(s.storageState);
+    const headers = s.headers ? checkSession({ headers: s.headers })?.headers : null;
+    return { ...(headers ? { headers } : {}), storageState };
+  }
+  const raw = typeof s === "object" && !Array.isArray(s) ? (s.headers ?? s) : null;
+  if (!raw || typeof raw !== "object") throw new Error("Session headers must be an object of header name to value.");
+  const headers = {};
+  for (const [name, value] of Object.entries(raw)) {
+    const n = String(name).trim();
+    if (!n) continue;
+    if (!/^[A-Za-z0-9-]{1,64}$/.test(n)) throw new Error(`Bad session header name: ${n}`);
+    if (HOP_HEADERS.has(n.toLowerCase())) continue;
+    const v = String(value ?? "").trim();
+    if (!v) continue;
+    headers[n] = v;
+  }
+  const count = Object.keys(headers).length;
+  if (!count) return null;
+  if (count > SESSION_HEADERS_MAX) throw new Error(`Use at most ${SESSION_HEADERS_MAX} session headers.`);
+  const size = JSON.stringify(headers).length;
+  if (size > 8192) throw new Error(`The session headers are too long (${size} bytes, ${8192} max).`);
+  return { headers };
+}
+
 // A live scope is one or more real websites the operator wants tested. The
 // operator ticks one box to say they have permission to test them. We record
 // that tick as a grant (grant-store.mjs) linked to this scope, so the reach gate
@@ -645,12 +701,13 @@ export function liveAssistant(a) {
 // loopback name or a loopback/private IP (privateLabHostError), so an opted-in
 // grant never covers a public host. The HTTP route still requires the console
 // grant token for any live scope (runs-http.mjs).
-export function addLiveScope({ title, hosts, members, contracts, pack, blurb, permission, token, tokens, toolScope, assistant, allowPrivate, networkPolicy } = {}) {
+export function addLiveScope({ title, hosts, members, contracts, pack, blurb, permission, token, tokens, toolScope, assistant, session, allowPrivate, networkPolicy } = {}) {
   if (permission !== true) throw new Error("Tick the box to confirm you have permission to test these sites.");
   if (networkPolicy != null && !["strict", "public"].includes(networkPolicy)) throw new Error("Unknown network policy");
   const code = members === undefined || (Array.isArray(members) && !members.length) ? [] : validateMembers(members);
   const deployments = validateContracts(contracts);
   const chat = liveAssistant(assistant);
+  const sess = checkSession(session);
   const list = (Array.isArray(hosts) ? hosts : [hosts]).map((h) => String(h ?? "").trim()).filter(Boolean);
   if (!list.length) throw new Error("A live scope needs at least one website.");
   if (list.length > 20) throw new Error("A live scope holds at most 20 websites.");
@@ -723,6 +780,7 @@ export function addLiveScope({ title, hosts, members, contracts, pack, blurb, pe
     // port. `hosts` above is only the gate's allow-list; this is the aim.
     origins,
     ...(mcp ? { mcp } : {}),
+    ...(sess ? { session: sess } : {}),
     permission: { confirmedAt: grant.approvedAt, grantId: grant.id, ...(priv ? { allowPrivate: true } : {}) },
     proofSurface: {
       kind: "live",

@@ -3,7 +3,7 @@ name: web
 description: Audit a dApp backend's SIWE sign-in and REST API, and prove each bug by replaying a request script against a fresh copy of the lab.
 tier: P
 proof: http
-tools: [web_leads, run_request_script, submit_finding]
+tools: [web_leads, run_request_script, capture_traffic, submit_finding]
 labs: [lab/dapp]
 ---
 
@@ -66,6 +66,29 @@ never a finding. The scan cannot sign in, so it never sees the session bugs.
    underlying oracle.
 5. End with one coverage line per suspect: proven, not exploitable, or not
    tried.
+
+## Capture instead of a single request
+
+Use `capture_traffic` when the bug is in the FLOW, not one request: a nonce
+reused across two sign-ins, a session that still works after sign-out, an
+ordered JSON-RPC or wallet sequence. It works on a lab and on a live site; on a
+live site its traffic still passes the scope gate. It takes the same script globals, runs the
+client through a recording proxy, and gives you the same kind of transcript
+(plus a HAR file). A matched capture backs `submit_finding` with its label,
+exactly like a matched script. Keep one capture per flow; captures queue
+against the lab, so they are slower than a script.
+
+`capture_browser` is the same idea for a page: steps like `{ goto }`, `{ fill,
+target }`, `{ click }`, `{ expectText }`. Use it when the form or the route only
+exists after JavaScript runs. Its findings replay as browser runs.
+
+When only a person can get past a step (an OTP mail, a captcha, a wallet
+approval), use `browser_session`: `start`, give the operator the returned URL,
+wait, then `state` to save the login and `stop`. While a human has control the
+capture tools refuse and your model calls are held, so no turn starts under the
+operator's hands. Control returns after five idle minutes without focus, or when
+you call `view`, and a cut turn then continues. The card can also release the
+hold on its own. The card's buttons do the same through the server.
 
 ## Writing a request script
 

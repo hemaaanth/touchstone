@@ -513,3 +513,78 @@ test("a lost send response retains its copy for a later agent receipt", async ()
   assert.deepEqual(copies, [copy])
   assert.equal(composerNotice(error.message, null)?.title, "Checking delivery")
 })
+
+test("a browser capture shows as a work step and names the failing step", () => {
+  const ok = partsOf([
+    think(0, "Look at the login form"),
+    { ev: "capture_browser", label: "login-bola", attempt: 1, steps: 3 },
+    { ev: "capture_browser-done", label: "login-bola", calls: 4, matched: "bola-wallet-idor" },
+  ])
+  const step = ok[0].args?.work?.find((s: any) => s.kind === "request")
+  assert.equal(step?.label, "login-bola")
+  assert.equal(step?.state, "pass")
+  assert.equal(step?.detail, "Matched bola-wallet-idor")
+
+  const bad = partsOf([
+    think(1, "Try the reflected page"),
+    { ev: "capture_browser", label: "xss", attempt: 2, steps: 2 },
+    { ev: "capture_browser-done", label: "xss", calls: 1, matched: null, failed: 2 },
+  ])
+  const bstep = bad[0].args?.work?.find((s: any) => s.kind === "request")
+  assert.equal(bstep?.state, "fail")
+  assert.equal(bstep?.detail, "Stopped at step 2")
+})
+
+test("a streamed session stays its own part, outside the work card", () => {
+  const parts = partsOf([
+    think(0, "A person has to sign in"),
+    { ev: "browser_session", viewOnly: false, url: "http://127.0.0.1:4500/#tok&parentOrigin=x" },
+    { ev: "browser_session-stop" },
+  ])
+  const session = parts.find((p) => p.toolName === "session")
+  assert.ok(session, "the session part exists")
+  assert.equal(session.args?.step?.session?.viewOnly, false)
+  assert.equal(session.args?.step?.state, "pass", "stop marks it closed")
+  assert.equal(parts.filter((p) => p.toolName === "session").length, 1)
+})
+
+test("a session handoff marks the card as needing the operator, and view mode clears it", () => {
+  const parts = partsOf([
+    think(0, "Needs a person"),
+    { ev: "browser_session", viewOnly: true, url: "http://127.0.0.1:4500/#tok" },
+    { ev: "browser_session-mode", viewOnly: false, handoff: true },
+  ])
+  let step = parts.find((p) => p.toolName === "session")?.args?.step
+  assert.equal(step?.session?.viewOnly, false)
+  assert.equal(step?.detail, "needs you")
+
+  const back = partsOf([
+    think(0, "Needs a person"),
+    { ev: "browser_session", viewOnly: true, url: "http://127.0.0.1:4500/#tok" },
+    { ev: "browser_session-mode", viewOnly: true },
+  ])
+  step = back.find((p) => p.toolName === "session")?.args?.step
+  assert.equal(step?.detail, "view only")
+})
+
+test("a paused session shows the pause and a resume clears it", () => {
+  const parts = partsOf([
+    think(0, "Needs a person"),
+    { ev: "browser_session", viewOnly: false, url: "http://127.0.0.1:4500/#t" },
+    { ev: "agent-paused" },
+    { ev: "agent-pause-cut", calls: 1 },
+  ])
+  const s = parts.find((p) => p.toolName === "session")?.args?.step
+  assert.equal(s?.paused, true)
+  assert.equal(s?.detail, "paused · call cut")
+
+  const back = partsOf([
+    think(0, "Needs a person"),
+    { ev: "browser_session", viewOnly: false, url: "http://127.0.0.1:4500/#t" },
+    { ev: "agent-paused" },
+    { ev: "agent-resumed" },
+  ])
+  const s2 = back.find((p) => p.toolName === "session")?.args?.step
+  assert.equal(s2?.paused, false)
+  assert.equal(s2?.detail, undefined)
+})

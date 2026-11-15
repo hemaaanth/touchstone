@@ -438,6 +438,9 @@ function scopeNotes(target, packs) {
   // included. A live token reaches only the root agent, in its first message
   // (the web and ai-mcp kickoffs read it from .touchstone.json), as before.
   if (held.includes("supply-chain") && Array.isArray(target.github)) lines.push("", "GitHub repos and orgs (read-only API reads, nothing is cloned or run):", ...target.github.map((g) => `- ${g}`))
+  // Names only, never values: these notes reach every child of the run.
+  const sessionNames = Object.keys(target.session?.headers ?? {})
+  if (sessionNames.length) lines.push("", `The operator supplied a session. Every request to ${origins[0] ?? "the base URL"} already carries: ${sessionNames.join(", ")}. Send extra auth only to override it, and expect it to stop working when the session expires.`)
   if (target.blurb) lines.push("", String(target.blurb))
   return [lines.join("\n"), assets].filter(Boolean).join("\n\n")
 }
@@ -581,8 +584,12 @@ export function prepareWorkspace(target, { modules = [] } = {}) {
     // A live AI/MCP target can carry its own credential. It rides in the config
     // (the tool reads it) and in the agent's instructions (scopeEnv).
     const mcp = target.mcp ?? null
+    // A live site behind a login carries the operator's own session headers. The
+    // request harness adds them to same-origin calls (lib/live.mjs), so the agent
+    // starts logged in. Nothing is inferred from them.
+    const session = target.session ?? null
     const ws = makeBriefWorkspace()
-    const live = { kind: "live", pack, modules, hosts, origins, baseUrl, contracts: target.contracts ?? [], ...(mcp ? { mcp } : {}) }
+    const live = { kind: "live", pack, modules, hosts, origins, baseUrl, contracts: target.contracts ?? [], ...(mcp ? { mcp } : {}), ...(session ? { session } : {}) }
     // The domain packs capture one root domain into a pinned snapshot. They read
     // `domain` and `reach`; the network is the egress one (their tools resolve
     // DNS over UDP, which an HTTP proxy cannot carry), and the grant is asserted

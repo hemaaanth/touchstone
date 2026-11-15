@@ -4,7 +4,7 @@
 // SSE stream. So this handler takes the raw (req, res) instead of just a URL.
 // It returns true when it handled the request, false to fall through to the
 // findings router.
-import { acceptRun, steerRun, stopRun, archiveRun, renameRun, deleteRun, getRun, getRunByRequest, listRuns, subscribe, availableModels, availableTargets, availablePacks, spendState, providerInfo, listScopes, addScope, deleteScope, answerRunAsk, openRunDesktop, closeRunDesktop, runSessionArtifacts } from "./runs.mjs"
+import { setConsoleOrigin, setSessionMode, acceptRun, steerRun, stopRun, archiveRun, renameRun, deleteRun, getRun, getRunByRequest, listRuns, subscribe, availableModels, availableTargets, availablePacks, spendState, providerInfo, listScopes, addScope, deleteScope, answerRunAsk, openRunDesktop, closeRunDesktop, runSessionArtifacts } from "./runs.mjs"
 import { dismissFinding, getFinding, nowCandidate } from "./findings.mjs"
 import { buildReport, renderReportAgent, renderReportHtml, renderReportMarkdown } from "./report.mjs"
 import { bundleRefusal, loadRecordedReplay, planReplayBundle, UNJUDGED_NOTE } from "./replay-bundle.mjs"
@@ -88,6 +88,7 @@ export async function handleRuns(req, res) {
   if (parts.length === 2 && req.method === "POST") {
     const body = await readBody(req)
     try {
+      setConsoleOrigin(req.headers.origin)
       send(res, 201, acceptRun({ alias: body.alias, targetId: body.targetId, modules: body.modules, budgetUsd: body.budgetUsd, pack: body.pack, packs: body.packs, mode: body.mode, freeRoam: body.freeRoam, options: body.options, requestId: body.requestId }))
     } catch (err) {
       send(res, 400, { error: String(err?.message ?? err) })
@@ -108,6 +109,7 @@ export async function handleRuns(req, res) {
     const body = await readBody(req)
     try {
       if (parts[3] === "ask") send(res, 200, await answerRunAsk(id, body))
+      else if (parts[3] === "session-mode") send(res, 202, setSessionMode(id, body.viewOnly, { touch: body.touch === true, agentPause: body.agentPause, pauseOnly: body.pauseOnly === true }))
       else if (parts[3] === "desktop") send(res, 200, req.method === "DELETE" ? await closeRunDesktop(id, body.agent, body.desktop) : await openRunDesktop(id, body.agent, body.viewOnly, req.headers.origin, body.desktop))
       else {
         const action = parts[5] ?? "list"

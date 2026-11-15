@@ -189,8 +189,10 @@ export function listScopes() {
 //   { title, brief }   pasted markdown with links (legacy)
 //   { kind: "live", title, hosts, pack?, permission: true }
 //       real websites. `permission` is the operator's checkbox; it becomes the
-//       grant that lets a run reach these hosts.
-export function addScope({ kind, title, brief, blurb, files, repo, members, contracts, pack, hosts, permission, token, tokens, toolScope, assistant, allowPrivate, networkPolicy } = {}) {
+//       grant that lets a run reach these hosts. An optional
+//       `session: { headers: { name: value } }` is the operator's own logged-in
+//       headers, added by the live request harness to same-origin calls.
+export function addScope({ kind, title, brief, blurb, files, repo, members, contracts, pack, hosts, permission, token, tokens, toolScope, assistant, session, allowPrivate, networkPolicy } = {}) {
   if (kind === "live") {
     // Checked before the grant is written, so an unknown module saves nothing.
     // `pack` is one module or the list the operator ticked.
@@ -202,7 +204,7 @@ export function addScope({ kind, title, brief, blurb, files, repo, members, cont
     const refusal = liveHostsRefusal(hosts, { pack })
     if (refusal) throw new Error(refusal)
     // allowPrivate reaches the store only on this live path, and only `true` opts in.
-    const live = addLiveScope({ title, hosts, members: members === undefined ? undefined : readLocalFolders(members), contracts, pack, blurb, permission, token, tokens, toolScope, assistant, allowPrivate: allowPrivate === true, networkPolicy })
+    const live = addLiveScope({ title, hosts, members: members === undefined ? undefined : readLocalFolders(members), contracts, pack, blurb, permission, token, tokens, toolScope, assistant, session, allowPrivate: allowPrivate === true, networkPolicy })
     return { ...targetSummary(live), runnable: true }
   }
   const scope = members !== undefined || contracts !== undefined
@@ -337,6 +339,12 @@ const roamControl = (registry.roamControl ??= createRoamControlApi({
 
 export const answerRunAsk = (id, body) => roamControl.answer(id, body)
 export const openRunDesktop = (id, agent, viewOnly, origin, desktop) => roamControl.desktop(id, agent, viewOnly, origin, desktop)
+
+// The console's own origin, as the browser reported it when the run was
+// accepted. A streamed browser page is framed by the console, so the frame's
+// ancestor list needs it. One server process, so one value.
+let consoleOrigin = ""
+export const setConsoleOrigin = (value) => { if (typeof value === "string" && /^https?:\/\//.test(value)) consoleOrigin = value }
 export const closeRunDesktop = (id, agent, desktop) => roamControl.close(id, agent, desktop)
 const sessionArtifacts = createSessionArtifactsApi({
   getRun: (id) => runs.get(id),
@@ -1188,7 +1196,7 @@ function spawnAgent(run, leads) {
   // is empty for an offline run, so a lab child's env is unchanged.
   roamControl.assertIdle(run)
   const epoch = run.roamEpoch = randomUUID()
-  const env = { ...process.env, TOUCHSTONE_PARENT_PIPE: "1", PROVIDER: runProvider(run), ALIAS: run.alias, EVENTS_FILE: run.eventsFile, RUN_CHARGE_FILE: path.join(RESULTS_DIR, `run-${run.id}.charges.jsonl`), ATTEMPT_BASE: attemptBase(run), ...budgetEnv(run), ...fleetEnv(run), ...scopeEnv(run.target, run.packs), ...(run.reach?.env ?? {}), ...leads }
+  const env = { ...process.env, TOUCHSTONE_PARENT_PIPE: "1", PROVIDER: runProvider(run), ALIAS: run.alias, EVENTS_FILE: run.eventsFile, RUN_CHARGE_FILE: path.join(RESULTS_DIR, `run-${run.id}.charges.jsonl`), ATTEMPT_BASE: attemptBase(run), ...budgetEnv(run), ...fleetEnv(run), ...scopeEnv(run.target, run.packs), ...(consoleOrigin ? { TOUCHSTONE_CONSOLE_ORIGIN: consoleOrigin } : {}), ...(run.reach?.env ?? {}), ...leads }
   // stdin is a pipe (not "ignore") so the operator can steer the live run: we
   // write one JSON line per message to the worker, which injects it into the
   // agent's current turn. Swallow EPIPE if we race a worker that just exited.
@@ -1444,13 +1452,26 @@ function unbindWorkspace(id) {
 // gets a copy in .touchstone.json (the agent gets it in its instructions, see
 // targets.mjs scopeEnv), and the agent may write it into files. A kept workspace must not hold
 // one, so the copies leave when the run ends and come back for a follow-up.
-const secretsOf = (target) => [...new Set([target?.mcp?.token, ...Object.keys(target?.mcp?.tokens ?? {})])].filter((s) => typeof s === "string" && s)
+const sessionSecrets = (target) => [...Object.values(target?.session?.headers ?? {}), ...(target?.session?.storageState?.cookies ?? []).map((c) => c?.value)]
+const secretsOf = (target) => [...new Set([target?.mcp?.token, ...Object.keys(target?.mcp?.tokens ?? {}), ...sessionSecrets(target)])].filter((s) => typeof s === "string" && s)
 function withoutSecrets(target) {
-  if (!target?.mcp) return target
-  const mcp = { ...target.mcp }
-  delete mcp.token
-  delete mcp.tokens
-  return { ...target, mcp }
+  if (!target?.mcp && !target?.session) return target
+  const next = { ...target }
+  if (target?.mcp) {
+    const mcp = { ...target.mcp }
+    delete mcp.token
+    delete mcp.tokens
+    next.mcp = mcp
+  }
+  // A session header VALUE is the secret. The names are harmless and stay.
+  if (target?.session) {
+    next.session = { ...target.session, headers: Object.fromEntries(Object.keys(target.session.headers ?? {}).map((k) => [k, ""])) }
+    // A stored browser state keeps its cookie names and domains; the VALUES go.
+    if (target.session.storageState) {
+      next.session.storageState = { ...target.session.storageState, cookies: (target.session.storageState.cookies ?? []).map((c) => ({ ...c, value: "" })) }
+    }
+  }
+  return next
 }
 const placeholder = (i) => `[touchstone: credential ${i + 1} removed when the run ended]`
 const bytes = (s) => Buffer.from(s, "utf8").toString("latin1") // files are read as bytes
@@ -1841,6 +1862,22 @@ export function steerRun(id, text, clientId) {
   if (!run.child?.stdin?.writable) throw new Error(`The run cannot take a message at this moment (its status is "${run.status}"). Wait a moment and send the message again.`)
   run.child.stdin.write(JSON.stringify({ text: msg, id: tag }) + "\n")
   return receipt({ ok: true })
+}
+
+// Switch a streamed browser session between watch and control. The session lives
+// in the run's worker process, so this is one control line on its stdin -- the
+// same pipe a steer uses, with a different tag. Answered 202: the worker emits
+// `browser_session-mode` when it lands.
+export function setSessionMode(id, viewOnly, { touch = false, agentPause, pauseOnly = false } = {}) {
+  const run = runs.get(id)
+  if (!run) throw new Error("This run was not found. Open another run or start a new one.")
+  if (typeof viewOnly !== "boolean") throw new Error("viewOnly must be true or false")
+  if (!run.child?.stdin?.writable) throw new Error("This run has no live browser session (it is not working).")
+  const pauseOnlyLine = pauseOnly && typeof agentPause === "boolean" && !touch
+  ? { agentPause }
+  : { ...(typeof agentPause === "boolean" ? { agentPause } : {}), sessionMode: { viewOnly, ...(touch ? { touch: true } : {}) } }
+  run.child.stdin.write(JSON.stringify(pauseOnlyLine) + "\n")
+  return { ok: true, viewOnly }
 }
 
 // Stop a run's work: the live audit or a follow-up reply. The worker process

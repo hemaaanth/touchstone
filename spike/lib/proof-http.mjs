@@ -99,11 +99,19 @@ const PROBE_SECRET = process.env.PROBE_SECRET || "";
 const HOP = new Set(["host","connection","content-length","transfer-encoding","keep-alive","upgrade","te","proxy-connection","proxy-authorization"]);
 const strip = (h) => { const o = {}; for (const [k, v] of Object.entries(h || {})) if (!HOP.has(String(k).toLowerCase())) o[k] = v; return o; };
 const parse = (s) => { try { return JSON.parse(s); } catch { return s; } };
+// A proxy client may send an absolute-form request ("GET http://lab:8080/x"),
+// and an upstream MITM proxy (lib/intercept.mjs) always does. Reduce it to the
+// origin-form the lab would have received, so one recorder serves both paths.
+const targetOf = (raw) => {
+  if (!/^https?:\\/\\//i.test(raw)) return raw;
+  try { const u = new URL(raw); return u.pathname + u.search; } catch { return raw; }
+};
 http.createServer((req, res) => {
   const chunks = [];
   req.on("data", (c) => chunks.push(c));
   req.on("end", async () => {
     const reqBuf = Buffer.concat(chunks);
+    const target = targetOf(req.url);
     // Only a request carrying the per-lab secret is a readiness probe. A missing
     // secret ("") never matches, so every script request is recorded.
     const probe = PROBE_SECRET !== "" && String(req.headers["x-touchstone-probe"] || "") === PROBE_SECRET;
@@ -113,7 +121,7 @@ http.createServer((req, res) => {
     try {
       const fwd = strip(req.headers);
       delete fwd["x-touchstone-probe"];   // never leak the probe tag to the lab
-      const up = await fetch(ORIGIN + req.url, { method, headers: fwd, body: noBody ? undefined : reqBuf, redirect: "manual" });
+      const up = await fetch(ORIGIN + target, { method, headers: fwd, body: noBody ? undefined : reqBuf, redirect: "manual" });
       resText = await up.text();
       resHeaders = Object.fromEntries(up.headers.entries());
       status = up.status;
@@ -125,7 +133,7 @@ http.createServer((req, res) => {
         // path is the RAW request path the origin received, minus ?query and
         // #fragment. It is not normalised (no "//" or "/../" collapsing), so a
         // matcher sees what the origin saw. The full URL stays in url.
-        method, path: req.url.split(/[?#]/)[0], url: ORIGIN + req.url,
+        method, path: target.split(/[?#]/)[0], url: ORIGIN + target,
         reqHeaders: req.headers, reqBody: reqBuf.length ? parse(reqBuf.toString("utf8")) : null,
         status, resHeaders, resBody: parse(resText),
       };
@@ -156,6 +164,8 @@ export async function startLab({
   readyPath = "/healthz",
   readyTimeoutMs = 20_000,
   onStart,
+  labEntrypoint = null,
+  labCmd = [],
 }) {
   const tag = randomBytes(4).toString("hex");
   // Per-lab secret that marks a readiness probe. Known only to the proxy (via
@@ -187,7 +197,8 @@ export async function startLab({
     "--pids-limit", "256", "--memory", "512m",
   ];
   for (const [k, v] of Object.entries(env)) labArgs.push("-e", `${k}=${v}`);
-  labArgs.push(image);
+  if (labEntrypoint) labArgs.push("--entrypoint", labEntrypoint);
+  labArgs.push(image, ...labCmd);
   const labRun = await docker(labArgs, { timeoutMs: 30_000 });
   if (labRun.code !== 0) return fail(`lab run failed: ${labRun.stderr.trim().slice(0, 500)}`);
 
@@ -228,6 +239,8 @@ export async function startLab({
     image, containerPort, alias, proxyPort: PROXY_PORT,
     net: netOuter,                                 // the network scripts join
     netBaseUrl: `http://${alias}:${PROXY_PORT}`,   // scripts point here (the proxy)
+    originBaseUrl: `http://${ORIGIN_ALIAS}:${containerPort}`, // the lab itself, for an upstream
+    probeSecret,                                   // private: readiness probes only
   };
   try {
     await waitReady(handle, { readyPath, timeoutMs: readyTimeoutMs, probeSecret });
@@ -402,7 +415,7 @@ globalThis.buildSiwe = function buildSiwe(fields) {
 // calls in one session. (Per-process by design: the only writer to a persisted
 // lab is its own agent-session process; prove's fresh labs have distinct keys.)
 const runQueues = new Map();  // proxyName -> tail promise
-function serialize(key, fn) {
+export function serialize(key, fn) {
   const prev = runQueues.get(key) || Promise.resolve();
   const next = prev.then(fn, fn);  // run after prev settles, success or not
   runQueues.set(key, next.then(() => {}, () => {}));
@@ -415,6 +428,11 @@ export async function runRequestScript(handle, script, { timeoutMs = 20_000 } = 
     try {
       const wrapped = `${HARNESS}\n(async () => {\n${script}\n})().catch((e) => { console.error(String(e && e.stack || e)); process.exitCode = 1; });\n`;
       writeFileSync(join(dir, "run.mjs"), wrapped);
+      // mkdtemp makes the dir 0700. The script container runs as the IMAGE's
+      // user (uid 1000 in the lab images, and --user is not set here), so a
+      // root-owned 0700 dir is unreadable to it: open the dir to 0755, the same
+      // reason the recorder folder above is opened.
+      chmodSync(dir, 0o755);
       // The proxy's log accumulates across every run against a persisted lab, so
       // take only the records that appear after this run starts.
       const baseCount = (await readRecords(handle)).length;

@@ -288,7 +288,7 @@ export function RunChat({
     [state, fleet],
   )
   const messages = useMemo(
-    () => withCopies(buildMessages(state, mainSteps, status, live, fleet, null, packProof), state, mainSteps, live, fleet, sent, outcomes),
+    () => withCopies(buildMessages(state, mainSteps, status, live, fleet, null, packProof, run.id), state, mainSteps, live, fleet, sent, outcomes),
     [state, mainSteps, status, live, fleet, sent, outcomes, packProof],
   )
 
@@ -402,7 +402,7 @@ export function RunChat({
   const peekMessages = useMemo(() => {
     if (!peek || !state) return []
     const steps = threadSteps(state.steps, peek.id)
-    const ms = buildMessages(state, steps, status, peekLive, true, peek.id, packProof)
+    const ms = buildMessages(state, steps, status, peekLive, true, peek.id, packProof, run.id)
     const wait = awaitingReply(steps, peekLive, peek.id)
     if (wait) ms.push(waitingMessage(state, wait.id, true, peek.id))
     return ms

@@ -5,7 +5,8 @@ import { runInNewContext } from 'node:vm';
 import { createHash } from 'node:crypto';
 
 const source = readFileSync(new URL('../server/runs.mjs', import.meta.url), 'utf8');
-const body = source.slice(source.indexOf('export function steerRun('), source.indexOf('// Stop a run', source.indexOf('export function steerRun('))).replace('export function', 'function');
+// The slice can hold more than steerRun now; strip every export keyword.
+const body = source.slice(source.indexOf('export function steerRun('), source.indexOf('// Stop a run', source.indexOf('export function steerRun('))).replaceAll('export function', 'function');
 for (const idle of [true, false]) test(`retry after a lost response sends once (${idle ? 'follow-up' : 'live'})`, () => {
   let writes = 0;
   const run = { events: [], child: { stdin: { writable: true, write() { writes++; } } } };

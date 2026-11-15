@@ -1,7 +1,8 @@
 # Goldsky Turbo: cross-tenant pipeline read/write through the unauthenticated in-cluster APIs
 
 Date: 2026-11-15
-Scope: `scope-goldsky-every-application-repo-d1ea31ab` (run `…2611150327-16831880001`)
+Scope: `live-goldsky-monorepo-site-cms-compos-b94b982e` (run `…2611150420-16699820003`); the work
+was first proven under the earlier org-wide scopes, which are deleted.
 Accounts: free test A (victim) `cmwh95cyzd0f901rzd3dp1657` / `project_cmvlqkfmh6zml01veajswaam8`;
 B (attacker) `cmwh96gp7d2vq01rze08l5919` / `project_cmwh969vg31re01q07b1rgk9z`.
 
@@ -159,6 +160,8 @@ ids appear in the dashboard URL `/dashboard/pipelines/turbo/drafts/<id>`.
 - Overwrite it (the agent re-deploys; A's pod runs B's topology) — availability and
   correctness, and a way to make A's pipeline ship data somewhere else.
 - Create pipelines in the victim project, bypassing pipeline-count and plan gates.
+- Read plaintext secrets for any project by name (`/internal/secrets`).
+- Move or delete another tenant's editor draft by draft id (key scope only).
 - Preconditions only: project id + pipeline name, both public in the dashboard URL. Any
   compose task, or any Turbo pipeline, can be the caller.
 
@@ -222,12 +225,55 @@ Not exercised live: the path ends in a composeDeploy workflow, which the free ac
 (Scale gate). The install is only reached when `package.json` declares an allowlisted dependency
 (`:396-414`).
 
-## Fix shape
+## Website preview generator: unauthenticated draft access, unbounded writes (proven live)
 
-Authenticate `/internal/*` and the agent (e.g. mTLS or a service token), or at minimum make
-the internal compose routes verify the appId against the DB and have the agent check
-ownership with the api-server instead of an allowlist.
+`pages/api/preview/generate.ts` on the marketing site (served at `hem.so`) is a public POST. It
+checks only that fields are present and emails look like emails (`:33-60`); there is no auth, no
+rate limit, and `ownerInfo` is taken at face value (`:186-193`), so a caller claims to be the owner
+of a session it created. Each call writes two `review` documents per recipient into the production
+Sanity dataset with the server token (`:118-176`, `:210-230`). `expirationDays` is unbounded
+(`:114`).
 
+The preview page then trusts the minted token: `pages/preview/[slug].tsx:99-117` looks the session
+up by token, checks only `revoked`/`expiresAt`/slug equality, and fetches the document with
+`getPostBySlug(slug, true)` — the server token plus `previewDrafts` (`lib/sanity.ts:128-145`).
+`documentId` is stored only as a weak reference and never used to render, so a fabricated id is
+enough; the slug is the real key.
+
+```http
+POST https://hem.so/api/preview/generate
+{"documentId":"fake-123","documentType":"post","slug":"building-a-blockchain","mode":"shared",
+ "recipients":[{"name":"x","email":"x@example.com"}],"ownerInfo":{"name":"probe","email":"probe@example.com"}}
+→ 200 {"success":true,"sessions":[{"previewUrl":"https://hem.so/preview/building-a-blockchain?token=…"}]}
+```
+
+Following that URL renders the post through the draft perspective (stega markers present in the
+title). `expirationDays: 36500` returned `expiresAt` in 2126; `-3` returned a link already expired.
+
+Impact: anyone who knows a draft's slug reads unpublished content, can mint an unlimited number of
+long-lived sessions against the production dataset, and is treated as the session owner. Slugs are
+low entropy and drafts are usually named close to the eventual slug, so guessing is realistic.
+
+### The same subsystem hands out owner rights on an email string (proven live)
+
+`pages/api/liveblocks-auth.ts` is another public POST. It takes `room`, `sessionId`, `userEmail`
+and `userName` from the body (`:34-40`), then decides ownership as
+`session.createdBy.email.toLowerCase() === userEmail.toLowerCase()` (`:68-74`) — the email is never
+verified — and returns a Liveblocks session with `FULL_ACCESS` (`:117-124`).
+
+`roomId` and `sessionId` are both in the preview page's `__NEXT_DATA__`, and `createdBy` rides along
+too, so any recipient — or anyone who minted a link with the open generator — can re-authenticate
+as the owner:
+
+```http
+POST https://hem.so/api/liveblocks-auth
+{"room":"preview-fake-10-…","sessionId":"z7QFY9VCCj8Vd3vTGcLc9S","userEmail":"owner@example.com","userName":"attacker"}
+→ 200, token payload:
+{"perms":{"preview-fake-10-…":["room:write"]},"ui":{"name":"owner","email":"owner@example.com","isOwner":true}}
+```
+
+The attacker now writes in the review room as the owner: resolve or reopen threads, edit comments,
+and appear as the author to every other participant.
 
 ## Secondary: support-bot shell injection
 
@@ -249,14 +295,6 @@ The bot runs on a support engineer's laptop with kubeconfig and Doppler/ClickHou
 the environment, so a hostile id pasted from a ticket is code execution there. `subgraphInfo.chain`,
 read back out of `graphman`, is interpolated the same way.
 
-## Secondary: /internal is log-only beyond compose
-
-`internal-api-plugin.ts:18-27` never rejects; the token is hashed and logged only, and
-`/internal/compose` returns before even that. Other routes in the same plugin take the project from
-the body with no relationship check: `free-trial/index.ts:20-31` (`pause-subgraphs`),
-`internalComposeWalletTablePlugin.ts:31-45` (appId → solution lookup). Any in-cluster tenant caller
-can pause another project's subgraphs or read its wallet-table cursor.
-
 ## Secondary: two SSRF primitives without a private-range guard
 
 - `edge-api/boost-providers/probe.ts:112-120` and `http.ts` fetch a customer-supplied provider URL
@@ -269,8 +307,17 @@ can pause another project's subgraphs or read its wallet-table cursor.
   tool fetches an arbitrary HTTPS host and path. Verified with `new URL` for a bare host, an IP
   literal, and the path case.
 
+## Fix shape
+
+Authenticate `/internal/*` and the agent (e.g. mTLS or a service token), or at minimum make
+the internal compose routes verify the appId against the DB and have the agent check
+ownership with the api-server instead of an allowlist.
+
 ## Artifacts
 
-- Traffic echo token: `https://webhook.site/1bd5895c-8e0d-47ec-a444-bcd2aba09b6c`
-- Relay used for verb tests (local, cloudflared): `https://drug-clearing-ross-alex.trycloudflare.com`
-- Victim pipeline `audit-handle-1` (modified) and injected `x--u--injected-by-b` left running in the test project.
+- Traffic echo tokens: `https://webhook.site/1bd5895c-8e0d-47ec-a444-bcd2aba09b6c` and
+  `https://webhook.site/cb441456-6768-4a52-b5a4-a2796f9b7b10` (both still readable).
+- The local relay and its cloudflared tunnel were stopped after use.
+- Current account state: A holds `a-secret` (the secret-fetch pipeline) and `AUDIT_SECRET`; the
+  fleet later deleted `audit-handle-1` and `x--u--injected-by-b` during its own delete test. Both
+  projects are disposable.
