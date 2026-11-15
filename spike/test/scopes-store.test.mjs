@@ -56,6 +56,9 @@ test("the pack follows content, with no automatic fallback to Contracts", () => 
   assert.equal(scopePack([f("x.sol")]), "contracts");
   assert.equal(scopePack([f("x.rs")]), "review");
   assert.equal(scopePack([f("x.rs")], "contracts"), "review"); // known content beats the hint
+  // An explicit review keeps a stray fixture .sol from turning a codebase into
+  // a Foundry audit.
+  assert.equal(scopePack([f("src/Vault.sol"), f("src/app.ts")], "review"), "review");
   assert.equal(scopePack([repo("https://github.com/a/b")]), "review");
   assert.equal(scopePack([repo("https://github.com/a/b")], "contracts"), "contracts");
   assert.equal(scopePack([repo("https://github.com/a/b/blob/main/V.sol")]), "contracts");
@@ -73,15 +76,15 @@ test("hidden, host, absolute, and .. paths are rejected", () => {
   assert.equal(readScopes().length, 0);
 });
 
-test("a real monorepo fits: 4000 files and 40 MB, across folders", () => {
+test("a whole organisation fits: 40000 files and 750 MB, across folders", () => {
   const many = (n, pre) => Array.from({ length: n }, (_, i) => file(`${pre}${i}.py`));
   // 292 files (privacy-pools-core) is an ordinary app, not a special case.
   assert.ok(addScope({ title: "t", members: [folder("a", many(292, "a"))] }));
-  assert.ok(addScope({ title: "t", members: [folder("a", many(3000, "a")), folder("b", many(999, "b"))] }));
-  assert.throws(() => addScope({ title: "t", members: [folder("a", many(4001, "a"))] }), /1 to 4000 files/);
-  assert.throws(() => addScope({ title: "t", members: [folder("a", many(3000, "a")), folder("b", many(1001, "b"))] }), /1 to 4000 files/);
-  const big = "x".repeat(21 * 1024 * 1024);
-  assert.throws(() => addScope({ title: "t", members: [folder("a", [file("a.py", big)]), folder("b", [file("b.py", big)])] }), /under 40 MB/);
+  assert.ok(addScope({ title: "t", members: [folder("a", many(20000, "a")), folder("b", many(19999, "b"))] }));
+  assert.throws(() => addScope({ title: "t", members: [folder("a", many(40001, "a"))] }), /1 to 40000 files/);
+  assert.throws(() => addScope({ title: "t", members: [folder("a", many(20000, "a")), folder("b", many(20001, "b"))] }), /1 to 40000 files/);
+  const big = "x".repeat(376 * 1024 * 1024);
+  assert.throws(() => addScope({ title: "t", members: [folder("a", [file("a.py", big)]), folder("b", [file("b.py", big)])] }), /under 750 MB/);
   assert.throws(() => addScope({ title: "t", members: [folder("a", [])] }), /at least one file/);
   assert.throws(() => addScope({ title: "t", members: [] }), /1 to 20/);
 });
@@ -123,7 +126,9 @@ test("secrets, dependencies, build output, binaries, and our sandbox config are 
   // lib/ is a Foundry dependency folder only next to Solidity.
   assert.equal(classifyPath("lib/forge-std/Test.sol", { solidity: true }), "dependency or build folder");
   assert.equal(classifyPath("lib/app.rb"), "keep");
-  assert.throws(() => addScope({ title: "t", members: [folder("a", [file("a.py", "a\u0000b")])] }), /text source files/);
+  // A NUL inside source is kept, minus the byte: webapp files do carry one.
+  const nul = addScope({ title: "nul", members: [folder("n", [file("a.py", "a\u0000b")])] });
+  assert.equal(nul.members[0].files[0].content, "ab");
 });
 
 test("the legacy single-folder helper routes through members and accepts non-Solidity", () => {

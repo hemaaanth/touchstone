@@ -1,7 +1,8 @@
 import { AgentDoc, AssistantEntry, configure, defineDoc, defineExtension, defineTask, defineTool, LiveDoc, ProviderDoc, ROOT_CONVERSATION_ID, UsageDoc } from "@earendil-works/pi-durable";
-import { arr, obj, oneOf, opt, str } from "@earendil-works/pi-schema";
+import { arr, int, obj, oneOf, opt, str } from "@earendil-works/pi-schema";
 import { createHash } from "node:crypto";
 import { event, withAgent } from "./event.mjs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { daytonaOn } from "./daytona.mjs";
 import { watchCognition } from "./cognition.mjs";
 
@@ -315,6 +316,40 @@ export function createFleet({ system, costOf, max = process.env.FLEET_MAX ?? 50,
       return reply(note);
     },
   });
+  // Money is the one resource a coordinator cannot see running out ahead of
+  // time. It can ask: the ceiling moves at once (the worker's guard re-reads the
+  // budget file), and the operator sees the reason on the run. Bounded, so a
+  // runaway loop cannot spend without bound.
+  const bump = defineTool({
+    name: "request_budget",
+    description: `Raise this run's budget when a lead is worth following. usd is 1 to 5. Allowed 3 times per run, 15 dollars in total. The new ceiling is live immediately and the reason is shown on the run. Ask when a real lead needs more attempts, not to keep exploring.`,
+    parameters: obj({
+      usd: int({ description: "whole dollars to add, 1 to 5" }),
+      reason: str({ description: "one sentence: what the extra money buys" }),
+    }),
+    replay: "safe",
+    execute: async (args) => {
+      const file = process.env.RUN_BUDGET_FILE;
+      if (!file) return reply("This run has no budget file, so its ceiling cannot move. Keep going at the current budget.");
+      const asked = Number(args?.usd);
+      if (!Number.isInteger(asked) || asked < 1 || asked > 5) return reply("usd must be a whole number from 1 to 5.");
+      let cap;
+      try { cap = Number(readFileSync(file, "utf8").trim()); } catch { return reply("The budget file cannot be read. Keep going at the current budget."); }
+      const log = `${file}.raises`;
+      let rows = [];
+      try { rows = readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map(Number).filter(Number.isFinite); } catch { /* first raise */ }
+      const extra = rows.reduce((a, b) => a + b, 0);
+      if (rows.length >= 3) return reply(`No raises left: this run already used ${rows.length} ($${extra} added). Continue at $${cap.toFixed(2)}.`);
+      const add = Math.min(asked, 15 - extra);
+      if (add < 1) return reply(`The run has already added $${extra} of its $15 raise allowance. Continue at $${cap.toFixed(2)}.`);
+      const next = Number((cap + add).toFixed(2));
+      writeFileSync(file, String(next));
+      writeFileSync(log, [...rows, add].join("\n") + "\n");
+      event("budget-raised", { usd: next, added: add, reason: String(args?.reason ?? "").slice(0, 200) });
+      return reply(`Budget raised by $${add} to $${next.toFixed(2)} (raise ${count + 1} of 3). Spend it on the lead you named.`);
+    },
+  });
+
   const read = defineTool({
     name: "bulletin_read", description: "Read the shared Bulletin and roster, including each child's task and status.",
     parameters: obj({}), replay: "safe",
@@ -352,7 +387,7 @@ export function createFleet({ system, costOf, max = process.env.FLEET_MAX ?? 50,
 
   return {
     instructions: (required ? `${COORDINATOR_INSTRUCTIONS}\n\n${fleetPlan(survey)}` : COORDINATOR_INSTRUCTIONS) + (roamTools.length ? `\n\n${FREE_ROAM_INSTRUCTIONS}` : ""),
-    extension: defineExtension({ name: "fleet", tasks: [Anchor, Reporter], tools: [...[spawn, message, post, read, ...roam].map((t) => tag(t)), ...sharedTools] }),
+    extension: defineExtension({ name: "fleet", tasks: [Anchor, Reporter], tools: [...[spawn, message, post, read, bump, ...roam].map((t) => tag(t)), ...sharedTools] }),
     wrapTools: (tools) => tools.map((t) => tag(t, true)),
     agentForSession: (sessionId) => sessions.get(sessionId),
     isRoamAgent: (id) => !closed && freeRoam && trustedBoard?.agents.some((a) => a.id === id && a.loadout === "free-roam" && Number.isSafeInteger(a.conv) && a.conv > ROOT_CONVERSATION_ID && a.id === who(a.conv)) === true,

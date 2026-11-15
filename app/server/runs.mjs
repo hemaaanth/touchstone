@@ -780,6 +780,7 @@ function registerRun({ alias, targetId, modules, budgetUsd, pack, packs, mode = 
   broadcast(run, { t: Date.now(), ev: "provider", provider: provider.id, model: run.model })
   if (requestId) broadcast(run, { t: Date.now(), ev: "run-request", requestId, requestHash })
 
+  seedBudget(run)
   setRunStatus(run, "starting")
   return { run, setup: prepareNewRun(run) }
 }
@@ -1020,15 +1021,23 @@ function fleetEnv(run) {
 // The run's budget and what it has spent so far, from its own events. A
 // follow-up carries the spent amount forward, so the budget covers the whole run.
 // Every worker also gets the total spend cap, so its guard stops at the cap.
+// The live budget file: request_budget rewrites it, and the worker's next guard
+// reads the new ceiling. Kept beside the charge file so a follow-up re-reads it.
+export const budgetFile = (run) => path.join(RESULTS_DIR, `run-${run.id}.budget`)
+function seedBudget(run) {
+  try { writeFileSync(budgetFile(run), String(run.budget.limitUsd)) } catch { /* the guard falls back to RUN_BUDGET_USD */ }
+}
+
 export function budgetEnv(run) {
   const set = run.events.findLast((e) => e.ev === "budget")
   // A charge may reach the worker's files before its stdout reaches the server.
   // Use the highest cumulative total from all three copies.
+  const raised = run.events.findLast((e) => e.ev === "budget-raised")?.usd
   const charged = run.events.filter((e) => e.ev === "spend")
   if (run.eventsFile && existsSync(run.eventsFile)) charged.push(...readJsonl(run.eventsFile).filter((e) => e.ev === "spend"))
   const chargeFile = path.join(RESULTS_DIR, `run-${run.id}.charges.jsonl`)
   if (existsSync(chargeFile)) charged.push(...readJsonl(chargeFile))
-  return { RUN_BUDGET_USD: String(set?.usd ?? appRunBudgetUsd()), RUN_SPENT_USD: String(Math.max(0, ...charged.map((e) => Number(e.usd) || 0))), SPEND_CAP_USD: String(appSpendCapUsd()) }
+  return { RUN_BUDGET_USD: String(raised ?? set?.usd ?? appRunBudgetUsd()), RUN_BUDGET_FILE: budgetFile(run), RUN_SPENT_USD: String(Math.max(0, ...charged.map((e) => Number(e.usd) || 0))), SPEND_CAP_USD: String(appSpendCapUsd()) }
 }
 
 // A transient provider fault: the gateway was busy, slow, or briefly down. The

@@ -324,7 +324,8 @@ export async function handleFindings(req, res, { allowRun = () => true } = {}) {
 // body. Returns true when it handled the request.
 //   GET    /api/scopes        — list the operator's scopes (summaries)
 //   POST   /api/scopes        — add one from { title, members, pack? } (repos and
-//                                folders, mixed), or a legacy { title, files },
+//                                folders, mixed; pack "review" pins it even when
+//                                the code holds Solidity), or a legacy { title, files },
 //                                { title, repo }, or { title, brief, blurb }
 //   DELETE /api/scopes/:id     — remove one
 //   POST   /api/scopes/:id/brief — set or clear its brief ({ brief }); text for
