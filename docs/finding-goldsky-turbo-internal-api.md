@@ -252,6 +252,27 @@ Impact: anyone who knows a draft's slug reads unpublished content, can mint an u
 long-lived sessions against the production dataset, and is treated as the session owner. Slugs are
 low entropy and drafts are usually named close to the eventual slug, so guessing is realistic.
 
+### The same subsystem hands out owner rights on an email string (proven live)
+
+`pages/api/liveblocks-auth.ts` is another public POST. It takes `room`, `sessionId`, `userEmail`
+and `userName` from the body (`:34-40`), then decides ownership as
+`session.createdBy.email.toLowerCase() === userEmail.toLowerCase()` (`:68-74`) — the email is never
+verified — and returns a Liveblocks session with `FULL_ACCESS` (`:117-124`).
+
+`roomId` and `sessionId` are both in the preview page's `__NEXT_DATA__`, and `createdBy` rides along
+too, so any recipient — or anyone who minted a link with the open generator — can re-authenticate
+as the owner:
+
+```http
+POST https://hem.so/api/liveblocks-auth
+{"room":"preview-fake-10-…","sessionId":"z7QFY9VCCj8Vd3vTGcLc9S","userEmail":"owner@example.com","userName":"attacker"}
+→ 200, token payload:
+{"perms":{"preview-fake-10-…":["room:write"]},"ui":{"name":"owner","email":"owner@example.com","isOwner":true}}
+```
+
+The attacker now writes in the review room as the owner: resolve or reopen threads, edit comments,
+and appear as the author to every other participant.
+
 ## Fix shape
 
 Authenticate `/internal/*` and the agent (e.g. mTLS or a service token), or at minimum make
