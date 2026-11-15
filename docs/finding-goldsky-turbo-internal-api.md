@@ -125,6 +125,30 @@ trust, so it is covered by the same missing check. It is marked unverified-live 
 - Preconditions only: project id + pipeline name, both public in the dashboard URL. Any
   compose task, or any Turbo pipeline, can be the caller.
 
+
+## Wider `/internal` exposure (code-established)
+
+`/internal` never rejects (see above), so every route in it is a tenant-reachable, project-trusting
+surface. The severe ones:
+
+- **Plaintext secrets.** `GET /internal/secrets/:projectId/:secretName` looks the record up by
+  `(name, project_id)` and returns `value` straight from Doppler
+  (`secrets-api/internal.ts:11-49`). Any pod can dump another project's DB credentials, webhook
+  secrets or private keys by name. `POST /internal/secrets` with `{projectId, name, value}`
+  (`internal.ts:58-92`) writes one.
+- **Mass pause.** `POST /internal/free-trial/pause-subgraphs` and `/pause-streams` take
+  `project_id` from the body and pause everything the project runs
+  (`free-trial/index.ts:17-25`, `:72-84`).
+- **Subgraph deletion by id.** `POST /internal/auto-pause-delete/delete-subgraph` resolves
+  `findUnique({where:{id: subgraph_id}})` with no project predicate, then deletes the row, its
+  tags, webhooks, graph-node deployment and monitor (`auto-pause-delete/index.ts:18-30`).
+- **CDC rows.** `GET /internal/cdc/` lists every project's CDC row unauthenticated;
+  `POST …/register-subgraph-entities` upserts under any `projectId`
+  (`cdc-api/cdcApiPlugin.ts:55-70`). The plugin's own docstring assumes the agent checked the
+  project first — true of the agent, false of a direct caller.
+
+These are read from source; none was exercised live on the free accounts.
+
 ## Fix shape
 
 Authenticate `/internal/*` and the agent (e.g. mTLS or a service token), or at minimum make
