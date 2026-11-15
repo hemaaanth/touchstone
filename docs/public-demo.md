@@ -38,6 +38,11 @@ not part of the public deployment.
   uses these Linux APIs to signal registered processes without PID reuse races.
 - The pinned Foundry image and warmed Solidity 0.8.38 cache from
   `spike/lib/images.mjs` and `spike/lib/sandbox.mjs`.
+  Proofs also need the image present: a non-demo Docker host defaults to
+  `--pull=never`, so a missing image leaves every proof stuck before compile.
+  Keep a stopped container from the image so Coolify's hourly cleanup, which
+  deletes unused images without its `coolify.managed` label, cannot remove it:
+  `docker create --name touchstone-foundry-keepalive --entrypoint true IMG`.
 - A non-root service account whose private workspaces are writable by the
   Foundry image's user. Verify this with an actual offline compile before launch.
 - HTTPS in front of the loopback backend. Do not expose the operator console.
@@ -91,6 +96,10 @@ FLEET_MAX=3
 SPEND_CAP_USD=20
 ```
 
+Install `scripts/touchstone-demo-proxy.socket` and
+`scripts/touchstone-demo-proxy.service` (render its service account) and enable
+the socket. The socket starts the proxyd on first connection.
+
 Supply `NEARAI_API_KEY` through secure credential entry. Never copy SSH passwords,
 developer dotenv files, or owner provider stores into the demo environment.
 Keep the packager's HOME, temporary-directory, and cache overrides in the service
@@ -99,15 +108,19 @@ environment. They keep writes outside the sealed release.
 Set `TOUCHSTONE_DEMO_PROXY_IP` only when the immediate proxy peer is controlled.
 It trusts that peer's valid `X-Real-IP` for rate limits. It does not trust arbitrary
 forwarded headers from the public internet. In the initial Coolify deployment,
-Traefik reaches a bridge-bound `systemd-socket-proxyd`, which forwards to loopback.
-The trusted peer is `127.0.0.1`.
+Traefik reaches a `systemd-socket-proxyd` socket, which forwards to loopback.
+The socket listens on `0.0.0.0:5191` so it binds before Docker creates the
+Coolify bridge at boot; the firewall keeps that port private. The trusted peer
+is `127.0.0.1`.
 
 Preserve an existing proxy and firewall. Open only its public HTTP/HTTPS ports
 and the required private backend connection. If Docker traffic passes through
-`DOCKER-USER` and UFW forwarding rules, allow the specific proxy endpoint there.
+`DOCKER-USER` and UFW forwarding rules, allow the Docker bridge subnet, not a
+container address, on the public ports and as the source of the private proxy
+port. A reboot recreates containers with new addresses, so endpoint-pinned rules
+start timing out after the reboot even though every service is healthy.
 Do not switch the host's forwarding policy to ACCEPT, disable UFW, expose the
-Docker socket, or prune unrelated containers. Update endpoint-specific rules if
-the proxy container's IP changes.
+Docker socket, or prune unrelated containers.
 
 ## Sponsor budget and maintenance
 

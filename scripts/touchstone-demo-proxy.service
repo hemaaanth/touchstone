@@ -1,0 +1,11 @@
+# Substitute the demo service account. Start through the socket unit.
+[Unit]
+Description=Touchstone demo loopback bridge
+
+[Service]
+User=@USER@
+ExecStart=/lib/systemd/systemd-socket-proxyd 127.0.0.1:5190
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true

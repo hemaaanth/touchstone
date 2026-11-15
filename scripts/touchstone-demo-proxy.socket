@@ -1,0 +1,14 @@
+# The demo proxy socket. Render before install; no placeholders remain.
+# Binds all addresses so it can start before Docker creates the Coolify bridge
+# at boot. The firewall admits only the Coolify bridge subnet.
+[Unit]
+Description=Touchstone demo proxy socket on Coolify bridge
+After=docker.service
+Requires=docker.service
+
+[Socket]
+ListenStream=0.0.0.0:5191
+NoDelay=true
+
+[Install]
+WantedBy=sockets.target
