@@ -51,6 +51,13 @@ const token = () => randomBytes(32).toString("base64url");
 // here, but the container IP is. So the viewer gets a loopback pipe instead of a
 // Docker port mapping: the browser keeps a gate-only network and the operator
 // still reaches it on 127.0.0.1.
+// A remote operator cannot reach 127.0.0.1 of this machine. When
+// TOUCHSTONE_STREAM_PORT is set, the pipe takes that fixed port on all
+// interfaces and the returned URL is TOUCHSTONE_STREAM_PUBLIC_URL (a tunnel in
+// front of it), so the preview iframe works from anywhere.
+const STREAM_BIND = process.env.TOUCHSTONE_STREAM_BIND || "127.0.0.1";
+const STREAM_PORT = Number(process.env.TOUCHSTONE_STREAM_PORT || 0);
+
 const pipeTo = (target) => new Promise((resolve, reject) => {
   const server = createServer((client) => {
     const upstream = connect(target.port, target.host);
@@ -59,7 +66,7 @@ const pipeTo = (target) => new Promise((resolve, reject) => {
     client.on("error", end); upstream.on("error", end);
   });
   server.once("error", reject);
-  server.listen(0, "127.0.0.1", () => resolve({ port: server.address().port, close: () => new Promise((r) => server.close(r)) }));
+  server.listen(STREAM_PORT, STREAM_BIND, () => resolve({ port: server.address().port, close: () => new Promise((r) => server.close(r)) }));
 });
 
 // Start the session and return its viewer URL. Rejects on any setup failure.
@@ -102,7 +109,7 @@ export async function startStream(ws, ctx, { baseUrl, storageState = null, viewO
       `{{index .NetworkSettings.Networks ${JSON.stringify(ctx.net)} "IPAddress"}}`])).stdout.trim();
     if (!ip) throw new Error("stream: no container address on the client network");
     pipe = await pipeTo({ host: ip, port: VIEW_PORT });
-    const preview = `http://127.0.0.1:${pipe.port}`;
+    const preview = process.env.TOUCHSTONE_STREAM_PUBLIC_URL || `http://127.0.0.1:${pipe.port}`;
     // Wait for the control API before asking it anything: the container is
     // running but its node process may not be listening yet.
     const upBy = Date.now() + 30_000;
