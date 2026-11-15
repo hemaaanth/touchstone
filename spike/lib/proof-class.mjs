@@ -36,9 +36,18 @@ export const HARM_ORACLES = new Set([
 ]);
 
 // evidence: the replay reads the pinned snapshot again and never touches the
-// target, so it repeats a measurement. No evidence check is harm today (a key
-// found in a repo or config is a candidate too, for now).
-export const HARM_CHECKS = new Set([]);
+// target. Most checks therefore repeat a measurement (a header, a missing
+// record), but two report an effect on the reader, so they are harm:
+//   - wallet-drainer-behavior: the connect control asks the wallet for a
+//     standing approve of value, not just an account. Value is the harm.
+//   - subdomain-takeover-fingerprint: the name is claimable by a stranger, so
+//     control of it can be taken. Control is the harm.
+// The snapshot proves the page at capture time; the class says what the fact
+// means, not that the claim was exercised.
+export const HARM_CHECKS = new Set([
+  "wallet-drainer-behavior",
+  "subdomain-takeover-fingerprint",
+]);
 
 // forge: the harm verdicts of lib/proof.mjs judgeHarm and keys harmOf.
 export const HARM_KINDS = new Set(["funds", "control"]);

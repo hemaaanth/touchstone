@@ -35,8 +35,8 @@ test("http: only the oracles that show an effect are harm", () => {
   assert.equal(proofClass({ oracleName: "bola-wallet-idor", proof: { kind: "http", status: "pass" } }), "harm");
 });
 
-test("evidence: every check of every pack repeats a measurement; none is proven", () => {
-  assert.equal(HARM_CHECKS.size, 0);
+test("evidence: only the two effect checks are harm; the rest repeat a measurement", () => {
+  assert.deepEqual([...HARM_CHECKS].sort(), ["subdomain-takeover-fingerprint", "wallet-drainer-behavior"]);
   const domains = detectorsFor("domains");
   const checks = [
     ...Object.keys(domains), "tls-cipherlist_3des_idea", "tls-breach", "tls-dns_caarecord", "tls-anything-new",
@@ -45,10 +45,15 @@ test("evidence: every check of every pack repeats a measurement; none is proven"
     ...Object.keys(infraCrypto()), ...Object.keys(infraScanners(SELECTED)),
   ];
   assert.ok(checks.length > 50, `${checks.length} checks`);
-  for (const check of checks) {
+  // Everything not in HARM_CHECKS still repeats a measurement.
+  for (const check of checks.filter((c) => !HARM_CHECKS.has(c))) {
     const c = proofClassOf(evidence(check));
     assert.deepEqual([check, c.class, c.reason], [check, "measured", "repeated"]);
     assert.equal(isProven(evidence(check)), false, check);
+  }
+  for (const check of HARM_CHECKS) {
+    assert.deepEqual([check, proofClassOf(evidence(check)).class], [check, "harm"]);
+    assert.equal(isProven(evidence(check)), true, check);
   }
 });
 

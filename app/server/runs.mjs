@@ -948,6 +948,7 @@ function engineEvents(run, child = run.child, epoch = run.roamEpoch) {
       // Internal: carries the summary and every finding with its passing
       // source. Persistence reads it on exit; it is not a UI step.
       // The exit path may have read this same event from the engine's file.
+      if (process.env.TOUCHSTONE_DEBUG_SETTLE) appendFileSync(`${RESULTS_DIR}/debug-settle.log`, JSON.stringify({ at: "settled", t: e.t, findings: (e.findings ?? []).length, submitted: (run.submitted ?? []).length, ws: run.ws }) + "\n")
       if (run.settled && run.settled.t === e.t) return
       run.settled = {
         t: e.t ?? null,
@@ -990,8 +991,10 @@ function engineEvents(run, child = run.child, epoch = run.roamEpoch) {
 // exit) is still in that file. Read it, so a finished turn is never shown as a
 // crash. `since` is when this worker started: an older turn's settle is not its.
 function recoverSettled(run, since) {
-  if (run.settled || !run.eventsFile || !existsSync(run.eventsFile)) return
+  const dbg = (m) => { if (process.env.TOUCHSTONE_DEBUG_SETTLE) appendFileSync(`${RESULTS_DIR}/debug-settle.log`, JSON.stringify({ at: "recover", m, settled: !!run.settled, file: !!run.eventsFile }) + "\n") }
+  if (run.settled || !run.eventsFile || !existsSync(run.eventsFile)) return dbg("skip")
   const e = readJsonl(run.eventsFile).findLast((x) => x.ev === "settled" && !x.agent && x.t >= since)
+  dbg(e ? "found" : "none")
   if (e) engineEvents(run)(e)
 }
 
@@ -1303,7 +1306,9 @@ async function recordRun(run, found, exit = {}) {
     const prove = (findings) => runExecution(run, () => packFor(readTouchstone(run.ws)).prove?.(run.ws, findings, run.events, (m) => {
       run.stderr += `[proof-delta] ${m}\n`
     }))
-    const proven = withProven(run.ownerHash ? await demoProve(run, found, prove) : await prove(found))
+    const provenRaw = run.ownerHash ? await demoProve(run, found, prove) : await prove(found)
+    if (process.env.TOUCHSTONE_DEBUG_SETTLE) appendFileSync(`${RESULTS_DIR}/debug-settle.log`, JSON.stringify({ at: "record", found: found.length, proven: (provenRaw ?? []).length, ws: run.ws }) + "\n")
+    const proven = withProven(provenRaw)
     if (run.ownerHash && demoFence(run)) return
     const findings = recordMeasured(run, proven, (e) => broadcast(run, e))
     supersedeProven(run, findings, (e) => broadcast(run, e))
