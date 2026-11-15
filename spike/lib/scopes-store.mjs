@@ -270,10 +270,13 @@ export function folderFiles(files, budget = { files: 0, bytes: 0 }) {
       dropped[why] = (dropped[why] ?? 0) + 1;
       continue;
     }
-    if (f.content.includes("\u0000")) throw new Error("Attach text source files only.");
-    budget.bytes += Buffer.byteLength(f.content);
+    // A NUL does not make a source file binary: webapp/…/outcome.ts embeds one in
+    // a template string, and refusing it failed the whole folder. The extension
+    // already decided this is source, so drop the stray byte and keep the file.
+    const content = f.content.includes("\u0000") ? f.content.split("\u0000").join("") : f.content;
+    budget.bytes += Buffer.byteLength(content);
     if (budget.bytes > MAX_BYTES) throw new Error(`Source files must be under ${MAX_BYTES / 1024 / 1024} MB in total.`);
-    kept.push({ path: name, content: f.content });
+    kept.push({ path: name, content });
   }
   if (!kept.length) throw new Error("No source files left after skipping dependency, build, secret, and non-source files.");
   return { files: kept, dropped };

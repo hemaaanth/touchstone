@@ -123,7 +123,9 @@ test("secrets, dependencies, build output, binaries, and our sandbox config are 
   // lib/ is a Foundry dependency folder only next to Solidity.
   assert.equal(classifyPath("lib/forge-std/Test.sol", { solidity: true }), "dependency or build folder");
   assert.equal(classifyPath("lib/app.rb"), "keep");
-  assert.throws(() => addScope({ title: "t", members: [folder("a", [file("a.py", "a\u0000b")])] }), /text source files/);
+  // A NUL inside source is kept, minus the byte: webapp files do carry one.
+  const nul = addScope({ title: "nul", members: [folder("n", [file("a.py", "a\u0000b")])] });
+  assert.equal(nul.members[0].files[0].content, "ab");
 });
 
 test("the legacy single-folder helper routes through members and accepts non-Solidity", () => {
