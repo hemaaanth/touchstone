@@ -9,7 +9,10 @@ import { FALLBACK_PRICE, activeProvider, readConfig, runBudgetUsd, providerKey }
 import { createRunBudget } from "./run-budget.mjs";
 import { scrubError, scrubUrl } from "./redact-url.mjs";
 
-const budget = createRunBudget(process.env.RUN_BUDGET_USD ?? runBudgetUsd(), process.env.RUN_SPENT_USD ?? 0);
+// The cap can move mid-run: request_budget writes RUN_BUDGET_FILE and the next
+// guard reads it. No file means the cap is the one the server started with.
+const budgetFile = process.env.RUN_BUDGET_FILE || null;
+const budget = createRunBudget(process.env.RUN_BUDGET_USD ?? runBudgetUsd(), process.env.RUN_SPENT_USD ?? 0, budgetFile ? () => readFileSync(budgetFile, "utf8").trim() : null);
 export const runSpend = () => ({ usd: budget.usd, budgetUsd: budget.limit });
 
 const PROVIDER = activeProvider();

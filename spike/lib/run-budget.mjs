@@ -10,17 +10,28 @@ export function validateRunBudget(value) {
   return n;
 }
 
-export function createRunBudget(limit, initial = 0) {
-  const cap = validateRunBudget(limit);
+// `liveLimit` lets the cap move while a run works: a coordinator that finds
+// something worth following can raise it (request_budget), and the next guard
+// reads the new ceiling from the run's budget file.
+export function createRunBudget(limit, initial = 0, liveLimit = null) {
+  let cap = validateRunBudget(limit);
+  const read = () => {
+    if (!liveLimit) return cap;
+    let v;
+    try { v = liveLimit(); } catch { return cap; }
+    if (v != null && Number.isFinite(Number(v))) cap = validateRunBudget(Number(v));
+    return cap;
+  };
   let usd = Number(initial);
   if (!Number.isFinite(usd) || usd < 0) throw new Error("Invalid run spend.");
   return {
-    get limit() { return cap; },
+    get limit() { return read(); },
     get usd() { return usd; },
     guard(estimate = 0) {
       if (!Number.isFinite(estimate) || estimate < 0) throw new Error("Invalid call estimate.");
-      if (usd >= cap || usd + estimate > cap) {
-        throw new Error(`Run budget reached: $${usd.toFixed(4)} spent of $${cap.toFixed(2)}. Start a new run to continue.`);
+      const ceiling = read();
+      if (usd >= ceiling || usd + estimate > ceiling) {
+        throw new Error(`Run budget reached: $${usd.toFixed(4)} spent of $${ceiling.toFixed(2)}. Ask for more with request_budget, or start a new run.`);
       }
     },
     charge(cost) {

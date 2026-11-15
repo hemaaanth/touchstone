@@ -389,6 +389,12 @@ const siteOf = (host) => String(host ?? "").toLowerCase().split(".").slice(-2).j
 // Proof: the response echoed back a foreign Origin the script chose, with
 // `access-control-allow-credentials: true`. A bare `*` is NOT enough (it cannot
 // be used with credentials), so it never fires on a public JSON API by itself.
+//
+// A DEV origin does not count. QomX, Arctide and Synthra all echo
+// `http://localhost:3000` and that is true of most apps, so matching it promoted
+// the same weak note to a finding on every site (2026-11-14). The rigged origin
+// must be one no app would list by default.
+export const DEV_ORIGIN = /^(localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0)$|\.local$/;
 function corsCredentialOracle() {
   return {
     name: "cors-credentialed-reflection",
@@ -400,12 +406,14 @@ function corsCredentialOracle() {
         if (!allow || !/^true$/i.test(creds)) continue;
         const sent = String(e.reqHeaders?.origin ?? e.reqHeaders?.Origin ?? "").trim();
         if (!sent || allow !== sent) continue;
-        const sentSite = siteOf(hostOf(sent));
+        const sentHost = hostOf(sent);
+        const sentSite = siteOf(sentHost);
         const targetSite = siteOf(hostOf(e.url ?? ""));
         if (!sentSite || sentSite === targetSite) continue;
+        if (DEV_ORIGIN.test(String(sentHost ?? "").replace(/:\d+$/, ""))) continue;
         return { pass: true, detail: `${e.method} ${e.path} answered a request from ${sent} with access-control-allow-origin: ${allow} AND access-control-allow-credentials: true, so any page on that origin can read the response with the visitor's cookies attached.` };
       }
-      return { pass: false, detail: "no response reflected a foreign Origin together with access-control-allow-credentials: true" };
+      return { pass: false, detail: "no response reflected a foreign, non-dev Origin together with access-control-allow-credentials: true (a dev origin such as http://localhost:3000 is expected anywhere and does not count)" };
     },
   };
 }
@@ -895,7 +903,8 @@ The checks this module can prove (a match is the ONLY thing that makes a finding
 Checks 5 to 9 need no account and fit any website. Most real sites are proved
 with one of these, not with 1-3:
 5. CORS with credentials: send an \`origin\` header for a foreign site you invent
-   (e.g. \`https://touchstone.test\`). The reply echoes that exact origin AND sets
+   (e.g. \`https://touchstone.test\`). A dev origin like \`http://localhost:3000\`
+   does NOT count: every app allowlists one. The reply echoes that exact origin AND sets
    \`access-control-allow-credentials: true\`, so that page can read the response
    with the visitor's cookies.
 6. Open redirect: a parameter that takes a URL or host, sent as a link target.
