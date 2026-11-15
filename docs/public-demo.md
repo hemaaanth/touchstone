@@ -100,6 +100,12 @@ Install `scripts/touchstone-demo-proxy.socket` and
 `scripts/touchstone-demo-proxy.service` (render its service account) and enable
 the socket. The socket starts the proxyd on first connection.
 
+Install `scripts/touchstone-demo-bootcheck.sh` as
+`/usr/local/sbin/touchstone-demo-bootcheck` and enable
+`scripts/touchstone-demo-bootcheck.service`. After each boot it re-pulls the
+proof image if a cleanup removed it and checks the loopback path through the
+proxy.
+
 Supply `NEARAI_API_KEY` through secure credential entry. Never copy SSH passwords,
 developer dotenv files, or owner provider stores into the demo environment.
 Keep the packager's HOME, temporary-directory, and cache overrides in the service

@@ -1,0 +1,14 @@
+# Install as a oneshot and enable it. It never starts the demo; it only repairs
+# boot-sensitive prerequisites and reports a failed end-to-end check.
+[Unit]
+Description=Touchstone demo boot check
+After=network-online.target docker.service touchstone-demo.service
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/touchstone-demo-bootcheck
+
+[Install]
+WantedBy=multi-user.target
