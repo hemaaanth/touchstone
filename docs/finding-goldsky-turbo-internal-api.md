@@ -160,6 +160,8 @@ ids appear in the dashboard URL `/dashboard/pipelines/turbo/drafts/<id>`.
 - Overwrite it (the agent re-deploys; A's pod runs B's topology) — availability and
   correctness, and a way to make A's pipeline ship data somewhere else.
 - Create pipelines in the victim project, bypassing pipeline-count and plan gates.
+- Read plaintext secrets for any project by name (`/internal/secrets`).
+- Move or delete another tenant's editor draft by draft id (key scope only).
 - Preconditions only: project id + pipeline name, both public in the dashboard URL. Any
   compose task, or any Turbo pipeline, can be the caller.
 
@@ -273,13 +275,6 @@ POST https://hem.so/api/liveblocks-auth
 The attacker now writes in the review room as the owner: resolve or reopen threads, edit comments,
 and appear as the author to every other participant.
 
-## Fix shape
-
-Authenticate `/internal/*` and the agent (e.g. mTLS or a service token), or at minimum make
-the internal compose routes verify the appId against the DB and have the agent check
-ownership with the api-server instead of an allowlist.
-
-
 ## Secondary: support-bot shell injection
 
 `packages/support-bot/src/debug-subgraph/debugSubgraph.ts` takes `subgraphDeploymentId` from the
@@ -300,14 +295,6 @@ The bot runs on a support engineer's laptop with kubeconfig and Doppler/ClickHou
 the environment, so a hostile id pasted from a ticket is code execution there. `subgraphInfo.chain`,
 read back out of `graphman`, is interpolated the same way.
 
-## Secondary: /internal is log-only beyond compose
-
-`internal-api-plugin.ts:18-27` never rejects; the token is hashed and logged only, and
-`/internal/compose` returns before even that. Other routes in the same plugin take the project from
-the body with no relationship check: `free-trial/index.ts:20-31` (`pause-subgraphs`),
-`internalComposeWalletTablePlugin.ts:31-45` (appId → solution lookup). Any in-cluster tenant caller
-can pause another project's subgraphs or read its wallet-table cursor.
-
 ## Secondary: two SSRF primitives without a private-range guard
 
 - `edge-api/boost-providers/probe.ts:112-120` and `http.ts` fetch a customer-supplied provider URL
@@ -320,8 +307,17 @@ can pause another project's subgraphs or read its wallet-table cursor.
   tool fetches an arbitrary HTTPS host and path. Verified with `new URL` for a bare host, an IP
   literal, and the path case.
 
+## Fix shape
+
+Authenticate `/internal/*` and the agent (e.g. mTLS or a service token), or at minimum make
+the internal compose routes verify the appId against the DB and have the agent check
+ownership with the api-server instead of an allowlist.
+
 ## Artifacts
 
-- Traffic echo token: `https://webhook.site/1bd5895c-8e0d-47ec-a444-bcd2aba09b6c`
-- Relay used for verb tests (local, cloudflared): `https://drug-clearing-ross-alex.trycloudflare.com`
-- Victim pipeline `audit-handle-1` (modified) and injected `x--u--injected-by-b` left running in the test project.
+- Traffic echo tokens: `https://webhook.site/1bd5895c-8e0d-47ec-a444-bcd2aba09b6c` and
+  `https://webhook.site/cb441456-6768-4a52-b5a4-a2796f9b7b10` (both still readable).
+- The local relay and its cloudflared tunnel were stopped after use.
+- Current account state: A holds `a-secret` (the secret-fetch pipeline) and `AUDIT_SECRET`; the
+  fleet later deleted `audit-handle-1` and `x--u--injected-by-b` during its own delete test. Both
+  projects are disposable.
