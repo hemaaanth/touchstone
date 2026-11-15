@@ -234,7 +234,11 @@ const alwaysOn = (p) => p?.live === true && p.proof !== "http" && !p.grants
 export function eligiblePacks(target) {
   const own = packOf(target)
   if (target?.kind === "live" && !target.github) {
-    const ticked = (Array.isArray(target.packs) ? target.packs : [own]).filter((id) => PACKS[id]?.live === true && !PACKS[id].grants)
+    // Code-capable modules count when the scope carries code: they are live for
+    // this scope even though they never drive a bare website, and the operator's
+    // declared one must stay first so it remains the default.
+    const hasCode = Boolean(target.members?.length || target.contracts?.length)
+    const ticked = (Array.isArray(target.packs) ? target.packs : [own]).filter((id) => (hasCode && (id === "review" || id === "contracts")) || (PACKS[id]?.live === true && !PACKS[id].grants))
     return [...new Set([...ticked, ...Object.keys(PACKS).filter((id) => alwaysOn(PACKS[id])), ...(target.members?.length ? ["review"] : []), ...(target.contracts?.length || target.members?.some((m) => m.kind === "repo") || solidityKnown(target.members ?? []) ? ["contracts"] : [])])]
   }
   if (target?.kind === "scope") {
