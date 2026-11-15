@@ -29,6 +29,11 @@ build_inspector() { docker build -f packs/ai-mcp/Dockerfile.inspector -t touchst
 build_shield()    { docker build -f packs/ai-mcp/Dockerfile.shield -t touchstone/mcp-shield:1.0.4 packs/ai-mcp; }
 build_garak()     { docker build -f packs/ai-mcp/Dockerfile.garak -t touchstone/garak:0.17.1 packs/ai-mcp; }
 build_strix()     { bash tools/build-strix-image.sh; }
+build_toolset()   { docker build -f packs/_toolset/Dockerfile -t touchstone/toolset:1 packs/_toolset; }
+build_host()      { docker build -t touchstone/host-lab:1 packs/host/lab; }
+build_crypto()    { docker build -t touchstone/crypto-lab:1 packs/crypto/lab; }
+build_forensics() { docker build -t touchstone/forensics-lab:1 packs/forensics/lab; }
+build_binary()    { docker build -t touchstone/binary-lab:1 packs/binary/lab; }
 
 targets=("$@")
 [ ${#targets[@]} -eq 0 ] && targets=(web ai-mcp inspector shield)
@@ -44,7 +49,12 @@ for t in "${targets[@]}"; do
     shield) build_shield ;;
     garak) build_garak ;;
     strix) build_strix ;;
-    *) echo "unknown target: $t (use web, ffuf, arjun, schemathesis, jwt_tool, ai-mcp, inspector, shield, garak or strix)" >&2; exit 2 ;;
+    toolset) build_toolset ;;
+    host) build_host ;;
+    crypto) build_crypto ;;
+    forensics) build_forensics ;;
+    binary) build_binary ;;
+    *) echo "unknown target: $t (use web, ffuf, arjun, schemathesis, jwt_tool, ai-mcp, inspector, shield, garak, strix, toolset, host, crypto, forensics or binary)" >&2; exit 2 ;;
   esac
 done
 echo "built: ${targets[*]}"

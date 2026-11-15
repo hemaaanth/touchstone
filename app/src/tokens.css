@@ -54,6 +54,10 @@
     --module-purple: oklch(0.48 0.085 312);
     --module-orchid: oklch(0.48 0.085 331);
     --module-pink: oklch(0.48 0.085 350);
+    --module-amber: oklch(0.48 0.085 70);
+    --module-olive: oklch(0.48 0.085 105);
+    --module-steel: oklch(0.48 0.085 210);
+    --module-periwinkle: oklch(0.48 0.085 285);
     --module-neutral: oklch(0.48 0 0);
     --sidebar: oklch(0.985 0 0);
     --sidebar-foreground: oklch(0.145 0 0);
@@ -96,6 +100,10 @@
     --module-purple: oklch(0.8 0.075 312);
     --module-orchid: oklch(0.8 0.075 331);
     --module-pink: oklch(0.8 0.075 350);
+    --module-amber: oklch(0.8 0.075 70);
+    --module-olive: oklch(0.8 0.075 105);
+    --module-steel: oklch(0.8 0.075 210);
+    --module-periwinkle: oklch(0.8 0.075 285);
     --module-neutral: oklch(0.8 0 0);
     --border: oklch(1 0 0 / 10%);
     --input: oklch(1 0 0 / 15%);

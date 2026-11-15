@@ -21,8 +21,13 @@ core claim ("a finding is real only when a replay proves it").
 - **Tier 0 — Operator ↔ Coordinator** (trusted). The only conversational surface.
 - **Tier 1 — Coordinator + hunter/analyst agents** (trusted orchestration). They plan the
   run, shard work, triage leads, and dispatch verification. Run as Pi sub-agents.
-- **Tier 2 — Attacker workers** (UNTRUSTED). NEAR AI abliterated models in offline
-  sandboxes that write the PoC / signed raw-tx. **Their bulletin posts are evidence
+- **Tier 2 — Attacker workers** (UNTRUSTED). NEAR AI abliterated models on their
+  own disposable machines (or in the harness sandbox) that write the PoC / signed raw-tx.
+  A T2 child keeps the pack's tools, so it can reach a pack check and submit a
+  finding. The tier governs the *bulletin lane and the shared trust plane*, never
+  the proof: every submission is replayed on the host and an oracle decides. A
+  chain that needs an open network or a real toolbelt (host, capture, binary,
+  browser) is a reason to run T2, not a downgrade. **Their bulletin posts are evidence
   submissions, not control messages.** They never get trusted-peer messaging. They post to
   a quarantined evidence lane that the harness/oracle validates before anything is promoted
   to the shared bulletin. This keeps an untrusted model's words out of the trusted control

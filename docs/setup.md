@@ -46,8 +46,11 @@ Restoring images does not weaken that.
 --jobs N            Concurrent pulls (default 4); builds always run serially
 ```
 
-Groups: `contracts`, `keys`, `chain-watch`, `web`, `ai-mcp`, `surface`,
-`domains`, `phishing`, `supply-chain`, `infra-cloud`, `strix`.
+Groups: `base`, `contracts`, `keys`, `chain-watch`, `host`, `crypto`, `forensics`,
+`binary`, `web`, `ai-mcp`, `surface`, `domains`, `phishing`, `supply-chain`,
+`infra-cloud`, `strix`. The `base` group holds `touchstone/toolset`, the attacker
+container the four machine-layer modules run every command from; it is also the
+package set baked into the machine snapshot (`spike/roam/shell.Dockerfile`).
 
 Optional images are **off by default**: `touchstone/garak` (~3 GB, only for live
 AI/MCP runs), `touchstone-observatory` (domains smoke test only), and

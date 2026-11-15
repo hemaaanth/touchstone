@@ -18,6 +18,7 @@ const MESSAGES = {
   daytona_shell_proc_unavailable: "The snapshot does not expose Linux process information.",
   daytona_shell_tmp_unwritable: "The snapshot does not allow writes under /tmp.",
   daytona_shell_log_unwritable: "The snapshot does not allow the shell request log to be written.",
+  daytona_shell_toolbelt_missing: "The snapshot is missing the attacker toolbelt (nmap, tshark, exiftool, gdb or pwntools). Rebuild the Touchstone shell snapshot; a machine without it cannot work a host, capture or binary.",
   daytona_sandbox_start_failed: "The disposable Daytona machine did not become ready. Its cleanup remains tracked.",
   daytona_shell_prerequisites_failed: "The snapshot did not pass the Linux, root, Node.js and shell prerequisites. Choose another snapshot or create the Touchstone shell snapshot.",
   daytona_shell_egress_start_failed: "The shell snapshot could not start the request logger. Choose another snapshot or create the Touchstone shell snapshot.",

@@ -1040,7 +1040,7 @@ function AttemptCard({
 // unproven / dropped: the run settled without proving this one.
 
 // The note under a finding card says what the replay did, so it follows the
-// proof kind: a Foundry test, a request, or pinned evidence.
+// proof kind: a Foundry test, a request, a replayed command or pinned evidence.
 const CARD_NOTE: Record<ProofKind, Record<CardState, string>> = {
   forge: {
     waiting: "The test passed. The final replay runs when the audit ends.",
@@ -1054,6 +1054,13 @@ const CARD_NOTE: Record<ProofKind, Record<CardState, string>> = {
     replaying: "Replaying the request on a private network.",
     proven: "A clean replay of the request showed the harm.",
     unproven: "Recorded, but the final replay did not show the harm.",
+    dropped: "Not recorded. The run ended before the final replay.",
+  },
+  session: {
+    waiting: "The command reached the flag. The final replay runs when the audit ends.",
+    replaying: "Replaying the commands on a fresh target.",
+    proven: "A clean replay on a fresh target reached this instance's flag.",
+    unproven: "Recorded, but the final replay did not reach the flag.",
     dropped: "Not recorded. The run ended before the final replay.",
   },
   evidence: {

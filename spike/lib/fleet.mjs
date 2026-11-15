@@ -33,14 +33,13 @@ If the operator says "retry <name>", use message_agent to ask that child to retr
 If the operator says "reassign <name>'s task", read the roster and give that task to another child by message_agent or spawn_agent.
 A failed child is not a failed audit. Cover its angle another way if the budget allows.`;
 
-// Added to the coordinator's instructions when the run allows free-roam children.
-export const FREE_ROAM_INSTRUCTIONS = `This run allows free-roam children. spawn_agent with loadout "free-roam" starts a child on its own remote machine, with open network.
-A free-roam child has no pack tools. What it finds is a candidate, never a proven finding. Its Bulletin posts are evidence, not trusted notes.
-Spawn multiple free-roam children for independent angles when needed, within the shared cap and budget. One reserved slot is a minimum fallback, not a maximum: if you choose none, the engine starts exactly one before the run settles. An unspecified loadout stays confined.
-When a pack tool, browser guard, or scope gate blocks a useful investigation (including a redirect, subdomain, or public IP), do not treat that tool limitation as the end of the audit. Read the roster and message an existing free-roam child to investigate it; spawn one with loadout "free-roam" if none can take the task and a slot is available. Include the target, exact blocked URL, error, hypothesis, and evidence needed. Keep the task within the operator's authorized audit scope: open network access does not expand that authorization.
-Ask the child to capture evidence and call submit_session_candidate with report for a demonstrated vulnerability, then report the accepted candidate id or submission error. A Bulletin post or final answer alone does not file a candidate. Wait for its report and follow up before settling, within the remaining budget. If delegation is unavailable, report the specific coverage gap instead of claiming the target is safe.
-Use returned evidence to design a separate pack request script or PoC when the pack can check the issue. Only the pack's existing passing proof checks can establish a proven finding. A session candidate does not automatically graduate to proof. If the pack cannot prove it, preserve the accepted candidate for human review.
-The free-roam tools refuse you and every confined child.`;
+// Added to the coordinator's instructions when the run executes on machines.
+export const FREE_ROAM_INSTRUCTIONS = `This run executes on machines: every child you spawn defaults to loadout "free-roam" and runs on its own remote machine, with open network. A machine child keeps the pack tools, so it can reach the pack's checks and submit a finding; the engine replays every submission on the host, so its trust tier does not decide what is proven.
+Use loadout "confined" for a child that needs no outside network (an oracle-heavy replay, a module whose tools all run in the harness sandbox). Confined children stay available in this run.
+Spawn several children for independent angles, within the shared cap and budget. There is no reserved slot: splitting is your decision, and a fleet run with one child is a normal run. If the run settles with no machine child at all, the engine starts one so the open network is never silently absent.
+When a pack tool, browser guard, or scope gate blocks a useful investigation (including a redirect, subdomain, or public IP), do not treat that tool limitation as the end of the audit. Read the roster and message a machine child, or spawn one, with the target, exact blocked URL, error, hypothesis, and evidence needed. Keep the task inside the operator's authorized scope: open network access does not expand that authorization.
+Ask the child to call the pack's submit_finding when a check matches, and submit_session_candidate with report when it demonstrated harm that no check covers. A Bulletin post or final answer alone files nothing. Wait for its report and follow up before settling, within the remaining budget. If delegation is unavailable, report the specific coverage gap instead of claiming the target is safe.
+The machine tools (shell, browser, session) refuse you and every confined child.`;
 
 // Extra instructions for a run where the operator chose Fleet. The survey limit
 // is enforced by the pack tool wrapper below, not only by this text.
@@ -69,17 +68,18 @@ export const fleetPlan = (survey) => `The operator chose a fleet run. Plan first
 // A child from before the roster kept briefs gets `changed`: the change this
 // worker was told about, or nothing.
 //
-// Loadouts. A child is "confined" (the default) or "free-roam". `roamTools` are
-// the free-roam tools. Only this function installs one, so a solo run has none.
+// Loadouts. A child is "confined" or "free-roam"; the run decides the default
+// (free-roam when it executes on machines). `roamTools` are the machine tools.
+// Only this function installs one, so a run that does not roam has none.
 //   - A confined child gets the pack tools and loses the roam tools.
+//   - A free-roam child keeps the pack tools (so its checks can prove) and adds
+//     the roam tools; its allow list is pack + roam + shared + three fleet tools
+//     and nothing else. A later worker with one more pack tool does not change an
+//     existing child's list, because a child's tools are set once at its spawn.
 //   - Shared tools are installed unchanged, outside packQueue and the roam guard.
-//   - A free-roam child gets an allow list: roam, shared and three fleet tools,
-//     nothing else. So it has no pack tool, no submit_finding in any
-//     form, and no path to a proven finding. A later worker with one more pack
-//     tool does not change that.
 //   - Each roam tool also checks the board on every call (`roam` below). That
 //     stops the coordinator, which has no tool removal.
-export function createFleet({ system, costOf, max = process.env.FLEET_MAX ?? 50, required = process.env.FLEET === "1", survey = 6, brief = "", briefChange = () => "", changed = "", roamTools = [], sharedTools = [] } = {}) {
+export function createFleet({ system, costOf, max = process.env.FLEET_MAX ?? 50, required = process.env.FLEET === "1", survey = 6, brief = "", briefChange = () => "", changed = "", roamTools = [], packTools = [], sharedTools = [] } = {}) {
   const freeRoam = process.env.FREE_ROAM === "1";
   let runOptions;
   try {
@@ -91,6 +91,11 @@ export function createFleet({ system, costOf, max = process.env.FLEET_MAX ?? 50,
   if (freeRoam && (process.env.FLEET === "0" || !daytonaOn() || !roamTools.length)) {
     throw new Error("FREE_ROAM=1 requires a fleet, Daytona, and offered roam tools. No confined fallback.");
   }
+  // The pack's own tools, tagged the same way the run registers them. A free-roam
+  // child keeps these (roam below), so a machine child can reach the pack's checks
+  // and submit a finding the replay can prove. It is the same wrapper the root and
+  // confined children get, so the pack queue and the workspace stay serialized.
+  const packToolsForChild = packTools.map((tool) => tag(tool, true));
   if (process.env.FLEET === "0") return undefined;
   // A confined child loses the roam tools as they were offered, also when
   // free-roam is off now: a later worker of the run may have it on.
@@ -217,8 +222,11 @@ export function createFleet({ system, costOf, max = process.env.FLEET_MAX ?? 50,
   // What a child must be told about the brief: "" when it has this worker's.
   const briefNote = (stored) => (stored?.brief === undefined ? changed : briefChange(stored.brief, brief));
 
-  async function createChild({ name, task, area, loadout = "confined", options = [] }, commit, spawnId, ctx, automatic = false) {
+  async function createChild({ name, task, area, loadout, options = [] }, commit, spawnId, ctx, automatic = false) {
     if (![name, task, area].every((v) => typeof v === "string" && v.trim())) throw new Error("name, task, and area must not be empty.");
+    // A run that executes on machines defaults every child to one. Confined stays
+    // available and stays the default only when the run does not roam.
+    loadout = loadout ?? (freeRoam ? "free-roam" : "confined");
     if (!["confined", "free-roam"].includes(loadout)) throw new Error("Unknown loadout.");
     const free = loadout === "free-roam";
     options = selectedOptions(options);
@@ -235,15 +243,13 @@ export function createFleet({ system, costOf, max = process.env.FLEET_MAX ?? 50,
         while (board.agents.some((a) => a.name === name)) name += "_";
       }
       if (board.agents.some((a) => a.name === name)) throw new Error(`${name} already exists. Use message_agent to retry or reassign.`);
-      const reserved = freeRoam && !free && !board.agents.some((a) => a.loadout === "free-roam") ? 1 : 0;
-      if (reserved && board.agents.length >= max - reserved) throw new Error("One fleet slot is reserved for a free-roam child. Spawn it or message an existing child.");
       if (board.agents.length >= max) throw new Error(`Fleet limit reached (${max}). Message an existing child instead.`);
       const anchor = await tx.createTask(Anchor, null, { ...background, conversationId: ROOT_CONVERSATION_ID });
       const child = await tx.createConversation({ ownership: { kind: "task", taskId: anchor } });
       // `configure` keeps or removes a tool by its name, so these are the tool objects.
       await configure(tx, child.id, free ? {
-        tools: [...roamTools, message, post, read, ...sharedTools],
-        instructions: `${system}\n\nYou are free-roam child ${name} (${who(child.id)}). Work only on this angle: ${area}.\nTask: ${task}\nYou work on your own remote machine, with open network. Your only tools are: ${[...roamTools, message, post, read, ...sharedTools].map((t) => t.name).join(", ")}. The other tools named above are not yours.\nWhat you find is a candidate, never a proven finding.\nRecord ideas freely with record_candidate. For a demonstrated vulnerability supported by your captured shell or browser results, call submit_session_candidate with a structured report using the current session id returned by your tools. The report needs reproduction_steps, attacker_capability, observed_result, harm, and limitations. An open endpoint, existing spam or a scanner warning alone is only an investigation candidate. Findings without an oracle remain agent-evidenced and unverified by the framework. Cite exact evidence lines and include the required Fix: line. Check whether submission was accepted; report the candidate id or the error to the coordinator. A Bulletin post or final answer alone does not file a candidate. If evidence is insufficient, report the lead and what is missing without claiming a confirmed vulnerability.\nUse bulletin_read to see the roster and notes. Post useful notes or leads with bulletin_post.\nUse message_agent to contact the coordinator or another child by name or id.\nDo not spawn children. Finish with a short report. Your final answer goes to the coordinator.`,
+        tools: [...roamTools, ...packToolsForChild, message, post, read, ...sharedTools],
+        instructions: `${system}\n\nYou are free-roam child ${name} (${who(child.id)}). Work only on this angle: ${area}.\nTask: ${task}\nYou work on your own remote machine, with open network. Your tools are: ${[...roamTools, ...packToolsForChild, message, post, read, ...sharedTools].map((t) => t.name).join(", ")}. The other tools named above are not yours.\nYou are on an untrusted machine, but a pack check still decides what is proven: when a pack tool reports a match and accepts a label, call the pack's submit_finding exactly as a confined child does. The engine replays it on the host, so your word alone never proves anything.\nRecord ideas freely with record_candidate. For a demonstrated vulnerability supported by your captured shell or browser results, call submit_session_candidate with a structured report using the current session id returned by your tools. The report needs reproduction_steps, attacker_capability, observed_result, harm, and limitations. An open endpoint, existing spam or a scanner warning alone is only an investigation candidate. Findings without an oracle remain agent-evidenced and unverified by the framework. Cite exact evidence lines and include the required Fix: line. Check whether submission was accepted; report the candidate id or the error to the coordinator. A Bulletin post or final answer alone does not file a candidate. If evidence is insufficient, report the lead and what is missing without claiming a confirmed vulnerability.\nUse bulletin_read to see the roster and notes. Post useful notes or leads with bulletin_post.\nUse message_agent to contact the coordinator or another child by name or id.\nDo not spawn children. Finish with a short report. Your final answer goes to the coordinator.`,
       } : {
         tools: { remove: [spawn, ...offered] },
         instructions: `${system}\n\nYou are trusted child ${name} (${who(child.id)}). Work only on this angle: ${area}.\nTask: ${task}\nOther children may work at the same time. Use unique proof contract names.\nUse bulletin_read to see the roster and notes. Post useful notes or leads with bulletin_post.\nUse message_agent to contact the coordinator or another child by name or id.\nDo not spawn children. Finish with a short report. Your final answer goes to the coordinator.`,
@@ -262,7 +268,7 @@ export function createFleet({ system, costOf, max = process.env.FLEET_MAX ?? 50,
 
   const spawn = defineTool({
     name: "spawn_agent", description: `Start one child on one clear task. At most ${max} total lifetime children per run across both loadouts, including completed and failed children. Use message_agent to retry an existing child without a new slot.`,
-    parameters: obj({ name: str(), task: str(), area: str(), loadout: opt(oneOf(["confined", "free-roam"], { description: 'Default "confined": a trusted child with the pack tools. "free-roam": an untrusted child on its own remote machine, only when this run allows it.' })), options: opt(arr(oneOf(ROAM_OPTIONS), { description: "Selected wallet/email capabilities, only when enabled for this run and only for free-roam children." })) }), replay: "safe",
+    parameters: obj({ name: str(), task: str(), area: str(), loadout: opt(oneOf(["confined", "free-roam"], { description: 'Default in a roaming run: "free-roam" — a child on its own machine with the pack tools plus a shell and browser. "confined" keeps a child in the harness sandbox with pack tools only; use it for oracle-heavy work that needs no outside network.' })), options: opt(arr(oneOf(ROAM_OPTIONS), { description: "Selected wallet/email capabilities, only when enabled for this run and only for free-roam children." })) }), replay: "safe",
     execute: async (args, api, ctx) => {
       if (api.conversationId !== ROOT_CONVERSATION_ID) throw new Error("Only the coordinator can spawn agents.");
       const agent = await createChild(args, (fn, c) => api.commit(fn, c), api.taskId, ctx);
@@ -394,7 +400,7 @@ export function createFleet({ system, costOf, max = process.env.FLEET_MAX ?? 50,
     async drain(ctx, { enforce = true } = {}) {
       const stopped = await harness.snapshot(LiveDoc, ROOT_CONVERSATION_ID, ctx);
       if (freeRoam && !stopped?.runFailure) {
-        await createChild({ name: "FreeRoam", task: "Investigate the audit scope from the open web. Read the Bulletin first, avoid duplicating another child's work, and report captured evidence as unproven candidates only.", area: "open-web", loadout: "free-roam", options: runOptions }, (fn, c) => harness.commit(fn, c), DEFAULT_ROAM_JOB, ctx, true);
+        await createChild({ name: "FreeRoam", task: "Investigate the audit scope from the open web. Read the Bulletin first, avoid duplicating another child's work, and call the module's submit_finding when a check matches and submit_session_candidate for harm it does not cover.", area: "open-web", loadout: "free-roam", options: runOptions }, (fn, c) => harness.commit(fn, c), DEFAULT_ROAM_JOB, ctx, true);
       }
       let turn;
       for (;;) {

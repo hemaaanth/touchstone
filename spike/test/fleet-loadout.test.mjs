@@ -62,7 +62,7 @@ async function runtime(t, route, { env = ON, required = false, survey, hooks = {
   faux.setResponses(Array.from({ length: 150 }, () => (request) => { const s = seen(request); lists[s.who] = s.tools; return /^FreeRoam_*$/.test(s.who) ? defaultRoute(s) : route(s); }));
   const models = createModels();
   models.setProvider(faux.provider);
-  const fleet = createFleet({ system: "Audit the lab only.", costOf: () => 0, max, required, survey, roamTools, sharedTools });
+  const fleet = createFleet({ system: "Audit the lab only.", costOf: () => 0, max, required, survey, roamTools, packTools, sharedTools });
   const registry = createRegistry();
   // The same wiring as agent-run.mjs: the pack extension, then the fleet's own.
   registry.install(defineExtension({ name: "pack", tools: fleet ? fleet.wrapTools(packTools) : packTools }));
@@ -168,7 +168,7 @@ test("invalid explicit and environment maxima fail before any provider or machin
 
 test("a confined child has no roam tool, and it cannot call one", { timeout: 15000 }, async (t) => {
   const r = await runtime(t, (s) => {
-    if (s.who === "coordinator") return coordinator(s, [spawnCall("Alpha")]);
+    if (s.who === "coordinator") return coordinator(s, [spawnCall("Alpha", "confined")]);
     // The model asks for a tool it was not given.
     if (s.last.role === "user") return result([call("shell", {}), call("read_source", {})]);
     return answer("Done.");
@@ -177,7 +177,7 @@ test("a confined child has no roam tool, and it cannot call one", { timeout: 150
   assert.deepEqual(r.lists.Alpha.filter((n) => ROAM.includes(n)), []);
   assert.deepEqual(PACK.filter((n) => !r.lists.Alpha.includes(n)), [], "a confined child keeps every pack tool");
   const alpha = r.spawned("Alpha");
-  assert.deepEqual([alpha.loadout, alpha.tier], ["confined", "T1"], "the default loadout is confined");
+  assert.deepEqual([alpha.loadout, alpha.tier], ["confined", "T1"], "a requested confined child stays confined");
   const shell = await r.results(alpha.conv, "shell");
   assert.equal(shell.length, 1);
   assert.ok(shell[0].isError);
@@ -209,25 +209,20 @@ test("the coordinator cannot call a roam tool, and a refused call is not a surve
 });
 
 // The fleet is not told the pack tool list: the child's tools are an allow list.
-test("a free-roam child has no pack tool, so no submit_finding in any form, and it cannot call one", { timeout: 15000 }, async (t) => {
+test("a free-roam child keeps every pack tool, so it can submit a finding, and it keeps its own tools", { timeout: 15000 }, async (t) => {
   const r = await runtime(t, (s) => {
     if (s.who === "coordinator") return coordinator(s, [spawnCall("Beta", "free-roam")]);
     if (s.last.role === "user") return result([call("submit_finding_web", {}), call("submit_finding_contracts", {}), call("read_source", {}), call("shell", {}), call("submit_session_candidate", {})]);
     return answer("Done.");
   });
   assert.equal((await r.run("start")).status, "done");
-  assert.deepEqual(r.lists.Beta.toSorted(), ["bulletin_post", "bulletin_read", "message_agent", "shell", "submit_session_candidate"]);
-  assert.deepEqual(r.lists.Beta.filter((n) => PACK.includes(n) || n.startsWith("submit_finding")), []);
   const beta = r.spawned("Beta");
-  for (const name of PACK) {
-    const refused = await r.results(beta.conv, name);
-    assert.equal(refused.length, 1, name);
-    assert.ok(refused[0].isError && /not available/.test(text(refused[0])), name);
-  }
-  // Only its own tools ran, and each one as this child.
-  assert.deepEqual(r.ran, [`${beta.id}:shell`, `${beta.id}:submit_session_candidate`]);
-  assert.deepEqual((await r.results(beta.conv, "shell")).map((m) => !!m.isError), [false]);
-  // The coordinator's list has the roam tools, but the guard refuses it (the case above).
+  // The pack tools, the machine tools and the fleet tools, and nothing else.
+  assert.deepEqual(r.lists.Beta.toSorted(), ["bulletin_post", "bulletin_read", "message_agent", "read_source", "shell", "submit_finding_contracts", "submit_finding_web", "submit_session_candidate"]);
+  assert.deepEqual(r.lists.Beta.filter((n) => !(PACK.includes(n) || ROAM.includes(n) || ["bulletin_post", "bulletin_read", "message_agent"].includes(n))), []);
+  // Each pack call ran as this child: a machine child reaches the same checks.
+  assert.deepEqual(r.ran, [`${beta.id}:submit_finding_web`, `${beta.id}:submit_finding_contracts`, `${beta.id}:read_source`, `${beta.id}:shell`, `${beta.id}:submit_session_candidate`]);
+  for (const name of [...PACK, "shell"]) assert.deepEqual((await r.results(beta.conv, name)).map((m) => !!m.isError), [false], name);
   assert.ok(ROAM.every((n) => r.lists.coordinator.includes(n)));
   assert.ok(r.fleet.instructions.endsWith(FREE_ROAM_INSTRUCTIONS));
 });
@@ -261,7 +256,7 @@ test("with FLEET=0 and FREE_ROAM=0 the tool list has no shell", { timeout: 15000
   // The actual runner's owner/demo tool lists are exercised in agent-run-startup.
 });
 
-test("a free-roam child cannot run a pack tool that a later worker adds", { timeout: 20000 }, async (t) => {
+test("a machine child keeps its pack tools but does not gain one a later worker adds", { timeout: 20000 }, async (t) => {
   const open = await shared(t);
   const route = twoWorkers("Beta", "free-roam", ["submit_finding_review", "submit_finding_web", "shell"]);
   let w = await runtime(t, route, { storage: await open() });
@@ -272,13 +267,12 @@ test("a free-roam child cannot run a pack tool that a later worker adds", { time
   w = await runtime(t, route, { storage: await open(), pack: [...PACK, "submit_finding_review"] });
   await w.run("go on");
   assert.ok(w.lists.coordinator.includes("submit_finding_review"), "the new pack tool is installed in this worker");
-  assert.deepEqual(w.lists.Beta.toSorted(), ["bulletin_post", "bulletin_read", "message_agent", "shell", "submit_session_candidate"]);
-  for (const name of ["submit_finding_review", "submit_finding_web"]) {
-    const refused = await w.results(beta.conv, name);
-    assert.equal(refused.length, 1, name);
-    assert.ok(refused[0].isError && /not available/.test(text(refused[0])), name);
-  }
-  assert.deepEqual(w.ran, [`${beta.id}:shell`]);
+  assert.deepEqual(w.lists.Beta.toSorted(), ["bulletin_post", "bulletin_read", "message_agent", "read_source", "shell", "submit_finding_contracts", "submit_finding_web", "submit_session_candidate"]);
+  const refused = await w.results(beta.conv, "submit_finding_review");
+  assert.equal(refused.length, 1);
+  assert.ok(refused[0].isError && /not available/.test(text(refused[0])));
+  assert.deepEqual((await w.results(beta.conv, "submit_finding_web")).map((m) => !!m.isError), [false]);
+  assert.deepEqual(w.ran, [`${beta.id}:submit_finding_web`, `${beta.id}:shell`], "the kept pack tool ran in the first worker, the machine tool in the second");
 });
 
 test("a confined child does not see a roam tool when a later worker has FREE_ROAM=1", { timeout: 20000 }, async (t) => {
@@ -345,8 +339,8 @@ test("the spawn event carries the loadout and tier T2, and a free-roam post is e
   // A free-roam child is not told that it is trusted.
   assert.match(told.Alpha, /You are trusted child Alpha/);
   assert.match(told.Beta, /You are free-roam child Beta/);
-  assert.ok(!/trusted/i.test(told.Beta));
-  assert.match(told.Beta, /Your only tools are: shell, submit_session_candidate, message_agent, bulletin_post, bulletin_read\./);
+  assert.ok(/You are free-roam child/.test(told.Beta));
+  assert.match(told.Beta, /Your tools are: shell, submit_session_candidate, read_source, submit_finding_web, submit_finding_contracts, message_agent, bulletin_post, bulletin_read\./);
 });
 
 // agent-run executes on import. Pin its composition, then exercise those same
@@ -497,7 +491,7 @@ test("invalid or disabled run options are refused before a model runs", async (t
   });
 });
 
-test("the reserved slot starts a real default child once across drains and workers", { timeout: 20000 }, async (t) => {
+test("a run with no machine child gets one automatic one, once, across drains and workers", { timeout: 20000 }, async (t) => {
   const open = await shared(t);
   let defaults = 0;
   const defaultRoute = (s) => {
@@ -505,19 +499,18 @@ test("the reserved slot starts a real default child once across drains and worke
     return answer("Default complete.");
   };
   const env = { ...ON, ROAM_OPTIONS: '["email","wallet"]' };
-  let w = await runtime(t, (s) => s.who === "coordinator" ? coordinator(s, [spawnCall("Alpha"), spawnCall("Overflow")]) : answer("Done."), { max: 2, storage: await open(), env, defaultRoute });
+  // The coordinator finishes without spawning: the run gets one.
+  let w = await runtime(t, () => answer("Coverage complete."), { max: 2, storage: await open(), env, defaultRoute });
   await w.run("start");
   const board = await w.harness.snapshot(Roster, ROOT_CONVERSATION_ID, ctx);
-  assert.deepEqual(board.agents.map((a) => a.loadout), ["confined", "free-roam"]);
-  const automatic = board.agents[1];
+  assert.deepEqual(board.agents.map((a) => a.loadout), ["free-roam"]);
+  const automatic = board.agents[0];
   assert.deepEqual(automatic.options, ["wallet", "email"]);
   assert.equal(automatic.status, "done");
   assert.equal(w.spawned("FreeRoam").tier, "T2");
   assert.deepEqual(w.spawned("FreeRoam").options, ["wallet", "email"]);
   assert.deepEqual(w.ran, [`${automatic.id}:shell`]);
-  const spawns = await w.results(undefined, "spawn_agent");
-  assert.ok(spawns.some((m) => m.isError && /reserved/.test(text(m))));
-  assert.deepEqual(w.lists.FreeRoam.toSorted(), ["bulletin_post", "bulletin_read", "message_agent", "shell", "submit_session_candidate"]);
+  assert.deepEqual(w.lists.FreeRoam.toSorted(), ["bulletin_post", "bulletin_read", "message_agent", "read_source", "shell", "submit_finding_contracts", "submit_finding_web", "submit_session_candidate"]);
   await w.fleet.drain(ctx);
   assert.equal(defaults, 1);
   await w.close();
@@ -530,13 +523,22 @@ test("the reserved slot starts a real default child once across drains and worke
   assert.equal(w.events.filter((e) => e.ev === "subagent-spawned").length, 0);
 });
 
-test("one-slot fleets reserve it for free-roam; a chosen child prevents an extra default", async (t) => {
+test("a run that already has a machine child starts no automatic one", async (t) => {
+  let defaults = 0;
+  const r = await runtime(t, (s) => s.who === "coordinator" ? coordinator(s, [spawnCall("Alpha", "free-roam")]) : answer("Done."), { max: 2, defaultRoute: () => { defaults++; return answer("Default complete."); } });
+  await r.run("start");
+  await r.fleet.drain(ctx);
+  assert.equal(defaults, 0);
+  assert.deepEqual((await r.harness.snapshot(Roster, ROOT_CONVERSATION_ID, ctx)).agents.map((a) => a.name), ["Alpha"]);
+});
+
+test("a one-slot fleet admits one child and starts no automatic fallback", async (t) => {
   const r = await runtime(t, (s) => s.who === "coordinator" ? coordinator(s, [spawnCall("Blocked"), spawnCall("Beta", "free-roam")]) : answer("Done."), { max: 1 });
   await r.run("start");
   const board = await r.harness.snapshot(Roster, ROOT_CONVERSATION_ID, ctx);
-  assert.deepEqual(board.agents.map((a) => a.name), ["Beta"]);
+  assert.deepEqual(board.agents.map((a) => a.name), ["Blocked"]);
   assert.equal(r.spawned("FreeRoam"), undefined);
-  assert.ok((await r.results(undefined, "spawn_agent")).some((m) => m.isError && /reserved/.test(text(m))));
+  assert.ok((await r.results(undefined, "spawn_agent")).some((m) => m.isError && /Fleet limit reached/.test(text(m))));
 });
 
 test("an older full confined roster cannot silently omit the requested default", async (t) => {
@@ -555,8 +557,8 @@ test("child options are normalized, bounded by the run, and read from the caller
     if (text(s.last) !== "start") return answer("Complete.");
     return result([
       call("spawn_agent", { name: "Beta", task: "Investigate", area: "web", loadout: "free-roam", options: ["email", "wallet", "email"] }),
-      spawnCall("Alpha"),
-      call("spawn_agent", { name: "Rejected", task: "Investigate", area: "web", options: ["wallet"] }),
+      spawnCall("Alpha", "confined"),
+      call("spawn_agent", { name: "Rejected", task: "Investigate", area: "web", loadout: "confined", options: ["wallet"] }),
     ]);
   }, { env: { ...ON, ROAM_OPTIONS: '["email","wallet"]' } });
   await r.run("start");
@@ -599,11 +601,11 @@ test("concurrent drains create one default even in a one-slot fleet", async (t) 
   assert.equal(calls, 1);
 });
 
-test("the default avoids a confined child's name", async (t) => {
+test("a child named FreeRoam keeps the automatic fallback from starting", async (t) => {
   const r = await runtime(t, (s) => coordinator(s, [spawnCall("FreeRoam")]), { max: 2 });
   await r.run("start");
   const board = await r.harness.snapshot(Roster, ROOT_CONVERSATION_ID, ctx);
-  assert.deepEqual(board.agents.map((a) => [a.name, a.loadout]), [["FreeRoam", "confined"], ["FreeRoam_", "free-roam"]]);
+  assert.deepEqual(board.agents.map((a) => [a.name, a.loadout]), [["FreeRoam", "free-roam"]]);
 });
 
 test("a stopped run never starts a default child", async (t) => {
@@ -686,7 +688,7 @@ test("a solo worker retains shared Ask without installing roam tools", async (t)
   assert.equal(r.events.find((e) => e.ev === "ask-human").agent, "coordinator");
 });
 
-test("saved free-roam allow lists gain shared Ask but no new pack tool", async (t) => {
+test("saved machine allow lists gain shared Ask but no pack tool a later worker adds", async (t) => {
   const open = await shared(t);
   let w = await runtime(t, (s) => s.who === "coordinator" ? coordinator(s, [spawnCall("Beta", "free-roam")]) : answer("Done."), { storage: await open() });
   await w.run("start");
@@ -697,7 +699,7 @@ test("saved free-roam allow lists gain shared Ask but no new pack tool", async (
     return s.last.role === "user" ? result([askCall()]) : answer("Done.");
   }, { storage: await open(), sharedTools: [askHumanTool], hooks: answerEvents, pack: [...PACK, "new_pack_tool"] });
   await w.run("go on");
-  assert.deepEqual(w.lists.Beta.toSorted(), ["ask_human", "bulletin_post", "bulletin_read", "message_agent", "shell", "submit_session_candidate"]);
+  assert.deepEqual(w.lists.Beta.toSorted(), ["ask_human", "bulletin_post", "bulletin_read", "message_agent", "read_source", "shell", "submit_finding_contracts", "submit_finding_web", "submit_session_candidate"]);
   assert.equal(w.events.find((e) => e.ev === "ask-human").agent, beta.id);
 });
 
@@ -735,7 +737,7 @@ test("the gate sees trusted membership before a first action and immediately aft
   const beta = r.spawned("Beta"), alpha = r.spawned("Alpha");
   assert.deepEqual(r.ran, [], "no machine tool has run");
   assert.equal(r.fleet.isRoamAgent(beta.id), true);
-  assert.equal(r.fleet.isRoamAgent(alpha.id), false);
+  assert.equal(r.fleet.isRoamAgent(alpha.id), true, "an unspecified loadout follows the run");
   const pauses = [];
   const gate = createRoamControl({ epoch: "test-worker", isAgent: r.fleet.isRoamAgent, emit() {}, remote: {
     pause: async (id) => pauses.push(id), resume: async () => {}, close: async () => {},

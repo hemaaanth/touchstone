@@ -9,6 +9,7 @@ import { cn } from "cn"
 import { Separator } from "@/components/ui/separator"
 import { Block, CopyButton, ExportReport, Fold, RunDetails, Verdict, WhyItWorks } from "./proof-parts"
 import { HttpProofCard } from "./http-proof"
+import { SessionProofCard } from "./session-proof"
 import { EvidenceProofCard } from "./evidence-proof"
 
 // The printed replay proof for a recorded finding. A finding's proof kind picks
@@ -288,6 +289,7 @@ export function ReplayProof({
     </>
   )
   if (finding.proofKind === "http") return <HttpProofCard finding={finding}>{footer}</HttpProofCard>
+  if (finding.proofKind === "session") return <SessionProofCard finding={finding}>{footer}</SessionProofCard>
   if (finding.proofKind === "evidence") return <EvidenceProofCard finding={finding}>{footer}</EvidenceProofCard>
   return <ForgeProofCard finding={finding}>{footer}</ForgeProofCard>
 }

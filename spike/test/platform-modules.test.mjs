@@ -40,12 +40,16 @@ const REACH = {
   "supply-chain": { proof: "evidence", live: true, grants: "github" },
   "domains": { proof: "evidence", live: true, scanNet: "open" },
   "surface": { proof: "none", live: true, scanNet: "open" },
-  "phishing": { proof: "none", live: true, scanNet: "open" },
-  "web": { proof: "http", live: true, scanNet: "open" },
+  "phishing": { proof: "none", live: true, scanNet: "open", roam: true },
+  "web": { proof: "http", live: true, scanNet: "open", roam: true },
   "ai-mcp": { proof: "http", live: true, scanNet: "open", labTarget: "rule-based" },
   "keys": { proof: "forge", live: false, offline: true },
   "chain-watch": { proof: "forge", live: false, offline: true },
   "infra-cloud": { proof: "evidence", live: false, offline: true, extraProof: "cloud-http" },
+  "host": { proof: "session", live: true, scanNet: "open", roam: true },
+  "crypto": { proof: "session", live: false, offline: true },
+  "forensics": { proof: "session", live: false, offline: true },
+  "binary": { proof: "session", live: false, offline: true, roam: true },
 }
 
 test("packList sends each pack's proof and reach fields", () => {

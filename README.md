@@ -32,8 +32,8 @@ confined children, and a ten-minute work limit. One assessment runs at a time.
 Existing verification and cleanup may finish after the work limit.
 
 The full operator app also supports custom scopes, other configured models and
-providers, and optional Daytona free-roam execution. The public demo uses the
-smaller, fixed configuration. [Demo deployment and limits →](docs/public-demo.md)
+providers, and executing agents on their own disposable machines (Daytona). The
+public demo uses the smaller, fixed host-sandbox configuration. [Demo deployment and limits →](docs/public-demo.md)
 
 ## Why NEAR AI
 
@@ -61,9 +61,11 @@ execution and proof checks are separate boundaries.
 
 ## What the harness does
 
-**Coordinates a fleet.** One coordinator delegates work, follows the children,
-and shares a bulletin. Confined agents and free-roam agents have distinct tool
-profiles. The default lifetime cap is 50 child identities per run; their calls
+**Coordinates a fleet, on machines.** One coordinator delegates work, follows the
+children, and shares a bulletin. By default each child works on its own disposable
+remote machine with the attacker toolbelt and an open network; a child can instead
+stay in the harness sandbox. Both kinds keep the module tools, and every submission
+is replayed on the host, so where a child ran never changes what counts as proven. The default lifetime cap is 50 child identities per run; their calls
 charge the same run budget. This is a configured capacity, not a claim of a
 50-machine live benchmark.
 
@@ -81,7 +83,7 @@ scanner lead, and a proven finding remain distinct states.
 remain visible. A tool that did not finish does not count as a clean scan.
 
 <details>
-<summary><strong>Explore the 11 modules</strong></summary>
+<summary><strong>Explore the 15 modules</strong></summary>
 
 The [pack registry](spike/packs/index.mjs) is the authoritative catalog. Each
 module declares its tools, supported scope, and proof kind.
@@ -97,6 +99,10 @@ module declares its tools, supported scope, and proof kind.
 | [Keys and signing](spike/packs/keys) | Wallet and signing labs | Foundry replay |
 | [Chain watch](spike/packs/chain-watch) | Local-chain monitoring labs | Foundry replay |
 | [Surface](spike/packs/surface) | Captured application surface and source leads | Leads; no proof oracle |
+| [Host and network](spike/packs/host) | One Linux box from the outside, then local privilege escalation | Command replay on a fresh box; live runs record candidates |
+| [Crypto](spike/packs/crypto) | Hand-rolled primitives: reused keystream, clock-seeded token, wordlist MAC secret | Command replay on a fresh service |
+| [Forensics](spike/packs/forensics) | Clear-text capture, appended archive, EXIF trail | Command replay on regenerated artifacts |
+| [Binary exploitation](spike/packs/binary) | Stack overflow, obfuscated license check, secret in `.rodata` | Command replay on rebuilt binaries |
 | [Phishing and brand lookalikes](spike/packs/phishing) | Domain and brand signals | Leads; no proof oracle |
 | [Code review](spike/packs/review) | Source investigation without a matching replay oracle | Leads; no proof oracle |
 

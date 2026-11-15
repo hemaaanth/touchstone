@@ -34,7 +34,7 @@ async function prepass(ws, { emit = () => {} } = {}) {
 }
 export default {
   // Leads only, so no finding can be proven.
-  id: 'phishing', title: 'Phishing and brand lookalikes', tier: 'P', proof: 'none',
+  id: 'phishing', title: 'Phishing and brand lookalikes', tier: 'P', proof: 'none', roam: true,
   // What the module tests, in one plain sentence (from its SKILL.md). The
   // Modules page shows it; it makes no proof claim.
   description: "Domains that copy your domain, and whether they are known scams.",

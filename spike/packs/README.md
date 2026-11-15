@@ -30,8 +30,9 @@ Register the pack in `packs/index.mjs`. A run picks its pack from the
 | `id`      | string                      | The module id. Also the pi-durable extension name. |
 | `title`   | string                      | The name the UI shows. |
 | `tier`    | `"P" \| "S" \| "I" \| "F"`  | The highest tier the pack can reach. See 08-proposed-ui.md §5.4. |
-| `proof`   | `"forge" \| "http" \| "evidence" \| "none"` | How a finding becomes real. See "Proof kinds". |
+| `proof`   | `"forge" \| "http" \| "session" \| "evidence" \| "none"` | How a finding becomes real. See "Proof kinds". |
 | `live`    | boolean                     | The tools can be aimed at a real host, so the pack may run a live scope. Without it a live scope under this pack is refused rather than silently scanning the pack's lab. |
+| `roam`    | boolean                     | The module is built for an agent's own machine: a real toolbelt and an open network. The console notes it. It does not gate the run. |
 | `offline` | `true`                      | Optional. No tool reaches a network. Only then does the Modules page say the pack runs only in the offline sandbox. |
 | `fetches` | `("github" \| "solc")[]`     | Optional. What the host fetches for a run: the scope's GitHub links, and the Solidity compilers those files pin. |
 | `scanNet` | `"open"`                    | Optional. A live run's scanners use the open bridge network, not the grant gate. |
@@ -87,9 +88,11 @@ Use these. Do not write a second Docker runner or SARIF parser in a pack.
 ## Fleet runs
 
 `agent-run.mjs` adds `lib/fleet.mjs` beside the pack extension by default.
-The root conversation coordinates confined T1 children and, when enabled,
-free-roam T2 children. Confined children get the same model and pack tools.
-Free-roam children get their own remote machines and no pack proof tools.
+The root conversation coordinates the children: T1 children in the harness
+sandbox, T2 children on their own machines. Both kinds get the same model and
+the same pack tools, so a T2 child can reach a pack check and submit a finding;
+the engine replays every submission on the host, which is why the trust tier
+decides the bulletin lane and not the proof.
 Both get `message_agent`, `bulletin_post`, and `bulletin_read`. Only the root
 gets `spawn_agent`.
 
@@ -100,11 +103,11 @@ gets `spawn_agent`.
   the default. The effective maximum must be a positive integer.
   This is not a concurrent-machine quota or a request to spawn 50 children.
   The coordinator sizes the fleet to the scope within the existing run budget.
-- An unspecified loadout is `confined`. With free-roam enabled, explicitly
-  spawn multiple `free-roam` children for independent angles as needed.
-  One slot is reserved until a free-roam child exists. This is a minimum
-  fallback, not a maximum: if none was chosen, the engine starts exactly one
-  before a healthy run settles.
+- An unspecified loadout follows the run: `free-roam` when the run executes on
+  machines, `confined` otherwise. There is no reserved slot and no automatic
+  fallback; splitting is the coordinator's decision and a one-child run is
+  normal. `confined` stays available in a roaming run for replay-heavy work
+  that needs no outside network.
 - `message_agent({to, text})` accepts a child name, child id, or
   `coordinator`. It steers a busy child and starts a new turn for an idle
   or failed child. To retry, message the same child. To reassign, read its
@@ -164,11 +167,16 @@ node --test spike/test/fleet.test.mjs
 |------------|----------------------------------------------------------------------|---------|
 | `forge`    | its Foundry test replays green offline and shows the harm.           | Contracts, Keys and signing, Chain watch |
 | `http`     | its request script replays against the practice service on a private sandbox network and the oracle sees the harm. | Web and sign-in, APIs, Nodes and RPC, AI and MCP, Infra and cloud (through moto or LocalStack) |
+| `session`  | its shell script replays against a fresh target on a private sandbox network, with a NEW random flag planted behind the same bug, and the oracle reads that flag back out of the replayed output. | Host and network, Crypto, Forensics, Binary exploitation |
 | `evidence` | its evidence replays against a pinned snapshot and the check still holds. | Supply chain and secrets, Domains and front end, People and brand |
 | `none`     | never. The run reports leads only. | Surface, Code review |
 
-Only `forge` exists today. The first pack that needs `http` or `evidence`
-builds that replay in `lib/` so the other packs can share it.
+`session` exists because the machine-layer modules prove by *doing*: a command
+that reaches the flag. The per-instance flag is what stops a pasted answer, so an
+oracle always takes `{ flag }` and a pack must never put the flag in a prompt.
+The replay lives in `lib/proof-session.mjs`; the shared tool and the gate are in
+`lib/session-tool.mjs`. A new machine-layer pack writes its lab, its oracles and
+its prompt and reuses both.
 
 ## Integration research (TOOLS.md)
 
