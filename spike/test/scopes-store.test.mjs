@@ -56,6 +56,9 @@ test("the pack follows content, with no automatic fallback to Contracts", () => 
   assert.equal(scopePack([f("x.sol")]), "contracts");
   assert.equal(scopePack([f("x.rs")]), "review");
   assert.equal(scopePack([f("x.rs")], "contracts"), "review"); // known content beats the hint
+  // An explicit review keeps a stray fixture .sol from turning a codebase into
+  // a Foundry audit.
+  assert.equal(scopePack([f("src/Vault.sol"), f("src/app.ts")], "review"), "review");
   assert.equal(scopePack([repo("https://github.com/a/b")]), "review");
   assert.equal(scopePack([repo("https://github.com/a/b")], "contracts"), "contracts");
   assert.equal(scopePack([repo("https://github.com/a/b/blob/main/V.sol")]), "contracts");

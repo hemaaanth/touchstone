@@ -390,8 +390,11 @@ export function solidityKnown(members) {
   return members.some((m) => (m.kind === "folder" ? m.files.some((f) => isSolidity(f.path)) : isSolidity(new URL(m.url).pathname)));
 }
 
-// The pack for a set of members. Content decides. Any known Solidity means
-// Contracts. A scope with no known Solidity is "review", with one tie-break:
+// The pack for a set of members. An operator's explicit "review" wins over
+// content: two fixture .sol files inside a 5,000-file TypeScript monorepo do
+// not make it a Foundry audit. Otherwise content decides — any known Solidity
+// means Contracts. A scope with no known Solidity is "review", with one
+// tie-break:
 // when it has repos and the operator added it under Contracts (`declared`), it
 // runs under Contracts, because only a fetch can show what the repos hold. That
 // hint grants no proof surface. Such a run is content-gated (proofOpen in
@@ -404,6 +407,7 @@ export function solidityKnown(members) {
 // a pinned lab snapshot). Operator code is not that lab, so none of those
 // oracles fits it.
 export function scopePack(members, declared) {
+  if (declared === "review") return "review";
   if (solidityKnown(members)) return "contracts";
   if (declared === "contracts" && members.some((m) => m.kind === "repo")) return "contracts";
   return "review";
