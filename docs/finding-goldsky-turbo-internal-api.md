@@ -108,6 +108,23 @@ It is A's second pipeline on a free tier whose key-scoped create route refuses t
 pipeline (`403 "reached the Turbo pipelines limit"`) because the internal plugin runs no
 billing/limit hooks.
 
+## The three layers the brief named
+
+- **Webapp route.** `packages/webapp/src/routes/[[projectId]]/dashboard/pipelines/turbo/[name]/+layout.ts`
+  guards only feed-sync visibility; `edit/+page.server.ts:32-34` fetches
+  `/api/admin/pipelines/v1/turbo/${decodeURIComponent(params.name)}` with the user's cookies.
+  `hooks.server.ts:59-77` rewrites the active-project cookie to `event.params.projectId`, and
+  `auth.ts:377` honours it — but only on a cookie session, and a non-member project falls back to
+  the caller's first project instead of 404 (`auth.ts:479-490`). So the webapp agrees with the key
+  surfaces: it can only ever render what the caller's project owns.
+- **api-server handler.** `pipelinesApiPlugin.ts:206-296` and the streamling proxy both pass
+  `request.project.id`. Correct.
+- **CLI handle derivation.** The `turbo` binary reads `~/.goldsky/auth_token`, calls
+  `/auth/check_token` to learn its project ("Using project: …" in its own strings), then addresses
+  `/api/admin/streamling/v1/<definition.name>`. The handle is exactly the YAML `name` — no
+  generated suffix, no entropy, and the pack's own guidance calls it guessable. The project still
+  comes from the token, so the handle alone never selects a deployment on this path.
+
 ## Delete, and the key-scoped draft hole (proven live)
 
 The agent's own `DELETE /pipeline/:p/:n` is reachable only from a pod, and a pipeline can issue
