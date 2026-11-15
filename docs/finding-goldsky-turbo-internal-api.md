@@ -1,7 +1,8 @@
 # Goldsky Turbo: cross-tenant pipeline read/write through the unauthenticated in-cluster APIs
 
 Date: 2026-11-15
-Scope: `scope-goldsky-every-application-repo-d1ea31ab` (run `…2611150327-16831880001`)
+Scope: `live-goldsky-monorepo-site-cms-compos-b94b982e` (run `…2611150420-16699820003`); the work
+was first proven under the earlier org-wide scopes, which are deleted.
 Accounts: free test A (victim) `cmwh95cyzd0f901rzd3dp1657` / `project_cmvlqkfmh6zml01veajswaam8`;
 B (attacker) `cmwh96gp7d2vq01rze08l5919` / `project_cmwh969vg31re01q07b1rgk9z`.
 
@@ -221,6 +222,35 @@ failure text is echoed back through `sanitizeBundleError` (`:423`) and the deplo
 Not exercised live: the path ends in a composeDeploy workflow, which the free accounts cannot run
 (Scale gate). The install is only reached when `package.json` declares an allowlisted dependency
 (`:396-414`).
+
+## Website preview generator: unauthenticated draft access, unbounded writes (proven live)
+
+`pages/api/preview/generate.ts` on the marketing site (served at `hem.so`) is a public POST. It
+checks only that fields are present and emails look like emails (`:33-60`); there is no auth, no
+rate limit, and `ownerInfo` is taken at face value (`:186-193`), so a caller claims to be the owner
+of a session it created. Each call writes two `review` documents per recipient into the production
+Sanity dataset with the server token (`:118-176`, `:210-230`). `expirationDays` is unbounded
+(`:114`).
+
+The preview page then trusts the minted token: `pages/preview/[slug].tsx:99-117` looks the session
+up by token, checks only `revoked`/`expiresAt`/slug equality, and fetches the document with
+`getPostBySlug(slug, true)` — the server token plus `previewDrafts` (`lib/sanity.ts:128-145`).
+`documentId` is stored only as a weak reference and never used to render, so a fabricated id is
+enough; the slug is the real key.
+
+```http
+POST https://hem.so/api/preview/generate
+{"documentId":"fake-123","documentType":"post","slug":"building-a-blockchain","mode":"shared",
+ "recipients":[{"name":"x","email":"x@example.com"}],"ownerInfo":{"name":"probe","email":"probe@example.com"}}
+→ 200 {"success":true,"sessions":[{"previewUrl":"https://hem.so/preview/building-a-blockchain?token=…"}]}
+```
+
+Following that URL renders the post through the draft perspective (stega markers present in the
+title). `expirationDays: 36500` returned `expiresAt` in 2126; `-3` returned a link already expired.
+
+Impact: anyone who knows a draft's slug reads unpublished content, can mint an unlimited number of
+long-lived sessions against the production dataset, and is treated as the session owner. Slugs are
+low entropy and drafts are usually named close to the eventual slug, so guessing is realistic.
 
 ## Fix shape
 
