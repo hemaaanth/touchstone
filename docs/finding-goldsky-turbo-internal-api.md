@@ -204,6 +204,20 @@ and webhooked the row out. Captured verbatim:
 The route never looks at the caller, so the pipeline's own project is irrelevant; a pod in any
 project reads any project's plaintext secret by name.
 
+
+## Secondary: compose build-path SSRF (code-established)
+
+The chatbot "deploy from source" bundler writes every supplied file into a tmp sandbox
+(`compose-api/bundle-from-source.ts:404-408`) and then runs `pnpm install --ignore-scripts` in it
+(`npm-install.ts:65-84`). The only path checks are "not absolute, no `..`" (`:143-148`), so a caller
+can also supply `.npmrc`, and pnpm reads the registry from it. `registry=http://<internal-host>/…`
+therefore makes the api-server fetch a caller-chosen URL from inside the cluster; pnpm's fetch
+failure text is echoed back through `sanitizeBundleError` (`:423`) and the deploy card.
+
+Not exercised live: the path ends in a composeDeploy workflow, which the free accounts cannot run
+(Scale gate). The install is only reached when `package.json` declares an allowlisted dependency
+(`:396-414`).
+
 ## Fix shape
 
 Authenticate `/internal/*` and the agent (e.g. mTLS or a service token), or at minimum make
