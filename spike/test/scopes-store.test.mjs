@@ -76,15 +76,15 @@ test("hidden, host, absolute, and .. paths are rejected", () => {
   assert.equal(readScopes().length, 0);
 });
 
-test("a whole monorepo fits: 12000 files and 120 MB, across folders", () => {
+test("a whole organisation fits: 40000 files and 750 MB, across folders", () => {
   const many = (n, pre) => Array.from({ length: n }, (_, i) => file(`${pre}${i}.py`));
   // 292 files (privacy-pools-core) is an ordinary app, not a special case.
   assert.ok(addScope({ title: "t", members: [folder("a", many(292, "a"))] }));
-  assert.ok(addScope({ title: "t", members: [folder("a", many(8000, "a")), folder("b", many(3999, "b"))] }));
-  assert.throws(() => addScope({ title: "t", members: [folder("a", many(12001, "a"))] }), /1 to 12000 files/);
-  assert.throws(() => addScope({ title: "t", members: [folder("a", many(8000, "a")), folder("b", many(4001, "b"))] }), /1 to 12000 files/);
-  const big = "x".repeat(61 * 1024 * 1024);
-  assert.throws(() => addScope({ title: "t", members: [folder("a", [file("a.py", big)]), folder("b", [file("b.py", big)])] }), /under 120 MB/);
+  assert.ok(addScope({ title: "t", members: [folder("a", many(20000, "a")), folder("b", many(19999, "b"))] }));
+  assert.throws(() => addScope({ title: "t", members: [folder("a", many(40001, "a"))] }), /1 to 40000 files/);
+  assert.throws(() => addScope({ title: "t", members: [folder("a", many(20000, "a")), folder("b", many(20001, "b"))] }), /1 to 40000 files/);
+  const big = "x".repeat(376 * 1024 * 1024);
+  assert.throws(() => addScope({ title: "t", members: [folder("a", [file("a.py", big)]), folder("b", [file("b.py", big)])] }), /under 750 MB/);
   assert.throws(() => addScope({ title: "t", members: [folder("a", [])] }), /at least one file/);
   assert.throws(() => addScope({ title: "t", members: [] }), /1 to 20/);
 });

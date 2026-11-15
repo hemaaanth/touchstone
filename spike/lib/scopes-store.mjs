@@ -12,11 +12,11 @@
 // is the whole store; we read and rewrite it in full on each change. There is
 // one long-lived Node process (the Vite dev server), so there is no concurrent
 // writer to coordinate with.
-import { existsSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, renameSync, statSync, writeSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
-import { addGrant, loadGrants, loadStore, saveStore, removeGrant, privateLabHostError, withStoreLock } from "./grant-store.mjs";
+import { addGrant, loadGrants, loadStore, removeGrant, privateLabHostError, withStoreLock } from "./grant-store.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.resolve(HERE, "../data");
@@ -48,9 +48,52 @@ export function readScopes() {
   }
 }
 
-// Temp file in the same directory, then rename (see saveStore).
+// A scope's file contents make the store far too large for one
+// JSON.stringify: V8 refuses a string over ~512 MB, and an organisation-wide
+// scope is past 400 MB. Write it as a stream instead — one scope, one member,
+// one file at a time — into the same temp-then-rename shape saveStore uses.
+function writeJsonStream(fd, value) {
+  if (Array.isArray(value)) {
+    writeSync(fd, "[");
+    value.forEach((item, i) => {
+      if (i) writeSync(fd, ",");
+      writeJsonStream(fd, item);
+    });
+    writeSync(fd, "]");
+    return;
+  }
+  if (value && typeof value === "object") {
+    writeSync(fd, "{");
+    Object.entries(value).forEach(([k, v], i) => {
+      if (i) writeSync(fd, ",");
+      writeSync(fd, JSON.stringify(k) + ":");
+      writeJsonStream(fd, v);
+    });
+    writeSync(fd, "}");
+    return;
+  }
+  writeSync(fd, JSON.stringify(value ?? null));
+}
+
 function writeScopes(arr) {
-  saveStore(scopesFile(), arr);
+  const file = scopesFile();
+  mkdirSync(path.dirname(file), { recursive: true });
+  // Keep the mode the operator gave the file. A new file gets the default mode.
+  let mode = 0o666;
+  try {
+    mode = statSync(file).mode & 0o777;
+  } catch {
+    /* no file yet */
+  }
+  const tmp = `${file}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
+  const fd = openSync(tmp, "w", mode);
+  try {
+    writeJsonStream(fd, arr);
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+  renameSync(tmp, file);
 }
 
 // Add one new scope on top, under the store lock (grant-store withStoreLock).
@@ -157,11 +200,13 @@ export function addBriefScope({ title, brief, blurb } = {}) {
 // These are workspace intake limits, not reading limits: the hunter navigates
 // with the codebase-memory index and reads files on demand, so a real monorepo
 // is the normal case, not the exception. 200 files refused privacy-pools-core
-// (292) on 2026-11-14. 4,000 files / 40 MB fits a large app while keeping the
-// scope store and a per-run workspace copy sane.
-export const MAX_FILES = 12000;
-export const MAX_BYTES = 120 * 1024 * 1024;
-export const MAX_MEMBERS = 20;
+// (292) on 2026-11-14. Raised for whole-organisation audits: 40,000 files /
+// 750 MB / 200 members holds every application repo of a real company, which is
+// 31,844 files and 701 MB today. The store stays a single JSON, so this is the
+// point where a bigger scope wants a database.
+export const MAX_FILES = 40000;
+export const MAX_BYTES = 750 * 1024 * 1024;
+export const MAX_MEMBERS = 200;
 
 // Folders that hold dependencies or build output, not the code under test.
 // Their files are dropped, never stored. Hidden folders (.git, .next, .venv)
@@ -658,7 +703,7 @@ export function checkBrief(text) {
   return brief;
 }
 
-// Set or clear the brief of one scope. Writes the store atomically (saveStore)
+// Set or clear the brief of one scope. Writes the store atomically (writeScopes)
 // and refuses a damaged store (loadScopes). Returns the stored scope. An empty
 // brief removes the field, so the record looks like one that never had a brief.
 export function setScopeBrief(id, text) {
