@@ -167,8 +167,10 @@ can pause another project's subgraphs or read its wallet-table cursor.
   (`ENOTFOUND` vs `ECONNREFUSED` vs status, unresolved vs unreachable) makes it a service oracle.
 - The chatbot's contract lookup builds `https://${network}.blockscout.com/api/v2` from the raw
   `network` argument (`core/src/utils/contracts/explorer.ts:130-131` default branch, `network.ts`
-  passes through). `network = "example.com#"` yields `https://example.com#.blockscout.com/api/v2`,
-  so the fragment escapes the suffix and the tool fetches an arbitrary host root with path.
+  passes through). `network = "api.goldsky.com/api/errors/x#"` yields
+  `https://api.goldsky.com/api/errors/x#.blockscout.com/api/v2`, and a fragment is not sent, so the
+  tool fetches an arbitrary HTTPS host and path. Verified with `new URL` for a bare host, an IP
+  literal, and the path case.
 
 ## Artifacts
 
