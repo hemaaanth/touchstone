@@ -159,8 +159,8 @@ export function addBriefScope({ title, brief, blurb } = {}) {
 // is the normal case, not the exception. 200 files refused privacy-pools-core
 // (292) on 2026-11-14. 4,000 files / 40 MB fits a large app while keeping the
 // scope store and a per-run workspace copy sane.
-export const MAX_FILES = 4000;
-export const MAX_BYTES = 40 * 1024 * 1024;
+export const MAX_FILES = 12000;
+export const MAX_BYTES = 120 * 1024 * 1024;
 export const MAX_MEMBERS = 20;
 
 // Folders that hold dependencies or build output, not the code under test.
