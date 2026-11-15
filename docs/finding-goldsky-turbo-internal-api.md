@@ -186,6 +186,10 @@ surface. The severe ones:
 
 The rest are read from source; only the secrets route was exercised live (below).
 
+Reachability measured: `api.goldsky.com/internal/…` and `internal.goldsky.com/internal/…` both
+answer nginx 404, and `/api/internal/…` reaches Fastify but has no mount, so `/internal` is not
+publicly routed today — an in-cluster caller is required.
+
 ### Live proof for the secrets route
 
 A created `AUDIT_SECRET` (`httpauth`, value `Bearer SECRET-MARKER-123`) with A's key. A pipeline
