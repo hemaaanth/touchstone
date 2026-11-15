@@ -269,7 +269,8 @@ test("a website scope allows the ticked modules plus the always-on ones", () => 
   assert.equal(scope.pack, "ai-mcp");
   assert.deepEqual(scope.packs, ["ai-mcp", "web"]);
   const row = listTargets().find((t) => t.id === scope.id);
-  assert.deepEqual(row.packs, ["ai-mcp", "web", "domains", "surface", "phishing"]);
+  // Host and network is always-on too now: one bounded port sweep of the same host.
+  assert.deepEqual(row.packs, ["ai-mcp", "web", "domains", "surface", "phishing", "host"]);
   assert.equal(readGrants().length, 1, "one scope, one grant");
 });
 

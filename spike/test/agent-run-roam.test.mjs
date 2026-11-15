@@ -187,7 +187,7 @@ test("session submission snapshots under the gate and rejection does not close b
   assert.equal(r.state.candidates[0].evidence.artifacts.poc, "session:a-1:2");
 });
 
-test("real fleet grants browse only to its trusted free-roam child", async (t) => {
+test("real fleet grants browse only to its free-roam child, never to the coordinator or a confined one", async (t) => {
   const env = { FLEET: "1", FREE_ROAM: "1", ROAM_OPTIONS: "[]", TOUCHSTONE_EXEC: "daytona", DAYTONA_API_KEY: "made-up-runtime-test-key", EVENTS_FILE: undefined };
   const old = Object.fromEntries(Object.keys(env).map((k) => [k, process.env[k]]));
   const set = (values) => { for (const [k, v] of Object.entries(values)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; } };
@@ -204,7 +204,7 @@ test("real fleet grants browse only to its trusted free-roam child", async (t) =
     for (const m of systems) { for (const tool of m.toolsRemoved ?? []) names.delete(tool.name); for (const tool of m.toolsAdded ?? []) names.add(tool.name); }
     lists.set(who, names);
     const last = request.messages.findLast((m) => m.role !== "system");
-    if (who === "coordinator" && text(last) === "start") return answer([call("spawn_agent", { name: "Confined", task: "Read local evidence", area: "source" })], { stopReason: "toolUse" });
+    if (who === "coordinator" && text(last) === "start") return answer([call("spawn_agent", { name: "Confined", task: "Read local evidence", area: "source", loadout: "confined" })], { stopReason: "toolUse" });
     if (who === "FreeRoam" && last.role === "user") return answer([call("browse", { action: "read" })], { stopReason: "toolUse" });
     return answer("Done.");
   }));

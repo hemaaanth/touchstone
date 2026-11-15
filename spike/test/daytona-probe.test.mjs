@@ -20,6 +20,9 @@ function fakeMachine(failure) {
       }
     },
     async exec(command) {
+      // The toolbelt stage runs before any supervisor exchange, so it needs its
+      // own answer; without one the command fell through to the supervisor map.
+      if (command.includes("for x in nmap tshark exiftool gdb readelf")) return { exitCode: failure === "toolbelt" ? 81 : 0, result: "" };
       if (command.includes("touchstone-prerequisites-ready")) return { exitCode: Number.isInteger(failure) ? failure : failure === "prerequisites" ? 1 : 0, result: "touchstone-prerequisites-ready" + (failure === "framing" ? "\r\n" : "") };
       if (command.includes("nohup node")) return { exitCode: failure === "logger" ? 1 : 0, result: "" };
       if (command.includes("touchstone-egress-ready")) return { exitCode: 0, result: "touchstone-egress-ready" + (failure === "framing" ? "\r\n" : "") };
@@ -52,9 +55,9 @@ test("the shell probe exercises the actual supervisor protocol and only loopback
   }
 });
 
-for (const stage of ["prerequisites", "logger", "egress", "ack"]) test(`failed ${stage} cannot become shell readiness`, async () => {
+for (const stage of ["prerequisites", "toolbelt", "logger", "egress", "ack"]) test(`failed ${stage} cannot become shell readiness`, async () => {
   const fake = fakeMachine(stage);
-  await assert.rejects(probeDaytonaShell(fake.machine), (e) => e.code === ({ prerequisites: "daytona_shell_prerequisites_failed", logger: "daytona_shell_egress_start_failed", egress: "daytona_shell_egress_record_failed", ack: "daytona_shell_supervisor_failed" })[stage] && e.cause === undefined);
+  await assert.rejects(probeDaytonaShell(fake.machine), (e) => e.code === ({ prerequisites: "daytona_shell_prerequisites_failed", toolbelt: "daytona_shell_toolbelt_missing", logger: "daytona_shell_egress_start_failed", egress: "daytona_shell_egress_record_failed", ack: "daytona_shell_supervisor_failed" })[stage] && e.cause === undefined);
 });
 
 test("provider line framing does not turn successful fixed markers into a capability failure", async () => {
