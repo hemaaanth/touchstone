@@ -250,6 +250,11 @@ export async function openSession(ws, ctx, opts) {
   return handle;
 }
 
+// Is a streamed browser open for this workspace?
+export function hasSession(ws) {
+  return live.has(ws);
+}
+
 export async function closeSession(ws) {
   const handle = live.get(ws);
   live.delete(ws);

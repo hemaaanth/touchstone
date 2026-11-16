@@ -32,6 +32,7 @@ import { validateRunBudget } from "../../spike/lib/run-budget.mjs"
 import { briefChange, briefOf, dropOldBriefFile, eligiblePacks, getTarget, listTargets, pickTarget, prepareMultiWorkspace, prepareRunWorkspace, scopeEnv, targetSummary, withPack } from "../../spike/lib/targets.mjs"
 import { enforceReach, openReach } from "../../spike/lib/reach.mjs"
 import { liveHostsRefusal } from "../../spike/lib/live-hosts.mjs"
+import * as browserSession from "../../spike/lib/browser-stream.mjs"
 import { readScopes, loadScopes, addBriefScope, addSourceScope, addRepoScope, addLiveScope, addScope as addMembersScope, removeScope, validateMembers, classifyPath, safeRelPath, SKIP_DIRS, MAX_FILES, MAX_BYTES } from "../../spike/lib/scopes-store.mjs"
 import { planModules, modulesEvent, moduleOn } from "../../spike/lib/modules.mjs"
 import { packFor, packList, PACKS } from "../../spike/packs/index.mjs"
@@ -1802,11 +1803,32 @@ function failDemoCleanup(run) {
   finalize(run)
 }
 
+// A settled run whose browser session is still open: drop nothing yet. The
+// stream container sits on the run's confinement network, so stopping reach or
+// deleting the workspace turns the operator's live card black mid-use. Teardown
+// waits for the session, with a ceiling in case nobody closes it.
+const SESSION_HOLD_MS = 45 * 60_000
+
 async function cleanWorkspace(run) {
   if (run?.ownerHash) {
     await roamControl.invalidate(run).catch(() => {})
     await run.reach?.stop?.()
     if (run.ws) await cleanupWorkspace(run.ws)
+    return
+  }
+  const ws0 = run?.ws ?? run
+  if (run?.ws && !run.sessionHold && browserSession.hasSession(ws0)) {
+    run.sessionHold = true
+    const tick = setInterval(() => {
+      if (browserSession.hasSession(ws0)) return
+      clearInterval(tick)
+      cleanWorkspace(run).catch(() => {})
+    }, 5_000)
+    tick.unref?.()
+    setTimeout(() => {
+      clearInterval(tick)
+      browserSession.closeSession(ws0).catch(() => {}).finally(() => { cleanWorkspace(run).catch(() => {}) })
+    }, SESSION_HOLD_MS).unref?.()
     return
   }
   await roamControl.invalidate(run).catch(() => {})
