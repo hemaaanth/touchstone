@@ -63,7 +63,11 @@ function originHost(headers) {
 // server refuses such a request on every path, reads included.
 export function foreignOrigin(req) {
   const h = req.headers ?? {}
-  return h.origin !== undefined && (!h.host || originHost(h) !== h.host)
+  // A tunnel may keep its own Host while the page was served from the public
+  // one; the forwarded host is then the name the browser used, and the Origin
+  // must match THAT. Same rule, one more name.
+  const served = String(h["x-forwarded-host"] ?? "").split(",")[0].trim() || h.host
+  return h.origin !== undefined && (!served || originHost(h) !== served)
 }
 
 // Does the request carry the current console token? A wrong type or a wrong
@@ -81,7 +85,8 @@ export function consoleWriteRefusal(req) {
   if (READ_METHODS.has(req.method)) return null
   const h = req.headers ?? {}
   const from = originHost(h)
-  if (!from || !h.host || from !== h.host) {
+  const served = String(h["x-forwarded-host"] ?? "").split(",")[0].trim() || h.host
+  if (!from || !served || from !== served) {
     return { status: 403, error: "This request did not come from the console's own page. Reload the page and try again." }
   }
   if (req.method !== "DELETE" && !/^application\/json\b/i.test(String(h["content-type"] ?? ""))) {
