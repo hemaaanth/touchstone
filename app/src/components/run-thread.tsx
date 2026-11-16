@@ -1,4 +1,4 @@
-import { useContext, useEffect, useRef, useState, type ReactNode } from "react"
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react"
 import {
   AuiIf,
   useAuiState,
@@ -31,7 +31,6 @@ import {
   Info,
   Loader2,
   CirclePause,
-  Maximize2,
   MousePointer2,
   Eye,
   ExternalLink as ExternalLinkIcon,
@@ -59,7 +58,6 @@ import { useSmoothText } from "@/components/assistant-ui/elements/streaming-text
 import { agentName, FleetContext, fleetSpend, stepAge, ThreadOwner } from "@/components/fleet-view"
 import { agentLook, FindingNote, MarkedStep, OpenArtifact, sentence, type CardState, type RunStartView } from "@/components/thread-model"
 import { AskHuman } from "@/components/ask-human"
-import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog"
 import { setSessionMode } from "@/lib/api"
 import { WebPreview } from "@/components/assistant-ui/elements/web-preview"
 import { DEMO_ADMIN_MESSAGE, isDemoMode } from "@/lib/demo"
@@ -203,6 +201,7 @@ export function Thread({
   to = "the agent",
   readOnly = false,
   dock = null,
+  dockKey = null,
 }: {
   prepass: PrepassView | null
   // The run's setup, from "starting" to the agent session. One card at the top
@@ -233,6 +232,8 @@ export function Thread({
   // Pinned above the composer: the live browser session, so a takeover stays
   // reachable however far the transcript has scrolled.
   dock?: ReactNode
+  // The step key rendered in `dock`, so its inline copy steps aside.
+  dockKey?: string | null
 }) {
   return (
     <ThreadPrimitive.Root
@@ -240,6 +241,7 @@ export function Thread({
       style={{ ["--thread-max-width" as string]: "48rem" }}
     >
       <ThreadPrimitive.Viewport className="relative flex min-h-0 flex-1 flex-col overflow-y-auto scroll-smooth">
+        <DockedSession.Provider value={dockKey}>
         <div
           className={cn(
             "mx-auto flex w-full max-w-(--thread-max-width) flex-1 flex-col gap-5 px-5 py-6",
@@ -284,6 +286,7 @@ export function Thread({
             </Button>
           </ThreadPrimitive.ScrollToBottom>
         </div>
+        </DockedSession.Provider>
       </ThreadPrimitive.Viewport>
 
       {readOnly || isDemoMode() ? null : dock ? <div className="mx-auto w-full max-w-(--thread-max-width) px-5 pb-1">{dock}</div> : null}
@@ -769,6 +772,10 @@ const TOOL_NAME: Partial<Record<Step["kind"], string>> = {
   request: "run",
 }
 
+// The session card that is docked above the composer. Its inline copy steps
+// aside so only one viewer (one websocket, one decoder) is mounted.
+const DockedSession = createContext<string | null>(null)
+
 // A contiguous run of the agent's non-cognition steps, folded into one card that
 // is collapsed by default — so recon no longer pops in row by row and jitters
 // the layout under the live stream. Expanding shows each call and its leads.
@@ -888,12 +895,12 @@ function WorkCard({ work }: { work: Step[] }) {
 // assistant-ui WebPreview element; the frame is our own viewer URL, sandboxed to
 // itself. Compact inline, a real dialog when it needs room, and the agent can
 // hand control over (which stands its capture tools down).
-export function SessionCard({ step, runId, defaultBig = false }: { step: Step; runId?: string; defaultBig?: boolean }) {
+export function SessionCard({ step, runId }: { step: Step; runId?: string }) {
+  const docked = useContext(DockedSession)
   const session = step.session
   // The frame is served by the console, so the address line names the page
   // under test, not the frame's own host.
   const pageHost = (() => { try { return new URL(session?.page ?? session?.url ?? "").host } catch { return session?.url ? new URL(session.url).host : "" } })()
-  const [big, setBig] = useState(defaultBig)
   const [loading, setLoading] = useState(true)
   const [key, setKey] = useState(0)
   const [busy, setBusy] = useState(false)
@@ -924,6 +931,7 @@ export function SessionCard({ step, runId, defaultBig = false }: { step: Step; r
     return stopRenew
   }, [session?.viewOnly])
   if (!session) return null
+  if (docked === step.key) return null
   return (
     <div className={cn(card, "flex w-full max-w-160 flex-col overflow-hidden")} data-session={step.key}>
       <div className="flex items-center gap-2.5 px-3.5 py-2.5">
@@ -948,7 +956,7 @@ export function SessionCard({ step, runId, defaultBig = false }: { step: Step; r
             onFocus={onFrameFocus}
             title="Streamed browser"
             src={session.url}
-            sandbox="allow-scripts allow-same-origin allow-forms"
+            sandbox="allow-scripts allow-same-origin allow-forms" allow="fullscreen"
             onLoad={() => setLoading(false)}
             className="h-44 w-full border-0 bg-black"
           />
@@ -956,9 +964,6 @@ export function SessionCard({ step, runId, defaultBig = false }: { step: Step; r
       )}
       {closed ? null : (
         <div className="flex items-center gap-2 border-t border-foreground/[0.06] px-3.5 py-2">
-          <button type="button" onClick={() => setBig(true)} aria-label="Bigger" title="Bigger" className={cn(ghostButton, "size-7")}>
-            <Maximize2 className="size-3.5" />
-          </button>
           <button
             type="button"
             disabled={busy || !runId}
@@ -990,29 +995,6 @@ export function SessionCard({ step, runId, defaultBig = false }: { step: Step; r
           </a>
         </div>
       )}
-      {big && !closed ? (
-        <Dialog open onOpenChange={(next) => { if (!next) setBig(false) }}>
-          <DialogContent className="flex h-[92vh] w-[96vw] flex-col gap-0 p-0 sm:max-w-none">
-            <DialogTitle className="px-4 py-2.5 text-sm">{session.viewOnly ? "Watching the browser" : "Browser control"} — {pageHost}</DialogTitle>
-            <iframe
-              title="Streamed browser, full size"
-              ref={frame}
-              onFocus={onFrameFocus}
-              src={session.url}
-              sandbox="allow-scripts allow-same-origin allow-forms"
-              className="min-h-0 flex-1 border-0 bg-black"
-            />
-            <div className="flex items-center gap-2 border-t border-foreground/[0.06] px-4 py-2">
-              <button type="button" disabled={busy || !runId} onClick={() => switchMode(!session.viewOnly)} className={cn(ghostButton, "text-xs")}>
-                {session.viewOnly ? "Take over" : "Back to view only"}
-              </button>
-              <a href={session.url} target="_blank" rel="noreferrer" aria-label="Open in a new tab" title="Open in a new tab" className={cn(ghostButton, "ml-auto size-7")}>
-            <ExternalLinkIcon className="size-3.5" />
-          </a>
-            </div>
-          </DialogContent>
-        </Dialog>
-      ) : null}
     </div>
   )
 }

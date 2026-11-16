@@ -670,6 +670,7 @@ export function RunChat({
                   compaction={state ? activeCompaction(state) : null}
                   to={fleet ? "the coordinator" : "the agent"}
                   dock={liveSession ? <SessionCard step={liveSession} runId={run.id} /> : null}
+                  dockKey={liveSession?.key ?? null}
                 />
               </AssistantRuntimeProvider>
             </div>

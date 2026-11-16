@@ -17,7 +17,7 @@ test("the card frames the session with the preview chrome and its own sandbox", 
   expect(html).toContain('sandbox="allow-scripts allow-same-origin allow-forms"')
   // The footer is icon-only; the accessible name carries the action.
   expect(html).toContain('aria-label="Take over"')
-  expect(html).toContain('aria-label="Bigger"')
+  expect(html).toContain('allow="fullscreen"')
   expect(html).toContain('aria-label="Open in a new tab"')
   expect(html).toContain("127.0.0.1:4500")
 })
