@@ -48,7 +48,11 @@ function retire(message='Viewing elsewhere'){clearTransfer();child?.remove();chi
 async function command(action,extra={}){const response=await fetch(location.pathname.replace(/\\/+$/, '')+'/viewer-lease',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},body:JSON.stringify({action,lease,...extra})});if(response.status===403){ended=true;lease=null;retire('Session ended');throw Error('Session ended')}if(!response.ok)throw Error('Viewer unavailable');return response.json()}
 function show(secret){if(child&&lease===secret)return;clearTransfer();child?.remove();lease=secret;child=document.createElement('iframe');child.title='Desktop stream';child.allow='clipboard-read; clipboard-write';child.referrerPolicy='no-referrer';child.src=BASE+'/view?'+new URLSearchParams({token,lease});desktop.replaceChildren(child);notify('viewing');void prepare().catch(()=>{})}
 async function acquire(takeover=false){if(busy)return;busy=true;try{const result=await command('acquire',{takeover,...(!takeover&&ticket?{ticket}:{})});if(result.lease)show(result.lease);else retire()}catch(error){retire(error.message)}finally{busy=false}}
-async function check(){if(!lease||ended)return;const expected=lease;try{const result=await command('status');if(expected===lease&&!result.current){lease=null;retire()}}catch{/* A failed poll never acquires or returns ownership. */}}
+async function check(){if(!lease||ended)return;const expected=lease;try{const result=await command('status');if(expected===lease&&!result.current){
+ // A mode switch restarts the desktop runtime, which drops the lease under the
+ // page that is already watching. Take it back instead of stranding the
+ // operator on "Viewing elsewhere".
+ lease=null;await acquire(true)}}catch{/* A failed poll never acquires or returns ownership. */}}
 async function prepare(){
  if(!lease||ended)throw Error('Use View here first');
  if(prepared&&prepared.expires>Date.now())return prepared;
