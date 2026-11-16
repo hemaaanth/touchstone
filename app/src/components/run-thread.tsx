@@ -940,6 +940,7 @@ export function SessionCard({ step, runId }: { step: Step; runId?: string }) {
         {pageHost ? <span className={cn(mono, "shrink-0 text-muted-foreground")}>· {pageHost}</span> : null}
         {needsYou ? <span className={cn(mono, "shrink-0 text-muted-foreground")}>· the agent needs you</span> : null}
         {paused ? <span className={cn(mono, "shrink-0 text-muted-foreground")}>· agent paused</span> : null}
+        {!session.viewOnly && !paused ? <span className={cn(mono, "shrink-0 text-muted-foreground")}>· you have it</span> : null}
         {!needsYou && !paused && step.detail ? <span className={cn(mono, "min-w-0 truncate text-muted-foreground")}>· {step.detail}</span> : null}
         <StatusMark className="ml-auto" mark={closed ? "done" : "running"} />
       </div>
@@ -971,11 +972,18 @@ export function SessionCard({ step, runId }: { step: Step; runId?: string }) {
             type="button"
             disabled={busy || !runId}
             onClick={() => switchMode(!session.viewOnly)}
-            aria-label={session.viewOnly ? "Take over" : "Back to view only"}
-            title={session.viewOnly ? "Take over" : "Back to view only"}
-            className={cn(ghostButton, "size-7")}
+            aria-label={session.viewOnly ? "Take over" : "Hand back to the agent"}
+            title={session.viewOnly ? "Take over" : "Hand back to the agent"}
+            className={cn(ghostButton, session.viewOnly ? "size-7" : "h-7 gap-1.5 px-2 text-xs")}
           >
-            {session.viewOnly ? <MousePointer2 className="size-3.5" /> : <Eye className="size-3.5" />}
+            {session.viewOnly ? (
+              <MousePointer2 className="size-3.5" />
+            ) : (
+              <>
+                <Eye className="size-3.5" />
+                <span>Hand back</span>
+              </>
+            )}
           </button>
           {paused ? (
             <button

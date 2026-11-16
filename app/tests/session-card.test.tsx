@@ -27,7 +27,8 @@ test("the card frames the session with the preview chrome and its own sandbox", 
 test("a handoff reads as needing the operator, and control flips the button", () => {
   const need = renderToStaticMarkup(<SessionCard step={step({ detail: "needs you", session: { url: "http://127.0.0.1:4500/#t", viewOnly: false } })} runId="r1" />)
   expect(need).toContain("the agent needs you")
-  expect(need).toContain('aria-label="Back to view only"')
+  expect(need).toContain('aria-label="Hand back to the agent"')
+  expect(need).toContain("Hand back")
 })
 
 test("a paused card offers Resume agent", () => {

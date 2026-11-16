@@ -99,7 +99,7 @@ export async function handleRuns(req, res) {
   const id = parts[2]
 
   // Private capabilities, replies, and captured bytes never use unguarded GETs.
-  if ((req.method === "POST" && ((parts.length === 4 && ["ask", "desktop", "session-artifacts"].includes(parts[3])) || (parts.length === 6 && parts[3] === "session-artifacts" && ["read", "review", "release"].includes(parts[5])))) || (req.method === "DELETE" && parts.length === 4 && parts[3] === "desktop")) {
+  if ((req.method === "POST" && ((parts.length === 4 && ["ask", "desktop", "session-artifacts", "session-mode"].includes(parts[3])) || (parts.length === 6 && parts[3] === "session-artifacts" && ["read", "review", "release"].includes(parts[5])))) || (req.method === "DELETE" && parts.length === 4 && parts[3] === "desktop")) {
     res.setHeader("cache-control", "no-store")
     res.setHeader("x-content-type-options", "nosniff")
     if (parts[3] === "desktop" || ["review", "release"].includes(parts[5])) {
