@@ -1899,7 +1899,13 @@ export function setSessionMode(id, viewOnly, { touch = false, agentPause, pauseO
   const run = runs.get(id)
   if (!run) throw new Error("This run was not found. Open another run or start a new one.")
   if (typeof viewOnly !== "boolean") throw new Error("viewOnly must be true or false")
-  if (!run.child?.stdin?.writable) throw new Error("This run has no live browser session (it is not working).")
+  // A settled run has no worker reading stdin, but its browser can still be
+  // open: drive the session directly then.
+  if (!run.child?.stdin?.writable) {
+    const session = run.ws ? browserSession.sessionFor(run.ws) : null
+    if (!session) throw new Error("This run has no live browser session (it is not working).")
+    return session.setMode(viewOnly, { touch }).then(() => ({ ok: true, viewOnly }))
+  }
   const pauseOnlyLine = pauseOnly && typeof agentPause === "boolean" && !touch
   ? { agentPause }
   : { ...(typeof agentPause === "boolean" ? { agentPause } : {}), sessionMode: { viewOnly, ...(touch ? { touch: true } : {}) } }
