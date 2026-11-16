@@ -928,7 +928,7 @@ function tools(ws, state) {
           event("browser_session-failed", { error: String(err?.message ?? err).slice(0, 200) });
           return { output: [{ type: "text", text: `Could not start the session: ${String(err?.message ?? err).slice(0, 400)}` }], isError: true };
         }
-        event("browser_session", { viewOnly: stream.viewOnly, url: stream.url });
+        event("browser_session", { viewOnly: stream.viewOnly, url: stream.url, page: baseUrl });
         return { output: [{ type: "text", text: `Session open (${stream.viewOnly ? "view only" : "control"}). Give the operator this URL:\n\n${stream.url}\n\nIt stays open for the run. When they are done: call browser_session with action state to save the login, then action stop.` }] };
       }
       if (action === "takeover" || action === "view" || action === "handoff") {

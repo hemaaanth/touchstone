@@ -21,7 +21,7 @@ import { TitleInput } from "@/components/title-input"
 import { SidebarTrigger } from "@/components/ui/sidebar"
 import { ResizeHandle, useStoredWidth } from "@/components/resize-handle"
 import { ArtifactPane } from "@/components/assistant-ui/elements/artifact-pane"
-import { Thread } from "@/components/run-thread"
+import { SessionCard, Thread } from "@/components/run-thread"
 import { AskHumanProvider, PendingAskLinks } from "@/components/ask-human"
 import { agentLook, buildMessages, composerNotice, findingTarget, FindingNote, focusActions, MarkedStep, OpenArtifact, headMarkKind, runHeadStatus, runInterruption, runStartView, sendCopy, waitingMessage, withCopies, type FocusDone } from "@/components/thread-model"
 import { RunStatusMark } from "@/components/assistant-ui/elements/indicators"
@@ -314,6 +314,9 @@ export function RunChat({
       setSendError(err instanceof Error ? err.message : String(err))
     } finally { setStopping(false) }
   }
+
+  // The newest session still open is pinned above the composer.
+  const liveSession = [...(state?.steps ?? [])].reverse().find((s) => s.kind === "session" && s.state === "running" && s.session)
 
   const runtime = useExternalStoreRuntime<ThreadMessageLike>({
     messages,
@@ -666,6 +669,7 @@ export function RunChat({
                   context={state ? mainContext(state) : null}
                   compaction={state ? activeCompaction(state) : null}
                   to={fleet ? "the coordinator" : "the agent"}
+                  dock={liveSession ? <SessionCard step={liveSession} runId={run.id} /> : null}
                 />
               </AssistantRuntimeProvider>
             </div>

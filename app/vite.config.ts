@@ -39,22 +39,32 @@ function touchstoneApi(): Plugin {
       // cross-site iframe does not carry the tunnel's sign-in cookie.
       // /preview/<loopback port>/... proxies to the viewer's pipe; websockets
       // take the same route through the upgrade handler below.
-      const proxy = (req: IncomingMessage, socket: Duplex, head = Buffer.alloc(0)) => {
-        const m = /^\/preview\/(\d{2,5})(\/.*)?$/.exec(req.url ?? "")
+      const parse = (url: string) => /^\/preview\/(\d{2,5})(\/.*)?$/.exec(url)
+      // A websocket handshake is raw: the 101 and the upgraded socket are piped
+      // straight through, so the status line must not be re-serialised.
+      const upgrade = (req: IncomingMessage, socket: Duplex, head: Buffer) => {
+        const m = parse(req.url ?? "")
         if (!m) return false
-        const target = httpRequest({ host: "127.0.0.1", port: Number(m[1]), path: m[2] || "/", method: req.method, headers: { ...req.headers, host: `127.0.0.1:${m[1]}` } }, (up: IncomingMessage) => {
-          socket.write(`HTTP/1.1 ${up.statusCode} ${up.statusMessage}\r\n` + Object.entries(up.headers).map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(", ") : v}`).join("\r\n") + "\r\n\r\n")
+        const target = httpRequest({ host: "127.0.0.1", port: Number(m[1]), path: m[2] || "/", method: req.method, headers: { ...req.headers, host: `127.0.0.1:${m[1]}` } })
+        target.on("upgrade", (up, upSocket, upHead) => {
+          socket.write(`HTTP/1.1 ${up.statusCode} ${up.statusMessage ?? "Switching Protocols"}\r\n` + up.rawHeaders.reduce((acc, v, i) => (i % 2 ? acc + ": " + v + "\r\n" : acc + v), "") + "\r\n")
+          if (upHead?.length) upSocket.write(upHead)
+          upSocket.pipe(socket); socket.pipe(upSocket)
+          upSocket.on("error", () => socket.destroy()); socket.on("error", () => upSocket.destroy())
+        })
+        target.on("response", (up) => {
+          socket.write(`HTTP/1.1 ${up.statusCode} ${up.statusMessage}\r\n` + up.rawHeaders.reduce((acc, v, i) => (i % 2 ? acc + ": " + v + "\r\n" : acc + v), "") + "\r\n")
           up.pipe(socket); up.on("end", () => socket.end())
         })
         target.on("error", () => { if (!socket.destroyed) socket.end("HTTP/1.1 502 Bad Gateway\r\n\r\n") })
-        socket.on("error", () => target.destroy())
-        if (head.length) target.write(head)
+        if (head?.length) target.write(head)
+        target.end()
         return true
       }
-      server.httpServer?.on("upgrade", (req, socket, head) => { if (proxy(req, socket, head)) return })
+      server.httpServer?.prependListener("upgrade", (req: IncomingMessage, socket: Duplex, head: Buffer) => { upgrade(req, socket, head) })
       server.middlewares.use((req, res, next) => {
         if ((req.url ?? "").startsWith("/preview/")) {
-          const m = /^\/preview\/(\d{2,5})(\/.*)?$/.exec(req.url ?? "")
+          const m = parse(req.url ?? "")
           if (m) {
             const prefix = `/preview/${m[1]}`
             const target = httpRequest({ host: "127.0.0.1", port: Number(m[1]), path: m[2] || "/", method: req.method, headers: { ...req.headers, host: `127.0.0.1:${m[1]}` } }, (up: IncomingMessage) => {

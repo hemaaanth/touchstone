@@ -113,7 +113,7 @@ export interface Step {
   cut?: boolean
   ask?: HumanAsk
   // "session" step: the streamed browser's URL and whether the operator may type.
-  session?: { url: string; viewOnly: boolean }
+  session?: { url: string; viewOnly: boolean; page?: string }
   // "session" step: the agent's model calls are held by the pause gate.
   paused?: boolean
 }
@@ -598,7 +598,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
       case "browser_session": {
         const url = str(e.url)
         if (!url) break
-        steps.push({ key: `session:${url}`, kind: "session", phase, label: url, state: "running", session: { url, viewOnly: e.viewOnly === true } })
+        steps.push({ key: `session:${url}`, kind: "session", phase, label: url, state: "running", session: { url, viewOnly: e.viewOnly === true, page: str(e.page) } })
         break
       }
       case "browser_session-mode": {

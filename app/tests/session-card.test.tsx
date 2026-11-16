@@ -15,22 +15,23 @@ test("the card frames the session with the preview chrome and its own sandbox", 
   expect(html).toContain('data-slot="web-preview"')
   expect(html).toContain('src="http://127.0.0.1:4500/#tok&amp;parentOrigin=')
   expect(html).toContain('sandbox="allow-scripts allow-same-origin allow-forms"')
-  expect(html).toContain("Take over")
-  expect(html).toContain("Bigger")
-  expect(html).toContain("New tab")
+  // The footer is icon-only; the accessible name carries the action.
+  expect(html).toContain('aria-label="Take over"')
+  expect(html).toContain('aria-label="Bigger"')
+  expect(html).toContain('aria-label="Open in a new tab"')
   expect(html).toContain("127.0.0.1:4500")
 })
 
 test("a handoff reads as needing the operator, and control flips the button", () => {
   const need = renderToStaticMarkup(<SessionCard step={step({ detail: "needs you", session: { url: "http://127.0.0.1:4500/#t", viewOnly: false } })} runId="r1" />)
   expect(need).toContain("the agent needs you")
-  expect(need).toContain("Back to view only")
+  expect(need).toContain('aria-label="Back to view only"')
 })
 
 test("a paused card offers Resume agent", () => {
   const html = renderToStaticMarkup(<SessionCard step={step({ paused: true, detail: "paused · call cut" })} runId="r1" />)
   expect(html).toContain("agent paused")
-  expect(html).toContain("Resume agent")
+  expect(html).toContain('aria-label="Resume agent"')
   expect(html).not.toContain("· paused · call cut")
 })
 

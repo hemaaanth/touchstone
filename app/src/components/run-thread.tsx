@@ -1,4 +1,4 @@
-import { useContext, useEffect, useRef, useState } from "react"
+import { useContext, useEffect, useRef, useState, type ReactNode } from "react"
 import {
   AuiIf,
   useAuiState,
@@ -31,6 +31,10 @@ import {
   Info,
   Loader2,
   CirclePause,
+  Maximize2,
+  MousePointer2,
+  Eye,
+  ExternalLink as ExternalLinkIcon,
 } from "lucide-react"
 import type { ArtifactDoc, ArtifactVersion, HumanAsk, PendingApproval, PrepassView, ProofKind } from "@/lib/types"
 import { COORDINATOR } from "@/lib/types"
@@ -198,6 +202,7 @@ export function Thread({
   compaction = null,
   to = "the agent",
   readOnly = false,
+  dock = null,
 }: {
   prepass: PrepassView | null
   // The run's setup, from "starting" to the agent session. One card at the top
@@ -225,6 +230,9 @@ export function Thread({
   to?: string
   // A peek: no composer, no prepass, no start line.
   readOnly?: boolean
+  // Pinned above the composer: the live browser session, so a takeover stays
+  // reachable however far the transcript has scrolled.
+  dock?: ReactNode
 }) {
   return (
     <ThreadPrimitive.Root
@@ -278,6 +286,7 @@ export function Thread({
         </div>
       </ThreadPrimitive.Viewport>
 
+      {readOnly || isDemoMode() ? null : dock ? <div className="mx-auto w-full max-w-(--thread-max-width) px-5 pb-1">{dock}</div> : null}
       {readOnly || isDemoMode() ? null : <Composer to={to} archived={archived} notice={notice} sending={sending} context={context} compaction={compaction} />}
     </ThreadPrimitive.Root>
   )
@@ -881,6 +890,9 @@ function WorkCard({ work }: { work: Step[] }) {
 // hand control over (which stands its capture tools down).
 export function SessionCard({ step, runId, defaultBig = false }: { step: Step; runId?: string; defaultBig?: boolean }) {
   const session = step.session
+  // The frame is served by the console, so the address line names the page
+  // under test, not the frame's own host.
+  const pageHost = (() => { try { return new URL(session?.page ?? session?.url ?? "").host } catch { return session?.url ? new URL(session.url).host : "" } })()
   const [big, setBig] = useState(defaultBig)
   const [loading, setLoading] = useState(true)
   const [key, setKey] = useState(0)
@@ -924,7 +936,7 @@ export function SessionCard({ step, runId, defaultBig = false }: { step: Step; r
       </div>
       {closed ? null : (
         <WebPreview
-          origin={new URL(session.url).host}
+          origin={pageHost}
           loading={loading}
           className="max-w-none rounded-none border-x-0 border-b-0"
           onReload={() => { setLoading(true); setKey((k) => k + 1) }}
@@ -944,14 +956,18 @@ export function SessionCard({ step, runId, defaultBig = false }: { step: Step; r
       )}
       {closed ? null : (
         <div className="flex items-center gap-2 border-t border-foreground/[0.06] px-3.5 py-2">
-          <button type="button" onClick={() => setBig(true)} className={cn(ghostButton, "text-xs")}>Bigger</button>
+          <button type="button" onClick={() => setBig(true)} aria-label="Bigger" title="Bigger" className={cn(ghostButton, "size-7")}>
+            <Maximize2 className="size-3.5" />
+          </button>
           <button
             type="button"
             disabled={busy || !runId}
             onClick={() => switchMode(!session.viewOnly)}
-            className={cn(ghostButton, "text-xs")}
+            aria-label={session.viewOnly ? "Take over" : "Back to view only"}
+            title={session.viewOnly ? "Take over" : "Back to view only"}
+            className={cn(ghostButton, "size-7")}
           >
-            {session.viewOnly ? "Take over" : "Back to view only"}
+            {session.viewOnly ? <MousePointer2 className="size-3.5" /> : <Eye className="size-3.5" />}
           </button>
           {paused ? (
             <button
@@ -962,18 +978,22 @@ export function SessionCard({ step, runId, defaultBig = false }: { step: Step; r
                 setBusy(true)
                 setSessionMode(runId, session.viewOnly, { agentPause: false, pauseOnly: true }).finally(() => setBusy(false))
               }}
-              className={cn(ghostButton, "text-xs")}
+              aria-label="Resume agent"
+              title="Resume agent"
+              className={cn(ghostButton, "size-7")}
             >
-              Resume agent
+              <Play className="size-3.5" />
             </button>
           ) : null}
-          <a href={session.url} target="_blank" rel="noreferrer" className={cn(ghostButton, "ml-auto text-xs")}>New tab</a>
+          <a href={session.url} target="_blank" rel="noreferrer" aria-label="Open in a new tab" title="Open in a new tab" className={cn(ghostButton, "ml-auto size-7")}>
+            <ExternalLinkIcon className="size-3.5" />
+          </a>
         </div>
       )}
       {big && !closed ? (
         <Dialog open onOpenChange={(next) => { if (!next) setBig(false) }}>
           <DialogContent className="flex h-[92vh] w-[96vw] flex-col gap-0 p-0 sm:max-w-none">
-            <DialogTitle className="px-4 py-2.5 text-sm">{session.viewOnly ? "Watching the browser" : "Browser control"} — {new URL(session.url).host}</DialogTitle>
+            <DialogTitle className="px-4 py-2.5 text-sm">{session.viewOnly ? "Watching the browser" : "Browser control"} — {pageHost}</DialogTitle>
             <iframe
               title="Streamed browser, full size"
               ref={frame}
@@ -986,7 +1006,9 @@ export function SessionCard({ step, runId, defaultBig = false }: { step: Step; r
               <button type="button" disabled={busy || !runId} onClick={() => switchMode(!session.viewOnly)} className={cn(ghostButton, "text-xs")}>
                 {session.viewOnly ? "Take over" : "Back to view only"}
               </button>
-              <a href={session.url} target="_blank" rel="noreferrer" className={cn(ghostButton, "ml-auto text-xs")}>New tab</a>
+              <a href={session.url} target="_blank" rel="noreferrer" aria-label="Open in a new tab" title="Open in a new tab" className={cn(ghostButton, "ml-auto size-7")}>
+            <ExternalLinkIcon className="size-3.5" />
+          </a>
             </div>
           </DialogContent>
         </Dialog>
