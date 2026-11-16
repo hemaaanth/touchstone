@@ -1,6 +1,7 @@
 // BB sandboxes Voxl flags adapted under MIT; see LICENSE.bb.
 import { spawn as nodeSpawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { VIEW_TTL_MS } from './desktop-host.mjs';
 
 export function voxlArgs({ port, viewOnly }) {
   return ['--addr=127.0.0.1', '--port=' + port, '--title=Touchstone desktop',
@@ -21,7 +22,7 @@ export function guardVoxl(input, { parent = process, spawn = nodeSpawn, clock = 
     killTimer = clock.setTimeout(() => { child.kill('SIGKILL'); }, 1000);
   };
   parent.once('disconnect', stop); parent.once('SIGTERM', stop); parent.once('SIGINT', stop);
-  if (!Number.isInteger(input.port) || input.port < 1 || input.port > 65535 || typeof input.password !== 'string' || typeof input.viewOnly !== 'boolean' || !Number.isFinite(input.expires) || input.expires <= clock.now() || input.expires > clock.now() + 15 * 60_000) { finish(); return; }
+  if (!Number.isInteger(input.port) || input.port < 1 || input.port > 65535 || typeof input.password !== 'string' || typeof input.viewOnly !== 'boolean' || !Number.isFinite(input.expires) || input.expires <= clock.now() || input.expires > clock.now() + VIEW_TTL_MS) { finish(); return; }
   child = spawn('/usr/local/bin/voxl', voxlArgs(input), { stdio: 'ignore', env: {
     PATH: '/usr/local/bin:/usr/bin:/bin', HOME: '/root', DISPLAY: ':99', VOXL_PASSWORD: input.password,
   } });

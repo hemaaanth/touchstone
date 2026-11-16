@@ -1,4 +1,7 @@
 import path from 'node:path'
+import { request as httpRequest } from 'node:http'
+import type { IncomingMessage } from 'node:http'
+import type { Duplex } from 'node:stream'
 import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
 import { defineConfig, type Plugin } from 'vite'
@@ -32,7 +35,54 @@ function touchstoneApi(): Plugin {
     transformIndexHtml: (_html, ctx) => (ctx.server ? [{ tag: 'meta', attrs: { name: 'touchstone-console-token', content: consoleToken() }, injectTo: 'head' }] : []),
     configureServer(server) {
       if (demoConfig()) throw new Error('Public demo uses node server/start.mjs and built assets, never Vite.')
+      // The streamed browser is framed through this origin, because a
+      // cross-site iframe does not carry the tunnel's sign-in cookie.
+      // /preview/<loopback port>/... proxies to the viewer's pipe; websockets
+      // take the same route through the upgrade handler below.
+      const proxy = (req: IncomingMessage, socket: Duplex, head = Buffer.alloc(0)) => {
+        const m = /^\/preview\/(\d{2,5})(\/.*)?$/.exec(req.url ?? "")
+        if (!m) return false
+        const target = httpRequest({ host: "127.0.0.1", port: Number(m[1]), path: m[2] || "/", method: req.method, headers: { ...req.headers, host: `127.0.0.1:${m[1]}` } }, (up: IncomingMessage) => {
+          socket.write(`HTTP/1.1 ${up.statusCode} ${up.statusMessage}\r\n` + Object.entries(up.headers).map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(", ") : v}`).join("\r\n") + "\r\n\r\n")
+          up.pipe(socket); up.on("end", () => socket.end())
+        })
+        target.on("error", () => { if (!socket.destroyed) socket.end("HTTP/1.1 502 Bad Gateway\r\n\r\n") })
+        socket.on("error", () => target.destroy())
+        if (head.length) target.write(head)
+        return true
+      }
+      server.httpServer?.on("upgrade", (req, socket, head) => { if (proxy(req, socket, head)) return })
       server.middlewares.use((req, res, next) => {
+        if ((req.url ?? "").startsWith("/preview/")) {
+          const m = /^\/preview\/(\d{2,5})(\/.*)?$/.exec(req.url ?? "")
+          if (m) {
+            const prefix = `/preview/${m[1]}`
+            const target = httpRequest({ host: "127.0.0.1", port: Number(m[1]), path: m[2] || "/", method: req.method, headers: { ...req.headers, host: `127.0.0.1:${m[1]}` } }, (up: IncomingMessage) => {
+              // The streamed page and its own viewer use root-absolute URLs. Under
+              // the preview prefix those must stay inside it, so rewrite them.
+              const html = /text\/html/.test(String(up.headers["content-type"] ?? ""))
+              const fix = (b: string) => b.replace(/((?:src|href)=")\/(?!\/)/g, `$1${prefix}/`)
+              if (!html) {
+                res.statusCode = up.statusCode ?? 502
+                for (const [k, v] of Object.entries(up.headers)) if (v != null) res.setHeader(k, v as string | string[])
+                up.pipe(res)
+                return
+              }
+              const chunks: Buffer[] = []
+              up.on("data", (c: Buffer) => chunks.push(c))
+              up.on("end", () => {
+                const body = fix(Buffer.concat(chunks).toString("utf8"))
+                res.statusCode = up.statusCode ?? 502
+                for (const [k, v] of Object.entries(up.headers)) if (v != null && k !== "content-length") res.setHeader(k, v as string | string[])
+                res.setHeader("content-length", Buffer.byteLength(body))
+                res.end(body)
+              })
+            })
+            target.on("error", () => { res.statusCode = 502; res.end("Bad gateway") })
+            if (req.readable) req.pipe(target); else target.end()
+            return
+          }
+        }
         const refuse = (status: number, error: string) => {
           res.statusCode = status
           res.setHeader('content-type', 'application/json')

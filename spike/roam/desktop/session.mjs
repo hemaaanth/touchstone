@@ -48,7 +48,10 @@ const view = await desktop.command({ action: "configure" });
 // The viewer origin is only known once the host published the port, so the
 // session opens on command instead of at startup.
 const openView = async (preview, wantViewOnly, viewToken, parent) => {
-  const origins = [...new Set([preview, parent].filter(Boolean))];
+  // A preview may carry a path (the console proxies it there); the parent
+  // allow-list is compared against a bare origin, so reduce both to one.
+  const bare = (u) => { try { return new URL(u).origin; } catch { return null; } };
+  const origins = [...new Set([bare(preview), bare(parent)].filter(Boolean))];
   await desktop.command({ action: "open", previewOrigin: preview, appOrigins: origins, token: viewToken, viewOnly: wantViewOnly });
 };
 

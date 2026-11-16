@@ -5,7 +5,7 @@ import { createServer as tcpServer } from 'node:net';
 import { ViewerLease, viewerPage, viewerScript } from './desktop-viewer.mjs';
 import { launchVoxl } from './voxl-process.mjs';
 
-export const VIEW_TTL_MS = 15 * 60_000;
+export const VIEW_TTL_MS = 45 * 60_000;
 // A published container port is fixed, so a local session binds one. 0 keeps the
 // Daytona behaviour (an ephemeral port).
 const VIEW_PORT = Number(process.env.TOUCHSTONE_DESKTOP_PORT || 0) || 0;
@@ -118,7 +118,13 @@ export class DesktopRuntime {
     if (!s || s.kind !== 'configured') throw Error('Configure desktop before opening');
     try {
       if (this.clock.now() >= s.expires) throw Error('Expired');
-      s.previewOrigin = origin(input.previewOrigin);
+      // The preview may be served under a path (the console proxies it there),
+      // so keep its path and check that it lives on a valid origin.
+      const previewUrl = typeof input.previewOrigin === 'string' ? new URL(input.previewOrigin) : null;
+      if (!previewUrl) throw Error('Invalid preview origin');
+      origin(previewUrl.origin);
+      s.previewOrigin = previewUrl.origin;
+      s.previewPath = previewUrl.pathname.replace(/\/+$/, '');
       if (!Array.isArray(input.appOrigins) || input.appOrigins.length > 8) throw Error('Invalid parent origins');
       s.appOrigins = [...new Set(input.appOrigins.map(origin))];
       if (typeof input.viewOnly !== 'boolean' || typeof input.token !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(input.token)) throw Error('Invalid view');

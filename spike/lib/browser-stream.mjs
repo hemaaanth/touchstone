@@ -65,8 +65,22 @@ const pipeTo = (target) => new Promise((resolve, reject) => {
     const end = () => { client.destroy(); upstream.destroy(); };
     client.on("error", end); upstream.on("error", end);
   });
-  server.once("error", reject);
-  server.listen(STREAM_PORT, STREAM_BIND, () => resolve({ port: server.address().port, close: () => new Promise((r) => server.close(r)) }));
+  // One public port is shared by every session, so a previous pipe may still be
+  // closing. Retry the bind briefly; if it stays taken, take any port rather
+  // than fail the session (the card then shows a local URL).
+  let tries = 0;
+  const listen = () => {
+    server.once("error", onError);
+    server.listen(STREAM_PORT || 0, STREAM_BIND, () => {
+      server.removeListener("error", onError);
+      resolve({ port: server.address().port, close: () => new Promise((r) => server.close(r)) });
+    });
+  };
+  const onError = (err) => {
+    if (err.code === "EADDRINUSE" && STREAM_PORT && ++tries < 20) return setTimeout(listen, 500);
+    reject(err);
+  };
+  listen();
 });
 
 // Start the session and return its viewer URL. Rejects on any setup failure.
@@ -109,7 +123,13 @@ export async function startStream(ws, ctx, { baseUrl, storageState = null, viewO
       `{{index .NetworkSettings.Networks ${JSON.stringify(ctx.net)} "IPAddress"}}`])).stdout.trim();
     if (!ip) throw new Error("stream: no container address on the client network");
     pipe = await pipeTo({ host: ip, port: VIEW_PORT });
-    const preview = process.env.TOUCHSTONE_STREAM_PUBLIC_URL || `http://127.0.0.1:${pipe.port}`;
+    // A tunnel needs its sign-in cookie, which a cross-site iframe does not
+    // reliably carry. When the console is served on an origin, the viewer is
+    // framed THROUGH that origin instead (the server proxies /preview/<port>),
+    // so the frame is same-site and needs no extra tunnel port.
+    const publicUrl = process.env.TOUCHSTONE_STREAM_PUBLIC_URL;
+    const consoleOrigin = process.env.TOUCHSTONE_CONSOLE_ORIGIN;
+    const preview = publicUrl && consoleOrigin ? `${consoleOrigin.replace(/\/+$/, "")}/preview/${pipe.port}` : publicUrl || `http://127.0.0.1:${pipe.port}`;
     // Wait for the control API before asking it anything: the container is
     // running but its node process may not be listening yet.
     const upBy = Date.now() + 30_000;
@@ -123,9 +143,12 @@ export async function startStream(ws, ctx, { baseUrl, storageState = null, viewO
     // The desktop runtime is opened AFTER the container is up, because the
     // preview origin is only known once the port is published.
     const open = await docker(["exec", name, "node", "-e",
-      `fetch("http://127.0.0.1:${CONTROL_PORT}/open?viewOnly=${viewOnly ? 1 : 0}&preview=${encodeURIComponent(preview)}&token=${view}&parent=${encodeURIComponent(appOrigins[0] ?? preview)}",{method:"POST"}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))`,
+      `fetch("http://127.0.0.1:${CONTROL_PORT}/open?viewOnly=${viewOnly ? 1 : 0}&preview=${encodeURIComponent(preview)}&token=${view}&parent=${encodeURIComponent(appOrigins[0] ?? preview)}",{method:"POST"}).then(async r=>{ if(r.ok) process.exit(0); console.log(await r.text()); process.exit(1) }).catch(()=>process.exit(1))`,
     ], { timeoutMs: 30_000 });
-    if (open.code !== 0) throw new Error("stream: the desktop runtime did not open");
+    if (open.code !== 0) {
+      const why = open.stdout.trim()
+      throw new Error(`stream: the desktop runtime did not open${why ? `: ${why.slice(0, 300)}` : ""}`)
+    }
 
     // Ready when the session reports a page and the viewer page answers.
     const deadline = Date.now() + readyTimeoutMs;
