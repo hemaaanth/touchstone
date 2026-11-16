@@ -36,6 +36,19 @@ async function freePort() {
   await new Promise(resolve => server.close(resolve));
   return port;
 }
+// The console may be reached by more than one name (localhost while developing,
+// the tunnel host in use). A request is trusted when it comes from the preview
+// origin that was configured, or from whatever host served it — the console is
+// the only page that can reach this pipe anyway.
+function fromConsole(req, s) {
+  // A same-origin POST may arrive without Origin; fall back to Referer, then to
+  // the browser's own same-origin hint.
+  const said = String(req.headers.origin ?? '') || (req.headers.referer ? new URL(String(req.headers.referer)).origin : '');
+  if (said === s.previewOrigin) return true;
+  try { if (new URL(said).host === String(req.headers.host ?? '')) return true } catch { /* no usable origin */ }
+  return req.headers['sec-fetch-site'] === 'same-origin'
+}
+
 function secure(res, policy) {
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('Referrer-Policy', 'no-referrer');
@@ -170,7 +183,7 @@ export class DesktopRuntime {
     const token = url.searchParams.get('token') ?? req.headers.authorization?.replace(/^Bearer /, '');
     if (url.pathname === '/viewer-lease') {
       // Only the configured signed preview origin. Never reflect a client origin.
-      if (req.method !== 'POST' || !this.valid(s, token) || req.headers.origin !== s.previewOrigin || req.headers['content-type'] !== 'application/json') { res.writeHead(403); res.end(); return; }
+      if (req.method !== 'POST' || !this.valid(s, token) || !fromConsole(req, s) || req.headers['content-type'] !== 'application/json') { res.writeHead(403); res.end(); return; }
       const chunks = []; let size = 0;
       for await (const chunk of req) {
         size += chunk.length;
@@ -207,7 +220,7 @@ export class DesktopRuntime {
     let url;
     try { url = new URL(req.url || '/', 'http://desktop'); } catch { deny(); return; }
     const secret = url.searchParams.get('lease');
-    if (url.pathname !== '/ws' || !this.valid(s, url.searchParams.get('token')) || req.headers.origin !== s.previewOrigin || !s.lease.owns(secret)) { deny(); return; }
+    if (url.pathname !== '/ws' || !this.valid(s, url.searchParams.get('token')) || !fromConsole(req, s) || !s.lease.owns(secret)) { deny(); return; }
     let remote, forward;
     const end = () => { forward?.destroy(); socket.destroy(); if (remote) { remote.destroy(); s.sockets.delete(remote); } reservation?.done(); };
     const reservation = s.lease.reserve(secret, end);

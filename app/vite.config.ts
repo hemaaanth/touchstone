@@ -45,7 +45,7 @@ function touchstoneApi(): Plugin {
       const upgrade = (req: IncomingMessage, socket: Duplex, head: Buffer) => {
         const m = parse(req.url ?? "")
         if (!m) return false
-        const target = httpRequest({ host: "127.0.0.1", port: Number(m[1]), path: m[2] || "/", method: req.method, headers: { ...req.headers, host: `127.0.0.1:${m[1]}` } })
+        const target = httpRequest({ host: "127.0.0.1", port: Number(m[1]), path: m[2] || "/", method: req.method, headers: { ...req.headers } })
         target.on("upgrade", (up, upSocket, upHead) => {
           socket.write(`HTTP/1.1 ${up.statusCode} ${up.statusMessage ?? "Switching Protocols"}\r\n` + up.rawHeaders.reduce((acc, v, i) => (i % 2 ? acc + ": " + v + "\r\n" : acc + v), "") + "\r\n")
           if (upHead?.length) upSocket.write(upHead)
@@ -67,7 +67,7 @@ function touchstoneApi(): Plugin {
           const m = parse(req.url ?? "")
           if (m) {
             const prefix = `/preview/${m[1]}`
-            const target = httpRequest({ host: "127.0.0.1", port: Number(m[1]), path: m[2] || "/", method: req.method, headers: { ...req.headers, host: `127.0.0.1:${m[1]}` } }, (up: IncomingMessage) => {
+            const target = httpRequest({ host: "127.0.0.1", port: Number(m[1]), path: m[2] || "/", method: req.method, headers: { ...req.headers } }, (up: IncomingMessage) => {
               // The streamed page and its own viewer use root-absolute URLs. Under
               // the preview prefix those must stay inside it, so rewrite them.
               const html = /text\/html/.test(String(up.headers["content-type"] ?? ""))

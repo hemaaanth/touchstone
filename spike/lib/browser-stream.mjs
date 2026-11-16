@@ -164,7 +164,9 @@ export async function startStream(ws, ctx, { baseUrl, storageState = null, viewO
       name, dir, view, preview,
       // The console frames the viewer, so the fragment names ITS origin. Without
       // one (a smoke, a CLI) the viewer frames itself.
-      url: `${preview}/#${view}&parentOrigin=${encodeURIComponent(appOrigins[0] ?? preview)}`,
+      // Relative to the console page: the same URL then works from localhost and
+      // from a tunnel host, and never depends on which one the operator used.
+      url: `${consoleOrigin ? `/preview/${pipe.port}` : preview}/#${view}&parentOrigin=${encodeURIComponent(appOrigins[0] ?? preview)}`,
       viewOnly,
       async navigate(url) {
         return docker(["exec", name, "node", "-e",
