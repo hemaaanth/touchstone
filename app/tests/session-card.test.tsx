@@ -12,7 +12,9 @@ const step = (over: Partial<Step> = {}): Step => ({
 
 test("the card frames the session with the preview chrome and its own sandbox", () => {
   const html = renderToStaticMarkup(<SessionCard step={step()} runId="r1" />)
-  expect(html).toContain('data-slot="web-preview"')
+  // The frame's chrome is the card's own now: no address bar repeating the
+  // console's own host.
+  expect(html).toContain("Starting the browser")
   expect(html).toContain('src="http://127.0.0.1:4500/#tok&amp;parentOrigin=')
   expect(html).toContain('sandbox="allow-scripts allow-same-origin allow-forms"')
   // The footer is icon-only; the accessible name carries the action.

@@ -7,6 +7,9 @@ export function voxlArgs({ port, viewOnly }) {
   return ['--addr=127.0.0.1', '--port=' + port, '--title=Touchstone desktop',
     '--audio-enabled=false', '--microphone-enabled=false', '--file-transfers=none',
     '--enable-clipboard=' + (viewOnly ? 'false' : 'in'), '--enable-resize=false',
+    // The card is small and mostly still: 30 fps at a modest ceiling gets the
+    // first frame sooner and keeps a 1080p desktop cheap to encode.
+    '--framerate=30', '--max-kbps=8000',
     ...(viewOnly ? ['--read-only=true'] : [])];
 }
 

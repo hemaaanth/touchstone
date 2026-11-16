@@ -59,7 +59,7 @@ import { agentName, FleetContext, fleetSpend, stepAge, ThreadOwner } from "@/com
 import { agentLook, FindingNote, MarkedStep, OpenArtifact, sentence, type CardState, type RunStartView } from "@/components/thread-model"
 import { AskHuman } from "@/components/ask-human"
 import { setSessionMode } from "@/lib/api"
-import { WebPreview } from "@/components/assistant-ui/elements/web-preview"
+import { RotateCwIcon } from "lucide-react"
 import { DEMO_ADMIN_MESSAGE, isDemoMode } from "@/lib/demo"
 
 // The run's thread: the message list, its part renderers, and the composer.
@@ -937,30 +937,33 @@ export function SessionCard({ step, runId }: { step: Step; runId?: string }) {
       <div className="flex items-center gap-2.5 px-3.5 py-2.5">
         <Monitor className="size-3.5 shrink-0 text-muted-foreground" />
         <span className="shrink-0 text-[13.5px] font-medium">{session.viewOnly ? "Watching the browser" : "Browser control"}</span>
+        {pageHost ? <span className={cn(mono, "shrink-0 text-muted-foreground")}>· {pageHost}</span> : null}
         {needsYou ? <span className={cn(mono, "shrink-0 text-muted-foreground")}>· the agent needs you</span> : null}
         {paused ? <span className={cn(mono, "shrink-0 text-muted-foreground")}>· agent paused</span> : null}
         {!needsYou && !paused && step.detail ? <span className={cn(mono, "min-w-0 truncate text-muted-foreground")}>· {step.detail}</span> : null}
         <StatusMark className="ml-auto" mark={closed ? "done" : "running"} />
       </div>
       {closed ? null : (
-        <WebPreview
-          origin={pageHost}
-          loading={loading}
-          className="max-w-none rounded-none border-x-0 border-b-0"
-          onReload={() => { setLoading(true); setKey((k) => k + 1) }}
-          onOpenExternal={() => window.open(session.url, "_blank", "noopener,noreferrer")}
-        >
+        // No address bar: the frame is served by this console, so a URL line here
+        // only repeats itself. The page under test is named in the header.
+        <div className="relative border-t border-foreground/[0.06]">
           <iframe
             key={key}
             ref={frame}
             onFocus={onFrameFocus}
-            title="Streamed browser"
+            title={`Streamed browser — ${pageHost}`}
             src={session.url}
-            sandbox="allow-scripts allow-same-origin allow-forms" allow="fullscreen"
+            sandbox="allow-scripts allow-same-origin allow-forms"
+            allow="fullscreen"
             onLoad={() => setLoading(false)}
             className="h-44 w-full border-0 bg-black"
           />
-        </WebPreview>
+          {loading ? (
+            <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black">
+              <ShimmerLabel className="text-muted-foreground text-xs">Starting the browser</ShimmerLabel>
+            </div>
+          ) : null}
+        </div>
       )}
       {closed ? null : (
         <div className="flex items-center gap-2 border-t border-foreground/[0.06] px-3.5 py-2">
@@ -990,6 +993,15 @@ export function SessionCard({ step, runId }: { step: Step; runId?: string }) {
               <Play className="size-3.5" />
             </button>
           ) : null}
+          <button
+            type="button"
+            onClick={() => { setLoading(true); setKey((k) => k + 1) }}
+            aria-label="Reload the frame"
+            title="Reload the frame"
+            className={cn(ghostButton, "size-7")}
+          >
+            <RotateCwIcon className="size-3.5" />
+          </button>
           <a href={session.url} target="_blank" rel="noreferrer" aria-label="Open in a new tab" title="Open in a new tab" className={cn(ghostButton, "ml-auto size-7")}>
             <ExternalLinkIcon className="size-3.5" />
           </a>
