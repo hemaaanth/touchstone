@@ -563,7 +563,10 @@ export function prepareWorkspace(target, { modules = [] } = {}) {
     const ws = prepareScopeWorkspace({ ...target, kind: "scope" }, { modules })
     // The live lane aims at the scope's first origin, the same base a bare live
     // target would use; without it the pre-pass cannot bind.
-    writeTouchstone(ws, { ...readTouchstone(ws), kind: "live", baseUrl: liveOrigins(target)[0] })
+    // The live lane aims at the scope's first origin; `origins` is what a live
+    // run's tools read, so carry the whole list, not just the base.
+    const origins = liveOrigins(target)
+    writeTouchstone(ws, { ...readTouchstone(ws), kind: "live", baseUrl: origins[0], origins })
     return ws
   }
   if (target.kind === "live" && pack === "contracts" && (target.members?.length || target.contracts?.length)) return prepareWorkspace({ ...target, kind: "scope" }, { modules })
@@ -648,10 +651,12 @@ function writeScopeFile(ws, rel, content) {
 //   - contracts: a Foundry workspace. Only the Solidity is ever proven, by the
 //     offline Foundry replay. "brief" kind when there are repos to fetch, so the
 //     pack uses its fetch-first prompt.
-//   - review: a plain workspace with no Foundry at all. Its pack cannot prove.
+//   - every other pack: the same plain workspace, no Foundry. Its tools are its own.
 function prepareScopeWorkspace(target, { modules }) {
   const pack = packOf(target)
-  if (pack !== "contracts" && pack !== "review") throw new Error(`a scope cannot run under pack "${pack}"`)
+  // Anything but contracts gets the plain code workspace: the members are copied
+  // for every pack now, so a web run with a repo lands in the same shape review uses.
+  if (pack !== "contracts" && !PACKS[pack]) throw new Error(`a scope cannot run under pack "${pack}"`)
   let ws
   if (pack === "contracts") ws = makeBriefWorkspace()
   else {
