@@ -440,19 +440,31 @@ async function child([, , , mode, db, ws]) {
     let settled = await sub.wait(ctx);
     settled = await fleet?.drain(ctx) ?? settled;
 
-    // One nudge, owned by the pack: ask a model that stopped early to work the
-    // suspects it has not tried. Only after a clean end of turn.
-    const more = settled.status === "done" ? pack.nudge(state) : null;
+    // The pack asks for another turn while surface is unworked and attempts
+    // remain. A model stopping after its survey pass is the normal case, so one
+    // nudge was too few: a $5 run with hundreds of attempts unused settled after
+    // a single pass and called it clean. Bounded by the pack's null, the caps,
+    // the budget and MAX_CONTINUES.
     const tally = () => ({ found: state.found.length, leads: state.leads ?? 0 });
-    const before = more ? { settled, final: (await summarize(root)).final, ...tally() } : null;
-    if (more) {
-      settled = await (await root.submit({ type: "input", requestId: "continue1", content: more }, ctx)).wait(ctx);
+    const before = { settled, final: null, ...tally() };
+    const maxContinues = Math.max(0, Number(process.env.MAX_CONTINUES ?? 8));
+    let continuations = 0;
+    while (settled.status === "done" && continuations < maxContinues) {
+      state.continues = continuations;
+      const more = pack.nudge(state);
+      if (!more) break;
+      const money = runSpend();
+      if (!(money.budgetUsd - money.usd > 0.02)) break;
+      continuations += 1;
+      if (continuations === 1) before.final = (await summarize(root)).final;
+      settled = await (await root.submit({ type: "input", requestId: `continue${continuations}`, content: more }, ctx)).wait(ctx);
       settled = await fleet?.drain(ctx) ?? settled;
     }
+    if (continuations) event("continued", { turns: continuations });
 
     const s = await summarize(root);
     flushFinal(s);
-    if (before) ({ settled, final: s.final } = afterNudge(before, { settled, final: s.final, ...tally() }));
+    if (continuations) ({ settled, final: s.final } = afterNudge(before, { settled, final: s.final, ...tally() }));
     const usage = await chargeUsage(harness);
     event("settled", { status: settled.status, reason: settled.reason, detail: settled.detail, summary: s, findings: state.found, candidates: state.candidates, agentFindings: state.agentFindings, usage, reports });
     completed = true;

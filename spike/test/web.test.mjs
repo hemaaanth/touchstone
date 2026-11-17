@@ -325,7 +325,11 @@ test("the web pack is registered and has a stable tool set", () => {
   const state = { poc: 0, passed: new Map(), found: [] };
   const names = web.tools("/nonexistent", state).map((t) => t.name);
   assert.deepEqual(names, ["web_leads", "run_request_script", "capture_traffic", "capture_browser", "browser_session", "submit_finding", "submit_candidate"]);
-  assert.equal(web.nudge({ poc: 0, passed: new Map(), found: [] }), null);
+  // A first pass that found nothing gets another turn: that is the case a single
+  // nudge used to skip.
+  assert.match(web.nudge({ poc: 0, passed: new Map(), found: [] }), /Nothing proven yet/);
+  // Only a spent attempt budget ends it.
+  assert.equal(web.nudge({ poc: 900, passed: new Map(), found: [] }), null);
 });
 
 test("run_request_script refuses to run with no persisted lab handle", async () => {

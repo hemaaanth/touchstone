@@ -622,9 +622,13 @@ How the audit works:
   next suspect — do not stop at the first finding.
 - Not findings: a 401/403 that correctly blocks a request, or a route that returns
   only the caller's own data.
-- Stop when every suspect is proven or ruled out, or the budget is spent. Then write a
-  short coverage summary: one line per suspect, marked "proven", "not exploitable", or
-  "not tried".
+- A survey pass is not an audit. After you map the surface, work the list: one
+  suspect per turn, taken to a verdict. Do not stop because the page is small or the
+  first pass was quiet — a quiet first pass is the normal case, not a negative result.
+- Write the coverage summary only when every suspect is proven or ruled out, or the
+  budget is spent. One line per suspect, marked "proven", "not exploitable", or "not
+  tried". If the engine nudges you, that means it read your summary as early: keep
+  going instead of restating it.
 
 Severity:
 - critical: a private key or other secret leaks that lets anyone move funds or sign as
@@ -680,10 +684,28 @@ function kickoff(ws, env = {}) {
   return parts.join("\n\n");
 }
 
-function nudge(state) {
-  if (state.found.length === 0) return null;
-  const list = state.found.map((f) => `- #${f.n} ${f.title} (${f.severity})`).join("\n");
-  return `You have recorded ${state.found.length} finding${state.found.length === 1 ? "" : "s"} so far:\n${list}\n\nThe audit is not done yet. Go back to your suspect list. Try every suspect root cause you have not proven or ruled out, worst first. ${leftText(MAX_SCRIPT_RUNS, state.poc, "run_request_script")} Submit a finding only for a NEW root cause. If no such suspects are left, write the coverage summary now: one line per suspect, marked "proven", "not exploitable", or "not tried".`;
+// Ask for another turn while the run still has attempts to spend AND something
+// unexamined is left. A run that found nothing is the one that needs this most:
+// the old rule only continued when a finding existed, so a clean sweep stopped
+// after one pass and reported a bare "no-finding".
+const UNEXAMINED = new Set(["", "not tried"]);
+
+export function nudge(state) {
+  const left = Number.isFinite(MAX_SCRIPT_RUNS) ? MAX_SCRIPT_RUNS - (state.poc ?? 0) : Infinity;
+  if (left <= 0) return null;
+  const open = (state.coverage ?? []).filter((c) => UNEXAMINED.has(String(c.status ?? "").toLowerCase()));
+  // No coverage list yet: keep going if there is budget, because the first pass
+  // is a survey, not a verdict.
+  if (state.found.length === 0 && !open.length && state.poc > 0 && !state.continues) {
+    return `Nothing proven yet. This was a survey pass. Now work it: pick the three most promising entry points you found, ${leftText(MAX_SCRIPT_RUNS, state.poc, "run_request_script")} and take each one to a verdict — proven or ruled out with the evidence. Use capture_browser where the page renders, run_request_script where it does not. Do not re-list the surface; test it.`;
+  }
+  if (!open.length && state.found.length) {
+    const list = state.found.map((f) => `- #${f.n} ${f.title} (${f.severity})`).join("\n");
+    return `You have recorded ${state.found.length} finding${state.found.length === 1 ? "" : "s"} so far:\n${list}\n\nThe audit is not done yet. Go back to your suspect list. Try every suspect root cause you have not proven or ruled out, worst first. ${leftText(MAX_SCRIPT_RUNS, state.poc, "run_request_script")} Submit a finding only for a NEW root cause. If no such suspects are left, write the coverage summary now: one line per suspect, marked "proven", "not exploitable", or "not tried".`;
+  }
+  if (!open.length) return null;
+  const worst = open.slice(0, 5).map((c) => `- ${c.title ?? c.where} (${c.check ?? c.status})`).join("\n");
+  return `Still untried:\n${worst}\n\n${leftText(MAX_SCRIPT_RUNS, state.poc, "run_request_script")} Take the next one to a verdict. Submit a finding only for a NEW root cause; rule out the rest with evidence.`;
 }
 
 function tools(ws, state) {
