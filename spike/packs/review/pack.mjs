@@ -146,65 +146,73 @@ const REASON_CAP = 2000;
 // every update, so a runaway loop must stop here.
 export const LEAD_CAP = 200;
 
+// The three read tools, exported so EVERY pack can have them: a web or domain run
+// that happens to carry source should not need a second pack to read it. They are
+// the same confinement as before — visible paths only, allowlisted, capped.
+export function fileTools(ws) {
+  const text = (t, isError = false) => ({ output: [{ type: "text", text: t }], ...(isError ? { isError: true } : {}) });
+const listSources = defineTool({
+  name: "list_sources",
+  description: "List every readable source file, as workspace-relative paths. Local folders are under src/. Fetched repos are under vendor/ (call fetch_source first).",
+  parameters: obj({}),
+  replay: "safe",
+  execute: async () => {
+    event("list_sources");
+    const files = listFiles(ws);
+    return text(files.length ? files.join("\n") + (files.length >= LIST_CAP ? `\n…[list capped at ${LIST_CAP}]` : "") : "(no source files yet — fetch the repos the scope lists)");
+  },
+});
+
+const readSource = defineTool({
+  name: "read_source",
+  description: "Read one file. Pass a path list_sources printed. The scope and its brief are in your instructions, not in a file.",
+  parameters: obj({ file: str({ description: "a path from list_sources" }) }),
+  replay: "safe",
+  execute: async (args) => {
+    const raw = String(args.file ?? "");
+    event("read_source", { file: raw });
+    const abs = resolveReadable(ws, raw);
+    if (!abs) return text(`Not readable: ${raw}. Pass a path list_sources shows. Hidden, secret, dependency, and binary files are never readable.`, true);
+    let body;
+    try { body = readFileSync(abs, "utf8"); } catch { return text(`Could not read: ${raw}`, true); }
+    if (body.length > FILE_READ_CAP) body = body.slice(0, FILE_READ_CAP) + `\n\n…[truncated at ${FILE_READ_CAP} bytes]`;
+    return text(body);
+  },
+});
+
+const searchSource = defineTool({
+  name: "search_source",
+  description: "Find a literal string (not a regex) in every readable file. Returns up to 100 file:line hits.",
+  parameters: obj({ text: str({ description: "the exact text to find, at least 2 characters" }) }),
+  replay: "safe",
+  execute: async (args) => {
+    const needle = String(args.text ?? "");
+    event("search_source", { text: needle.slice(0, 80) });
+    if (needle.length < 2) return text("Search for at least 2 characters.", true);
+    const hits = [];
+    for (const rel of listFiles(ws)) {
+      const abs = resolveReadable(ws, rel);
+      if (!abs) continue;
+      let body;
+      try { body = readFileSync(abs, "utf8"); } catch { continue; }
+      if (body.length > FILE_READ_CAP) continue;
+      const lines = body.split("\n");
+      for (let i = 0; i < lines.length && hits.length < SEARCH_HITS; i++) {
+        if (lines[i].includes(needle)) hits.push(`${rel}:${i + 1}: ${lines[i].trim().slice(0, 200)}`);
+      }
+      if (hits.length >= SEARCH_HITS) break;
+    }
+    return text(hits.length ? hits.join("\n") : `No match for ${JSON.stringify(needle)}.`);
+  },
+});
+
+  return [listSources, readSource, searchSource];
+}
+
 export function tools(ws, state = {}) {
   const cfg = readTouchstone(ws);
   const links = new Set((cfg.links ?? []).map((u) => { try { return githubRepoUrl(u); } catch { return null; } }).filter(Boolean));
   const text = (t, isError = false) => ({ output: [{ type: "text", text: t }], ...(isError ? { isError: true } : {}) });
-
-  const listSources = defineTool({
-    name: "list_sources",
-    description: "List every readable source file, as workspace-relative paths. Local folders are under src/. Fetched repos are under vendor/ (call fetch_source first).",
-    parameters: obj({}),
-    replay: "safe",
-    execute: async () => {
-      event("list_sources");
-      const files = listFiles(ws);
-      return text(files.length ? files.join("\n") + (files.length >= LIST_CAP ? `\n…[list capped at ${LIST_CAP}]` : "") : "(no source files yet — fetch the repos the scope lists)");
-    },
-  });
-
-  const readSource = defineTool({
-    name: "read_source",
-    description: "Read one file. Pass a path list_sources printed. The scope and its brief are in your instructions, not in a file.",
-    parameters: obj({ file: str({ description: "a path from list_sources" }) }),
-    replay: "safe",
-    execute: async (args) => {
-      const raw = String(args.file ?? "");
-      event("read_source", { file: raw });
-      const abs = resolveReadable(ws, raw);
-      if (!abs) return text(`Not readable: ${raw}. Pass a path list_sources shows. Hidden, secret, dependency, and binary files are never readable.`, true);
-      let body;
-      try { body = readFileSync(abs, "utf8"); } catch { return text(`Could not read: ${raw}`, true); }
-      if (body.length > FILE_READ_CAP) body = body.slice(0, FILE_READ_CAP) + `\n\n…[truncated at ${FILE_READ_CAP} bytes]`;
-      return text(body);
-    },
-  });
-
-  const searchSource = defineTool({
-    name: "search_source",
-    description: "Find a literal string (not a regex) in every readable file. Returns up to 100 file:line hits.",
-    parameters: obj({ text: str({ description: "the exact text to find, at least 2 characters" }) }),
-    replay: "safe",
-    execute: async (args) => {
-      const needle = String(args.text ?? "");
-      event("search_source", { text: needle.slice(0, 80) });
-      if (needle.length < 2) return text("Search for at least 2 characters.", true);
-      const hits = [];
-      for (const rel of listFiles(ws)) {
-        const abs = resolveReadable(ws, rel);
-        if (!abs) continue;
-        let body;
-        try { body = readFileSync(abs, "utf8"); } catch { continue; }
-        if (body.length > FILE_READ_CAP) continue;
-        const lines = body.split("\n");
-        for (let i = 0; i < lines.length && hits.length < SEARCH_HITS; i++) {
-          if (lines[i].includes(needle)) hits.push(`${rel}:${i + 1}: ${lines[i].trim().slice(0, 200)}`);
-        }
-        if (hits.length >= SEARCH_HITS) break;
-      }
-      return text(hits.length ? hits.join("\n") : `No match for ${JSON.stringify(needle)}.`);
-    },
-  });
 
   const fetchSourceTool = defineTool({
     name: "fetch_source",
@@ -302,7 +310,7 @@ export function tools(ws, state = {}) {
     },
   });
 
-  return [listSources, readSource, searchSource, recordLead, ...(isLive(ws) ? [runScript] : []), ...(moduleOn(cfg.modules, "fetch") && links.size ? [fetchSourceTool] : [])];
+  return [...fileTools(ws), recordLead, ...(isLive(ws) ? [runScript] : []), ...(moduleOn(cfg.modules, "fetch") && links.size ? [fetchSourceTool] : [])];
 }
 
 export default {

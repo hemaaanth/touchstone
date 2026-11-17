@@ -37,6 +37,7 @@ import { applySessionMode } from "./lib/browser-stream.mjs";
 import { clearCut, pause as pauseAgent, resume as resumeAgent, wasCutByPause } from "./lib/pause.mjs";
 import { askHumanTool, answerAsk, disposeAsks } from "./lib/ask.mjs";
 import { packFor } from "./packs/index.mjs";
+import { fileTools } from "./packs/review/pack.mjs";
 import { sourceNavTools, NAV_SYSTEM } from "./packs/source-nav/pack.mjs";
 import { DIAGRAM_RULE } from "./lib/diagram-rule.mjs";
 import { resolveCbmBinary } from "./lib/cbm.mjs";
@@ -180,8 +181,11 @@ async function openHarness(db, ws, state) {
   // tools. Navigation never produces a finding; proof is unchanged.
   // A joined run mounts the layer when ANY of its modules reads code; the index
   // is built once, over the run's shared tree (the run root).
-  const readsCode = (id) => id === "contracts" || id === "review";
-  const navy = (pack.readsCode === true || readsCode(pack.id)) && (await resolveCbmBinary()) !== null;
+  // Every pack gets the source index and the flat read tools, always: a live web
+  // scope can carry a repo, an ai-mcp scope can carry a server, and an agent that
+  // wants to read its own dependency tree should not need a different module.
+  // Only the binary's presence decides, and it is installed out of band.
+  const navy = (await resolveCbmBinary()) !== null;
   // The nav prompt names flat tools; the joined pack renames them for the whole
   // run, so a run reads a name it really has.
   const navText = navy ? (typeof pack.renameText === "function" ? pack.renameText(ws, NAV_SYSTEM) : NAV_SYSTEM) : "";
@@ -198,7 +202,12 @@ async function openHarness(db, ws, state) {
   // gives it the current one with its next message (fleet.mjs createFleet).
   // Public demos have no Reply endpoint, so do not offer an unanswerable Ask.
   const sharedTools = [...(process.env.TOUCHSTONE_DEMO === "1" ? [] : [askHumanTool]), ideaTool(state)];
-  const tools = [...pack.tools(ws, state), ...(navy ? sourceNavTools(ws) : [])];
+  // Read tools come from the review pack, which owns the confinement rules; packs
+  // that already define them are not doubled (name collisions would throw).
+  const packTools = pack.tools(ws, state);
+  const names = new Set(packTools.map((t) => t.name));
+  const readers = fileTools(ws).filter((t) => !names.has(t.name));
+  const tools = [...packTools, ...readers, ...(navy ? sourceNavTools(ws) : [])];
   // The same pack tools go to confined children (they keep what they already have)
   // and to machine children, so a roaming run loses no capability.
   fleet = createFleet({ system, costOf, brief: process.env.SCOPE_BRIEF ?? "", briefChange, changed: process.env.BRIEF_CHANGE ?? "", roamTools: offered, packTools: tools, sharedTools });

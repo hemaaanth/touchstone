@@ -555,10 +555,11 @@ export function prepareWorkspace(target, { modules = [] } = {}) {
     writeTouchstone(ws, { kind: "brief", solc: "auto", pack, modules, links: Array.isArray(target.links) ? target.links : [] })
     return ws
   }
-  // A live scope that also carries code gets the code workspace, but stays
-  // live: the review pack's run_request_script checks isLive(ws), and the run's
-  // reach is a confinement gate, so the kind must survive the copy.
-  if (target.kind === "live" && pack === "review" && target.members?.length) {
+  // A live scope that also carries code gets the code workspace, but stays live:
+  // a live run's reach is a confinement gate and the pack checks isLive(ws), so
+  // the kind must survive the copy. This holds for every pack, not just review —
+  // a web or ai-mcp run may equally be handed a repo to read.
+  if (target.kind === "live" && pack !== "contracts" && target.members?.length) {
     const ws = prepareScopeWorkspace({ ...target, kind: "scope" }, { modules })
     // The live lane aims at the scope's first origin, the same base a bare live
     // target would use; without it the pre-pass cannot bind.
