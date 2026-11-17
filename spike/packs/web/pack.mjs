@@ -696,7 +696,7 @@ export function nudge(state) {
   const open = (state.coverage ?? []).filter((c) => UNEXAMINED.has(String(c.status ?? "").toLowerCase()));
   // No coverage list yet: keep going if there is budget, because the first pass
   // is a survey, not a verdict.
-  if (state.found.length === 0 && !open.length && state.poc > 0 && !state.continues) {
+  if (state.found.length === 0 && !open.length && !state.continues) {
     return `Nothing proven yet. This was a survey pass. Now work it: pick the three most promising entry points you found, ${leftText(MAX_SCRIPT_RUNS, state.poc, "run_request_script")} and take each one to a verdict — proven or ruled out with the evidence. Use capture_browser where the page renders, run_request_script where it does not. Do not re-list the surface; test it.`;
   }
   if (!open.length && state.found.length) {

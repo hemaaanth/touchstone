@@ -328,8 +328,8 @@ test("the web pack is registered and has a stable tool set", () => {
   // A first pass that found nothing gets another turn: that is the case a single
   // nudge used to skip.
   assert.match(web.nudge({ poc: 0, passed: new Map(), found: [] }), /Nothing proven yet/);
-  // Only a spent attempt budget ends it.
-  assert.equal(web.nudge({ poc: 900, passed: new Map(), found: [] }), null);
+  // One survey turn, then it stops when nothing new and nothing untried is left.
+  assert.equal(web.nudge({ poc: 30, passed: new Map(), found: [], continues: 1 }), null);
 });
 
 test("run_request_script refuses to run with no persisted lab handle", async () => {
